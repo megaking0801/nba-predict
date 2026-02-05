@@ -10,8 +10,18 @@ import warnings
 # 忽略警告
 warnings.filterwarnings('ignore')
 
-# --- 偽裝 Header 防止被 NBA 官網封鎖 ---
-NBAStatsHTTP.headers = {
+# --- 修正後的 Header 設定方式 ---
+from nba_api.stats.library.http import NBAStatsHTTP 
+# 如果上面的 import 還是失敗，請改用下面這行：
+# from nba_api.library.http import NBAStatsHTTP 
+
+try:
+    from nba_api.stats.library.http import NBAStatsHTTP
+except ImportError:
+    from nba_api.library.http import NBAStatsHTTP
+
+# 偽裝 Header 
+custom_headers = {
     'Host': 'stats.nba.com',
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     'Accept': 'application/json, text/plain, */*',
@@ -19,6 +29,9 @@ NBAStatsHTTP.headers = {
     'Referer': 'https://www.nba.com',
     'Connection': 'keep-alive',
 }
+# 這裡使用更加保險的設定方式
+NBAStatsHTTP.headers = custom_headers
+
 
 # 1. 隊伍中英文對照表
 TEAM_NAME_CH = {
@@ -166,3 +179,4 @@ with st.expander("📊 查看聯盟目前近五場戰力排行榜"):
     rank['隊伍'] = rank['TEAM_ABBREVIATION'].map(TEAM_NAME_CH)
     rank = rank.sort_values('L5_PLUS_MINUS', ascending=False)
     st.dataframe(rank[['隊伍', 'L5_PTS', 'L5_PLUS_MINUS']], hide_index=True)
+
