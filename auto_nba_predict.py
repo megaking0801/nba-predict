@@ -1,5 +1,6 @@
 import streamlit as st
-from nba_api.stats.endpoints import leaguegamefinder, scoreboardv2, commonteamroster, leagueplayerstats
+# 修正後的端點名稱：leaguedashplayerstats
+from nba_api.stats.endpoints import leaguegamefinder, scoreboardv2, commonteamroster, leaguedashplayerstats
 from nba_api.stats.static import teams
 import pandas as pd
 import xgboost as xgb
@@ -54,9 +55,9 @@ def get_comprehensive_data(season):
     model = xgb.XGBClassifier(n_estimators=100, max_depth=5, eval_metric='logloss')
     model.fit(train_df[features], train_df['WIN'])
 
-    # 獲取球員統計
-    player_stats = leagueplayerstats.LeaguePlayerStats(season=season).get_data_frames()[0]
-    player_stats = player_stats[['PLAYER_ID', 'PLAYER_NAME', 'PTS']]
+    # 修正：獲取全聯盟球員統計 (改用 leaguedashplayerstats)
+    player_stats = leaguedashplayerstats.LeagueDashPlayerStats(season=season).get_data_frames()[0]
+    player_stats = player_stats[['PLAYER_ID', 'PLAYER_NAME', 'PTS', 'REB', 'AST']]
 
     return model, all_games, player_stats, features
 
@@ -83,7 +84,7 @@ def get_preloaded_schedules(date_list):
     return schedules
 
 # 啟動同步
-with st.spinner('🚀 正在深度分析所有數據 (H2H, B2B, 名單)...'):
+with st.spinner('🚀 正在同步 2026 NBA 大數據 (H2H, B2B, 名單)...'):
     try:
         model, all_games_raw, all_player_stats, features_list = get_comprehensive_data('2025-26')
     except:
@@ -92,7 +93,7 @@ with st.spinner('🚀 正在深度分析所有數據 (H2H, B2B, 名單)...'):
     recent_dates = [datetime.now() - timedelta(days=i) for i in range(4)]
     all_schedules = get_preloaded_schedules(recent_dates)
 
-# 3. 標籤式 UI
+# 3. 標籤式 UI (手機優化)
 st.write("### 📅 選擇比賽日期")
 tab_labels = [d.strftime('%m/%d') + (" (今)" if i==0 else "") for i, d in enumerate(recent_dates)]
 tabs = st.tabs(tab_labels)
@@ -113,11 +114,10 @@ for i, tab in enumerate(tabs):
             h_id, a_id = sel_game['HOME_TEAM_ID'], sel_game['VISITOR_TEAM_ID']
             h_abbr, a_abbr = sel_game['HOME_ABBR'], sel_game['AWAY_ABBR']
             
-            # --- 數據準備 ---
+            # --- 數據準備與 B2B 動態判定 ---
             h_form = all_games_raw[all_games_raw['TEAM_ABBREVIATION'] == h_abbr].tail(1)[features_list].copy()
             a_form = all_games_raw[all_games_raw['TEAM_ABBREVIATION'] == a_abbr].tail(1)[features_list].copy()
             
-            # B2B 動態判定
             h_last = all_games_raw[all_games_raw['TEAM_ABBREVIATION'] == h_abbr]['GAME_DATE'].max()
             a_last = all_games_raw[all_games_raw['TEAM_ABBREVIATION'] == a_abbr]['GAME_DATE'].max()
             h_is_b2b = 1 if (curr_date_dt.date() - h_last.date()).days == 1 else 0
@@ -142,17 +142,21 @@ for i, tab in enumerate(tabs):
             c1, c2 = st.columns(2)
             with c1:
                 st.metric(TEAM_NAME_CH.get(h_abbr, h_abbr), f"{h_f:.1f}%")
-                if h_is_b2b: st.warning("⚠️ B2B")
+                if h_is_b2b: st.warning("⚠️ 背靠背 (B2B)")
             with c2:
                 st.metric(TEAM_NAME_CH.get(a_abbr, a_abbr), f"{a_f:.1f}%")
-                if a_is_b2b: st.warning("⚠️ B2B")
+                if a_is_b2b: st.warning("⚠️ 背靠背 (B2B)")
             
+            # 最新球員名單
             st.write("#### 👤 核心球員名單")
-            h_list = get_team_roster_names(h_id).head(5).merge(all_player_stats, left_on='PLAYER', right_on='PLAYER_NAME', how='left')
-            a_list = get_team_roster_names(a_id).head(5).merge(all_player_stats, left_on='PLAYER', right_on='PLAYER_NAME', how='left')
-            ch, ca = st.columns(2)
-            with ch: st.dataframe(h_list[['PLAYER', 'PTS']].rename(columns={'PLAYER':'姓名','PTS':'均分'}), hide_index=True)
-            with ca: st.dataframe(a_list[['PLAYER', 'PTS']].rename(columns={'PLAYER':'姓名','PTS':'均分'}), hide_index=True)
+            try:
+                h_list = get_team_roster_names(h_id).head(5).merge(all_player_stats, left_on='PLAYER', right_on='PLAYER_NAME', how='left')
+                a_list = get_team_roster_names(a_id).head(5).merge(all_player_stats, left_on='PLAYER', right_on='PLAYER_NAME', how='left')
+                ch, ca = st.columns(2)
+                with ch: st.dataframe(h_list[['PLAYER', 'PTS']].rename(columns={'PLAYER':'姓名','PTS':'均分'}), hide_index=True)
+                with ca: st.dataframe(a_list[['PLAYER', 'PTS']].rename(columns={'PLAYER':'姓名','PTS':'均分'}), hide_index=True)
+            except:
+                st.caption("球員名單同步中...")
 
             st.divider()
             st.success(f"📌 系統推薦：{TEAM_NAME_CH.get(h_abbr if h_f > a_f else a_abbr)}")
