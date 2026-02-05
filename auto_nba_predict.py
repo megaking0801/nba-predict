@@ -1,6 +1,7 @@
 import streamlit as st
 from nba_api.stats.endpoints import leaguegamefinder, scoreboardv2
 from nba_api.stats.static import teams
+from nba_api.library.http import NBAStatsHTTP
 import pandas as pd
 import xgboost as xgb
 from datetime import datetime, timedelta
@@ -9,7 +10,17 @@ import warnings
 # 忽略警告
 warnings.filterwarnings('ignore')
 
-# 1. 隊伍中英文對照表 (確保 30 支球隊完整)
+# --- 偽裝 Header 防止被 NBA 官網封鎖 ---
+NBAStatsHTTP.headers = {
+    'Host': 'stats.nba.com',
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Accept': 'application/json, text/plain, */*',
+    'Accept-Language': 'zh-TW,zh;q=0.9,en-US;q=0.8,en;q=0.7',
+    'Referer': 'https://www.nba.com',
+    'Connection': 'keep-alive',
+}
+
+# 1. 隊伍中英文對照表
 TEAM_NAME_CH = {
     'ATL': '亞特蘭大老鷹', 'BKN': '布魯克林籃網', 'BOS': '波士頓塞爾提克',
     'CHA': '夏洛特黃蜂', 'CHI': '芝加哥公牛', 'CLE': '克里夫蘭騎士',
@@ -33,7 +44,7 @@ team_map = {team['id']: team['abbreviation'] for team in all_teams}
 @st.cache_data(ttl=3600)
 def get_historical_and_train(season):
     """抓取歷史數據並計算近五場滾動平均"""
-    gamefinder = leaguegamefinder.LeagueGameFinder(season_nullable=season)
+    gamefinder = leaguegamefinder.LeagueGameFinder(season_nullable=season, timeout=60)
     df = gamefinder.get_data_frames()[0]
     df['GAME_DATE'] = pd.to_datetime(df['GAME_DATE'])
     df = df.sort_values(['TEAM_ID', 'GAME_DATE'])
@@ -52,11 +63,12 @@ def get_historical_and_train(season):
     
     return train_df, latest_form
 
-# 執行初始化 (優先嘗試 2025-26 賽季)
-try:
-    df_train, latest_form_df = get_historical_and_train('2025-26')
-except:
-    df_train, latest_form_df = get_historical_and_train('2024-25')
+# 初始化數據
+with st.spinner('正在從 NBA 官網同步數據...'):
+    try:
+        df_train, latest_form_df = get_historical_and_train('2025-26')
+    except:
+        df_train, latest_form_df = get_historical_and_train('2024-25')
 
 # 3. 訓練 XGBoost 模型
 features = ['L5_PTS', 'L5_REB', 'L5_AST', 'L5_PLUS_MINUS']
@@ -65,7 +77,7 @@ y = df_train['WIN']
 model = xgb.XGBClassifier(n_estimators=100, max_depth=5, eval_metric='logloss')
 model.fit(X, y)
 
-# 4. 側邊欄：日期選單 (最近 4 天)
+# 4. 側邊欄：日期選單
 st.sidebar.header("🔍 預測設定")
 date_map = {}
 for i in range(4):
@@ -76,7 +88,7 @@ for i in range(4):
 selected_label = st.sidebar.selectbox("選擇預測日期", list(date_map.keys()))
 target_date_obj = date_map[selected_label]
 
-# 5. 抓取指定日期賽程 (即時獲取，不快取以免選單不更新)
+# 5. 抓取指定日期賽程
 def get_games_by_date(target_date):
     formatted_date = target_date.strftime('%m/%d/%Y')
     try:
@@ -84,7 +96,6 @@ def get_games_by_date(target_date):
         df = sb.get_data_frames()[0]
         if df.empty: return []
         
-        # 使用手動映射補齊縮寫，避開 KeyError
         df['HOME_ABBR'] = df['HOME_TEAM_ID'].map(team_map)
         df['AWAY_ABBR'] = df['VISITOR_TEAM_ID'].map(team_map)
         return df[['GAME_ID', 'HOME_ABBR', 'AWAY_ABBR']].to_dict('records')
@@ -95,7 +106,7 @@ games_list = get_games_by_date(target_date_obj)
 
 # 6. 主要介面渲染
 if not games_list:
-    st.warning(f"⚠️ {selected_label} 暫無比賽資訊或資料尚未更新。")
+    st.warning(f"⚠️ {selected_label} 暫無比賽資訊。")
 else:
     # 建立中文對戰選單
     game_options = []
@@ -104,7 +115,6 @@ else:
         home_ch = TEAM_NAME_CH.get(g['HOME_ABBR'], g['HOME_ABBR'])
         game_options.append(f"{away_ch} @ {home_ch}")
     
-    # 使用 key={selected_label} 確保切換日期時，選單強制刷新
     selected_game_idx = st.selectbox(
         f"🎯 選擇比賽查看分析 ({selected_label})", 
         range(len(game_options)), 
@@ -113,46 +123,42 @@ else:
     )
     
     game = games_list[selected_game_idx]
-    h_abbr = game['HOME_ABBR']
-    a_abbr = game['AWAY_ABBR']
+    h_abbr, a_abbr = game['HOME_ABBR'], game['AWAY_ABBR']
     
-    # 取得該兩隊的近五場數據
     h_stats = latest_form_df[latest_form_df['TEAM_ABBREVIATION'] == h_abbr][features]
     a_stats = latest_form_df[latest_form_df['TEAM_ABBREVIATION'] == a_abbr][features]
     
     if not h_stats.empty and not a_stats.empty:
-        # 進行勝率預測
-        h_prob = model.predict_proba(h_stats)[0][1]
-        a_prob = model.predict_proba(a_stats)[0][1]
+        # --- 歸一化勝率邏輯 ---
+        # 取得兩隊各自贏球的原始機率 (predict_proba 會回傳 [負機率, 勝機率])
+        h_raw_win_prob = model.predict_proba(h_stats)[0][1]
+        a_raw_win_prob = model.predict_proba(a_stats)[0][1]
         
-        # 模擬傷病/輪休影響：如果最後一場出賽超過 3 天，勝率微調 (CORE_ABSENT 邏輯)
-        # 這裡簡化顯示，您可以根據需求加強
+        # 歸一化：主隊勝率 = 主隊原始勝率 / (主隊原始勝率 + 客隊原始勝率)
+        total_win_prob = h_raw_win_prob + a_raw_win_prob
+        h_final_prob = h_raw_win_prob / total_win_prob
+        a_final_prob = a_raw_win_prob / total_win_prob
         
         st.divider()
         col1, col2 = st.columns(2)
         
         with col1:
             st.markdown(f"### 🏠 {TEAM_NAME_CH.get(h_abbr, h_abbr)}")
-            st.metric("預測勝率", f"{h_prob*100:.1f}%")
-            st.write("**近 5 場平均數據：**")
-            st.write(f"🏀 得分: {h_stats['L5_PTS'].values[0]:.1f}")
-            st.write(f"📈 正負值: {h_stats['L5_PLUS_MINUS'].values[0]:.1f}")
+            st.metric("歸一化勝率", f"{h_final_prob*100:.1f}%")
+            st.write(f"🏀 近5場均分: {h_stats['L5_PTS'].values[0]:.1f}")
+            st.write(f"📈 近5場正負值: {h_stats['L5_PLUS_MINUS'].values[0]:.1f}")
             
         with col2:
             st.markdown(f"### ✈️ {TEAM_NAME_CH.get(a_abbr, a_abbr)}")
-            st.metric("預測勝率", f"{a_prob*100:.1f}%")
-            st.write("**近 5 場平均數據：**")
-            st.write(f"🏀 得分: {a_stats['L5_PTS'].values[0]:.1f}")
-            st.write(f"📈 正負值: {a_stats['L5_PLUS_MINUS'].values[0]:.1f}")
+            st.metric("歸一化勝率", f"{a_final_prob*100:.1f}%")
+            st.write(f"🏀 近5場均分: {a_stats['L5_PTS'].values[0]:.1f}")
+            st.write(f"📈 近5場正負值: {a_stats['L5_PLUS_MINUS'].values[0]:.1f}")
         
         st.divider()
-        
-        # 顯示推薦
-        winner = h_abbr if h_prob > a_prob else a_abbr
-        confidence = "高" if abs(h_prob - a_prob) > 0.15 else "中"
-        st.success(f"📌 **專家系統分析：建議投注 {TEAM_NAME_CH.get(winner, winner)}，信心指數：{confidence}**")
+        winner = h_abbr if h_final_prob > a_final_prob else a_abbr
+        st.success(f"📌 **預測結果：{TEAM_NAME_CH.get(winner, winner)} 較具贏面**")
     else:
-        st.info("該比賽球隊在本賽季的數據尚不足以進行近五場分析。")
+        st.info("該球隊數據分析中...")
 
 # 7. 戰力排行
 with st.expander("📊 查看聯盟目前近五場戰力排行榜"):
