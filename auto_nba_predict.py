@@ -1,5 +1,4 @@
 import streamlit as st
-# 修正後的端點名稱：leaguedashplayerstats
 from nba_api.stats.endpoints import leaguegamefinder, scoreboardv2, commonteamroster, leaguedashplayerstats
 from nba_api.stats.static import teams
 import pandas as pd
@@ -25,7 +24,7 @@ TEAM_NAME_CH = {
 }
 
 st.set_page_config(page_title="NBA 2026 終極預測系統", layout="centered")
-st.title("🏀 NBA 數據預測 (終極完全體)")
+st.title("🏀 NBA 數據預測 (全能球員數據版)")
 
 # 2. 基礎資料初始化
 all_teams = teams.get_teams()
@@ -39,7 +38,7 @@ def get_comprehensive_data(season):
     all_games['GAME_DATE'] = pd.to_datetime(all_games['GAME_DATE'])
     all_games = all_games.sort_values(['TEAM_ID', 'GAME_DATE'])
 
-    # 計算歷史 B2B 與 命中率數據
+    # 計算歷史 B2B 與 數據趨勢
     all_games['DAYS_REST'] = all_games.groupby('TEAM_ID')['GAME_DATE'].diff().dt.days
     all_games['B2B'] = (all_games['DAYS_REST'] == 1).astype(int)
     
@@ -55,9 +54,14 @@ def get_comprehensive_data(season):
     model = xgb.XGBClassifier(n_estimators=100, max_depth=5, eval_metric='logloss')
     model.fit(train_df[features], train_df['WIN'])
 
-    # 修正：獲取全聯盟球員統計 (改用 leaguedashplayerstats)
-    player_stats = leaguedashplayerstats.LeagueDashPlayerStats(season=season).get_data_frames()[0]
-    player_stats = player_stats[['PLAYER_ID', 'PLAYER_NAME', 'PTS', 'REB', 'AST']]
+    # --- 關鍵：計算球員場均數據 (PPG, RPG, APG, SPG) ---
+    player_raw = leaguedashplayerstats.LeagueDashPlayerStats(season=season).get_data_frames()[0]
+    player_raw['PPG'] = player_raw['PTS'] / player_raw['GP']
+    player_raw['RPG'] = player_raw['REB'] / player_raw['GP']
+    player_raw['APG'] = player_raw['AST'] / player_raw['GP']
+    player_raw['SPG'] = player_raw['STL'] / player_raw['GP']
+    
+    player_stats = player_raw[['PLAYER_ID', 'PLAYER_NAME', 'PPG', 'RPG', 'APG', 'SPG']]
 
     return model, all_games, player_stats, features
 
@@ -83,8 +87,8 @@ def get_preloaded_schedules(date_list):
         except: schedules[key_date] = []
     return schedules
 
-# 啟動同步
-with st.spinner('🚀 正在同步 2026 NBA 大數據 (H2H, B2B, 名單)...'):
+# 啟動初始化
+with st.spinner('🚀 正在分析 2026 球員與球隊數據...'):
     try:
         model, all_games_raw, all_player_stats, features_list = get_comprehensive_data('2025-26')
     except:
@@ -93,8 +97,10 @@ with st.spinner('🚀 正在同步 2026 NBA 大數據 (H2H, B2B, 名單)...'):
     recent_dates = [datetime.now() - timedelta(days=i) for i in range(4)]
     all_schedules = get_preloaded_schedules(recent_dates)
 
-# 3. 標籤式 UI (手機優化)
-st.write("### 📅 選擇比賽日期")
+# ----------------------
+# 3. 標籤式 UI
+# ----------------------
+st.write("### 📅 選擇日期")
 tab_labels = [d.strftime('%m/%d') + (" (今)" if i==0 else "") for i, d in enumerate(recent_dates)]
 tabs = st.tabs(tab_labels)
 
@@ -114,10 +120,11 @@ for i, tab in enumerate(tabs):
             h_id, a_id = sel_game['HOME_TEAM_ID'], sel_game['VISITOR_TEAM_ID']
             h_abbr, a_abbr = sel_game['HOME_ABBR'], sel_game['AWAY_ABBR']
             
-            # --- 數據準備與 B2B 動態判定 ---
+            # 準備數據
             h_form = all_games_raw[all_games_raw['TEAM_ABBREVIATION'] == h_abbr].tail(1)[features_list].copy()
             a_form = all_games_raw[all_games_raw['TEAM_ABBREVIATION'] == a_abbr].tail(1)[features_list].copy()
             
+            # B2B 判定
             h_last = all_games_raw[all_games_raw['TEAM_ABBREVIATION'] == h_abbr]['GAME_DATE'].max()
             a_last = all_games_raw[all_games_raw['TEAM_ABBREVIATION'] == a_abbr]['GAME_DATE'].max()
             h_is_b2b = 1 if (curr_date_dt.date() - h_last.date()).days == 1 else 0
@@ -127,36 +134,39 @@ for i, tab in enumerate(tabs):
 
             # 對戰紀錄 H2H
             h2h_df = all_games_raw[(all_games_raw['TEAM_ABBREVIATION'] == h_abbr) & (all_games_raw['MATCHUP'].str.contains(a_abbr))]
-            h_wins = len(h2h_df[h2h_df['WL'] == 'W'])
-            a_wins = len(h2h_df[h2h_df['WL'] == 'L'])
+            h_wins, a_wins = len(h2h_df[h2h_df['WL'] == 'W']), len(h2h_df[h2h_df['WL'] == 'L'])
 
-            # 預測
+            # 執行預測
             h_p = float(model.predict_proba(h_form)[:, 1]) + (h_wins - a_wins) * 0.03
             a_p = float(model.predict_proba(a_form)[:, 1]) + (a_wins - h_wins) * 0.03
-            total = h_p + a_p
-            h_f, a_f = (h_p/total)*100, (a_p/total)*100
+            h_final, a_final = (h_p/(h_p+a_p))*100, (a_p/(h_p+a_p))*100
 
-            # UI 顯示
             st.divider()
             st.info(f"⚔️ 賽季對戰：{h_abbr} {h_wins}勝 - {a_wins}勝 {a_abbr}")
             c1, c2 = st.columns(2)
             with c1:
-                st.metric(TEAM_NAME_CH.get(h_abbr, h_abbr), f"{h_f:.1f}%")
+                st.metric(TEAM_NAME_CH.get(h_abbr, h_abbr), f"{h_final:.1f}%")
                 if h_is_b2b: st.warning("⚠️ 背靠背 (B2B)")
             with c2:
-                st.metric(TEAM_NAME_CH.get(a_abbr, a_abbr), f"{a_f:.1f}%")
+                st.metric(TEAM_NAME_CH.get(a_abbr, a_abbr), f"{a_final:.1f}%")
                 if a_is_b2b: st.warning("⚠️ 背靠背 (B2B)")
             
-            # 最新球員名單
-            st.write("#### 👤 核心球員名單")
+            # --- 核心球員全數據名單 ---
+            st.write("#### 👤 核心球員場均數據 (PPG / RPG / APG / SPG)")
             try:
                 h_list = get_team_roster_names(h_id).head(5).merge(all_player_stats, left_on='PLAYER', right_on='PLAYER_NAME', how='left')
                 a_list = get_team_roster_names(a_id).head(5).merge(all_player_stats, left_on='PLAYER', right_on='PLAYER_NAME', how='left')
-                ch, ca = st.columns(2)
-                with ch: st.dataframe(h_list[['PLAYER', 'PTS']].rename(columns={'PLAYER':'姓名','PTS':'均分'}), hide_index=True)
-                with ca: st.dataframe(a_list[['PLAYER', 'PTS']].rename(columns={'PLAYER':'姓名','PTS':'均分'}), hide_index=True)
+                
+                # 格式化顯示名稱
+                disp_cols = {'PLAYER':'姓名', 'PPG':'得分', 'RPG':'籃板', 'APG':'助攻', 'SPG':'抄截'}
+                
+                st.caption(f"🏠 {h_abbr} 關鍵成員")
+                st.dataframe(h_list[['PLAYER', 'PPG', 'RPG', 'APG', 'SPG']].rename(columns=disp_cols), hide_index=True)
+                
+                st.caption(f"✈️ {a_abbr} 關鍵成員")
+                st.dataframe(a_list[['PLAYER', 'PPG', 'RPG', 'APG', 'SPG']].rename(columns=disp_cols), hide_index=True)
             except:
-                st.caption("球員名單同步中...")
+                st.caption("數據同步中...")
 
             st.divider()
-            st.success(f"📌 系統推薦：{TEAM_NAME_CH.get(h_abbr if h_f > a_f else a_abbr)}")
+            st.success(f"📌 系統推薦：{TEAM_NAME_CH.get(h_abbr if h_final > a_final else a_abbr)}")
