@@ -23,120 +23,138 @@ TEAM_NAME_CH = {
     'TOR': '多倫多暴龍', 'UTA': '猶他爵士', 'WAS': '華盛頓巫師'
 }
 
-st.set_page_config(page_title="NBA 2026 智慧預測", layout="centered")
-st.title("🏀 NBA 數據預測系統")
+st.set_page_config(page_title="NBA 2026 終極預測系統", layout="centered")
+st.title("🏀 NBA 數據預測 (含對戰紀錄與命中率)")
 
 # 2. 基礎資料初始化
 all_teams = teams.get_teams()
 team_map = {team['id']: team['abbreviation'] for team in all_teams}
 
 @st.cache_data(ttl=3600)
-def get_model_and_stats(season):
+def get_advanced_data(season):
+    # 獲取所有比賽
     gamefinder = leaguegamefinder.LeagueGameFinder(season_nullable=season, timeout=60)
-    df = gamefinder.get_data_frames()[0]
-    df['GAME_DATE'] = pd.to_datetime(df['GAME_DATE'])
-    df = df.sort_values(['TEAM_ID', 'GAME_DATE'])
+    all_games = gamefinder.get_data_frames()[0]
+    all_games['GAME_DATE'] = pd.to_datetime(all_games['GAME_DATE'])
+    all_games = all_games.sort_values(['TEAM_ID', 'GAME_DATE'])
+
+    # 定義特徵：得分、正負值、投籃%、三分%、罰球%、進攻籃板、失誤
+    stats_cols = ['PTS', 'PLUS_MINUS', 'FG_PCT', 'FG3_PCT', 'FT_PCT', 'OREB', 'TOV']
     
-    stats_cols = ['PTS', 'REB', 'AST', 'PLUS_MINUS']
+    # 計算近 5 場滾動平均
     for col in stats_cols:
-        df[f'L5_{col}'] = df.groupby('TEAM_ID')[col].transform(lambda x: x.shift(1).rolling(5).mean())
+        all_games[f'L5_{col}'] = all_games.groupby('TEAM_ID')[col].transform(lambda x: x.shift(1).rolling(5).mean())
     
-    train_df = df.dropna(subset=['L5_PTS']).copy()
+    # 背靠背 (B2B) 判定
+    all_games['DAYS_REST'] = all_games.groupby('TEAM_ID')['GAME_DATE'].diff().dt.days
+    all_games['B2B'] = all_games['DAYS_REST'].apply(lambda x: 1 if x == 1 else 0)
+
+    # 訓練模型
+    train_df = all_games.dropna(subset=['L5_PTS']).copy()
     train_df['WIN'] = train_df['WL'].apply(lambda x: 1 if x == 'W' else 0)
-    latest_form = df.groupby('TEAM_ABBREVIATION').tail(1)
     
-    features = ['L5_PTS', 'L5_REB', 'L5_AST', 'L5_PLUS_MINUS']
-    model = xgb.XGBClassifier(n_estimators=100, max_depth=5, eval_metric='logloss')
+    features = [f'L5_{c}' for c in stats_cols] + ['B2B']
+    model = xgb.XGBClassifier(n_estimators=150, max_depth=5, eval_metric='logloss')
     model.fit(train_df[features], train_df['WIN'])
-    
-    return model, latest_form, features
 
-@st.cache_data(ttl=3600)
-def get_all_schedules(date_list):
-    schedules = {}
-    for d_obj in date_list:
-        fmt_date = d_obj.strftime('%m/%d/%Y')
-        key_date = d_obj.strftime('%Y-%m-%d')
-        try:
-            sb = scoreboardv2.ScoreboardV2(game_date=fmt_date, timeout=20)
-            df = sb.get_data_frames()[0]
-            if not df.empty:
-                df['HOME_ABBR'] = df['HOME_TEAM_ID'].map(team_map)
-                df['AWAY_ABBR'] = df['VISITOR_TEAM_ID'].map(team_map)
-                schedules[key_date] = df[['GAME_ID', 'HOME_ABBR', 'AWAY_ABBR']].to_dict('records')
-            else:
-                schedules[key_date] = []
-        except:
-            schedules[key_date] = []
-    return schedules
+    return model, all_games, features
 
-# 啟動同步
-with st.spinner('🚀 數據同步中...'):
-    curr_season = '2025-26'
-    try:
-        model, latest_form_df, features = get_model_and_stats(curr_season)
-    except:
-        model, latest_form_df, features = get_model_and_stats('2024-25')
-    
+# 執行初始化
+with st.spinner('🚀 正在深度分析賽程與對戰歷史...'):
+    model, all_games_raw, features_list = get_advanced_data('2025-26')
     recent_dates = [datetime.now() - timedelta(days=i) for i in range(4)]
-    all_schedules = get_all_schedules(recent_dates)
 
 # ----------------------
-# 3. 標籤式 UI (取代側邊欄)
+# 3. 核心邏輯：計算對戰紀錄 (H2H)
 # ----------------------
-st.write("### 📅 選擇比賽日期")
+def get_h2h_analysis(team_a, team_b):
+    """計算本賽季 A 隊對戰 B 隊的紀錄"""
+    # 在 MATCHUP 欄位尋找包含對手縮寫的比賽
+    h2h_games = all_games_raw[
+        (all_games_raw['TEAM_ABBREVIATION'] == team_a) & 
+        (all_games_raw['MATCHUP'].str.contains(team_b))
+    ]
+    wins = len(h2h_games[h2h_games['WL'] == 'W'])
+    losses = len(h2h_games[h2h_games['WL'] == 'L'])
+    return wins, losses
+
+# ----------------------
+# 4. UI 渲染 (Tabs)
+# ----------------------
 tab_labels = [d.strftime('%m/%d') + (" (今)" if i==0 else "") for i, d in enumerate(recent_dates)]
 tabs = st.tabs(tab_labels)
 
 for i, tab in enumerate(tabs):
     with tab:
-        current_date_key = recent_dates[i].strftime('%Y-%m-%d')
-        games_list = all_schedules.get(current_date_key, [])
+        curr_date = recent_dates[i]
+        fmt_date = curr_date.strftime('%m/%d/%Y')
         
-        if not games_list:
-            st.info(f"⚠️ 該日暫無比賽資訊")
-        else:
-            game_options = [f"{TEAM_NAME_CH.get(g['AWAY_ABBR'], g['AWAY_ABBR'])} @ {TEAM_NAME_CH.get(g['HOME_ABBR'], g['HOME_ABBR'])}" for g in games_list]
+        try:
+            sb = scoreboardv2.ScoreboardV2(game_date=fmt_date, timeout=20)
+            df = sb.get_data_frames()[0]
+            if df.empty:
+                st.info("⚠️ 該日暫無比賽資訊")
+                continue
             
-            selected_idx = st.selectbox(
-                "🎯 選擇一場對決", 
-                range(len(game_options)), 
-                format_func=lambda x: game_options[x],
-                key=f"box_{current_date_key}"
-            )
+            df['HOME_ABBR'] = df['HOME_TEAM_ID'].map(team_map)
+            df['AWAY_ABBR'] = df['VISITOR_TEAM_ID'].map(team_map)
+            games = df.to_dict('records')
             
-            game = games_list[selected_idx]
-            h_abbr, a_abbr = game['HOME_ABBR'], game['AWAY_ABBR']
+            options = [f"{TEAM_NAME_CH.get(g['AWAY_ABBR'], g['AWAY_ABBR'])} @ {TEAM_NAME_CH.get(g['HOME_ABBR'], g['HOME_ABBR'])}" for g in games]
+            idx = st.selectbox("🎯 選擇對決", range(len(options)), format_func=lambda x: options[x], key=f"tab_{i}")
             
-            h_stats = latest_form_df[latest_form_df['TEAM_ABBREVIATION'] == h_abbr][features]
-            a_stats = latest_form_df[latest_form_df['TEAM_ABBREVIATION'] == a_abbr][features]
+            sel_game = games[idx]
+            h_abbr, a_abbr = sel_game['HOME_ABBR'], sel_game['AWAY_ABBR']
             
-            if not h_stats.empty and not a_stats.empty:
-                # 預測並處理數值 (使用 float() 避免 TypeError)
-                h_p = float(model.predict_proba(h_stats)[0][1])
-                a_p = float(model.predict_proba(a_stats)[0][1])
-                
-                total = h_p + a_p
-                h_final = (h_p / total) * 100
-                a_final = (a_p / total) * 100
-                
-                st.divider()
-                col1, col2 = st.columns(2)
-                with col1:
-                    st.metric(f"🏠 {TEAM_NAME_CH.get(h_abbr, h_abbr)}", f"{h_final:.1f}%")
-                    st.caption(f"近5得分: {float(h_stats['L5_PTS'].iloc[0]):.1f}")
-                with col2:
-                    st.metric(f"✈️ {TEAM_NAME_CH.get(a_abbr, a_abbr)}", f"{a_final:.1f}%")
-                    st.caption(f"近5得分: {float(a_stats['L5_PTS'].iloc[0]):.1f}")
-                
-                st.divider()
-                rec = h_abbr if h_final > a_final else a_abbr
-                st.success(f"📌 **預測結果：{TEAM_NAME_CH.get(rec, rec)} 較具贏面**")
-            else:
-                st.warning("數據更新中，請稍後")
+            # --- 數據準備 ---
+            h_form = all_games_raw[all_games_raw['TEAM_ABBREVIATION'] == h_abbr].tail(1)[features_list].copy()
+            a_form = all_games_raw[all_games_raw['TEAM_ABBREVIATION'] == a_abbr].tail(1)[features_list].copy()
+            
+            # 更新 B2B 狀態 (今日是否為 B2B)
+            h_last_date = all_games_raw[all_games_raw['TEAM_ABBREVIATION'] == h_abbr]['GAME_DATE'].max()
+            a_last_date = all_games_raw[all_games_raw['TEAM_ABBREVIATION'] == a_abbr]['GAME_DATE'].max()
+            h_form['B2B'] = 1 if (curr_date - h_last_date).days == 1 else 0
+            a_form['B2B'] = 1 if (curr_date - a_last_date).days == 1 else 0
+            
+            # 對戰紀錄
+            h_wins, h_losses = get_h2h_analysis(h_abbr, a_abbr)
+            
+            # --- 勝率預測 ---
+            h_p = float(model.predict_proba(h_form)[:, 1])
+            a_p = float(model.predict_proba(a_form)[:, 1])
+            
+            # H2H 微調：每多贏一場對戰，勝率權重增加 3%
+            h_p += (h_wins - h_losses) * 0.03
+            
+            h_final = (h_p / (h_p + a_p)) * 100
+            a_final = (a_p / (h_p + a_p)) * 100
 
-# 4. 戰力排行
-with st.expander("📊 查看全聯盟近五場戰力排行榜"):
-    rank = latest_form_df.copy()
-    rank['隊伍'] = rank['TEAM_ABBREVIATION'].map(TEAM_NAME_CH)
-    st.dataframe(rank.sort_values('L5_PLUS_MINUS', ascending=False)[['隊伍', 'L5_PTS', 'L5_PLUS_MINUS']], hide_index=True)
+            # --- UI 顯示 ---
+            st.divider()
+            # 顯示 H2H 區塊
+            st.info(f"⚔️ **本賽季對戰紀錄：{TEAM_NAME_CH[h_abbr]} {h_wins}勝 - {h_losses}勝 {TEAM_NAME_CH[a_abbr]}**")
+            
+            c1, c2 = st.columns(2)
+            with c1:
+                st.metric(TEAM_NAME_CH[h_abbr], f"{h_final:.1f}%")
+                st.caption(f"🎯 命中率: {h_form['L5_FG_PCT'].values[0]*100:.1f}%")
+                if h_form['B2B'].values[0]: st.warning("⚠️ 背靠背 (B2B)")
+            with c2:
+                st.metric(TEAM_NAME_CH[a_abbr], f"{a_final:.1f}%")
+                st.caption(f"🎯 命中率: {a_form['L5_FG_PCT'].values[0]*100:.1f}%")
+                if a_form['B2B'].values[0]: st.warning("⚠️ 背靠背 (B2B)")
+            
+            st.divider()
+            # 數據對照表
+            compare_df = pd.DataFrame({
+                '指標 (近5場)': ['場均得分', '場均正負', '三分命中率', '場均失誤'],
+                TEAM_NAME_CH[h_abbr]: [f"{h_form['L5_PTS'].values[0]:.1f}", f"{h_form['L5_PLUS_MINUS'].values[0]:+.1f}", f"{h_form['L5_FG3_PCT'].values[0]*100:.1f}%", f"{h_form['L5_TOV'].values[0]:.1f}"],
+                TEAM_NAME_CH[a_abbr]: [f"{a_form['L5_PTS'].values[0]:.1f}", f"{a_form['L5_PLUS_MINUS'].values[0]:+.1f}", f"{a_form['L5_FG3_PCT'].values[0]*100:.1f}%", f"{a_form['L5_TOV'].values[0]:.1f}"]
+            })
+            st.table(compare_df)
+            
+            winner = h_abbr if h_final > a_final else a_abbr
+            st.success(f"📌 **系統推薦：{TEAM_NAME_CH[winner]}**")
+
+        except Exception as e:
+            st.write("正在獲取最新對戰數據...")
