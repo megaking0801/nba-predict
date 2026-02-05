@@ -151,22 +151,38 @@ for i, tab in enumerate(tabs):
                 st.metric(TEAM_NAME_CH.get(a_abbr, a_abbr), f"{a_final:.1f}%")
                 if a_is_b2b: st.warning("⚠️ 背靠背 (B2B)")
             
-            # --- 核心球員全數據名單 ---
-            st.write("#### 👤 核心球員場均數據 (PPG / RPG / APG / SPG)")
+           # 最新球員名單 (修改後的排序邏輯)
+            st.write("#### 👤 核心球員名單 (依場均得分排序)")
             try:
-                h_list = get_team_roster_names(h_id).head(5).merge(all_player_stats, left_on='PLAYER', right_on='PLAYER_NAME', how='left')
-                a_list = get_team_roster_names(a_id).head(5).merge(all_player_stats, left_on='PLAYER', right_on='PLAYER_NAME', how='left')
+                # 1. 獲取完整名單
+                h_roster_full = get_team_roster_names(h_id)
+                a_roster_full = get_team_roster_names(a_id)
                 
-                # 格式化顯示名稱
-                disp_cols = {'PLAYER':'姓名', 'PPG':'得分', 'RPG':'籃板', 'APG':'助攻', 'SPG':'抄截'}
+                # 2. 合併數據 (先合併，後排序)
+                h_list = h_roster_full.merge(all_player_stats, left_on='PLAYER', right_on='PLAYER_NAME', how='left')
+                a_list = a_roster_full.merge(all_player_stats, left_on='PLAYER', right_on='PLAYER_NAME', how='left')
                 
-                st.caption(f"🏠 {h_abbr} 關鍵成員")
-                st.dataframe(h_list[['PLAYER', 'PPG', 'RPG', 'APG', 'SPG']].rename(columns=disp_cols), hide_index=True)
+                # 3. 根據得分 (PTS) 降序排序，並取前 5 名
+                # 使用 fillna(0) 避免沒有數據的球員排在前面
+                h_list = h_list.sort_values(by='PTS', ascending=False).head(5)
+                a_list = a_list.sort_values(by='PTS', ascending=False).head(5)
                 
-                st.caption(f"✈️ {a_abbr} 關鍵成員")
-                st.dataframe(a_list[['PLAYER', 'PPG', 'RPG', 'APG', 'SPG']].rename(columns=disp_cols), hide_index=True)
-            except:
-                st.caption("數據同步中...")
+                ch, ca = st.columns(2)
+                with ch: 
+                    st.dataframe(
+                        h_list[['PLAYER', 'PTS']].rename(columns={'PLAYER':'姓名','PTS':'均分'}), 
+                        hide_index=True,
+                        use_container_width=True
+                    )
+                with ca: 
+                    st.dataframe(
+                        a_list[['PLAYER', 'PTS']].rename(columns={'PLAYER':'姓名','PTS':'均分'}), 
+                        hide_index=True,
+                        use_container_width=True
+                    )
+            except Exception as e:
+                st.caption(f"球員名單排序中發生錯誤... {e}")
 
             st.divider()
             st.success(f"📌 系統推薦：{TEAM_NAME_CH.get(h_abbr if h_final > a_final else a_abbr)}")
+
