@@ -23,47 +23,41 @@ TEAM_NAME_CH = {
     'TOR': '多倫多暴龍', 'UTA': '猶他爵士', 'WAS': '華盛頓巫師'
 }
 
-st.set_page_config(page_title="NBA 2026 智慧預測系統", layout="centered")
-st.title("🏀 NBA 數據預測系統 (一小時自動更新版)")
+st.set_page_config(page_title="NBA 2026 智慧預測", layout="centered")
+st.title("🏀 NBA 數據預測分析系統")
 
-# 2. 初始化隊伍映射
+# 2. 初始化映射
 all_teams = teams.get_teams()
 team_map = {team['id']: team['abbreviation'] for team in all_teams}
 
-# --- 核心數據抓取與模型訓練 (TTL = 3600) ---
+# --- 核心數據與模型 (TTL = 3600) ---
 @st.cache_data(ttl=3600)
 def get_model_and_stats(season):
-    """抓取歷史數據並訓練模型"""
     gamefinder = leaguegamefinder.LeagueGameFinder(season_nullable=season, timeout=60)
-    df = gamefinder.get_data_frames()[0]
+    df = gamefinder.get_data_frames()
     df['GAME_DATE'] = pd.to_datetime(df['GAME_DATE'])
     df = df.sort_values(['TEAM_ID', 'GAME_DATE'])
-    
     stats_cols = ['PTS', 'REB', 'AST', 'PLUS_MINUS']
     for col in stats_cols:
         df[f'L5_{col}'] = df.groupby('TEAM_ID')[col].transform(lambda x: x.shift(1).rolling(5).mean())
-    
     train_df = df.dropna(subset=['L5_PTS']).copy()
     train_df['WIN'] = train_df['WL'].apply(lambda x: 1 if x == 'W' else 0)
     latest_form = df.groupby('TEAM_ABBREVIATION').tail(1)
-    
     features = ['L5_PTS', 'L5_REB', 'L5_AST', 'L5_PLUS_MINUS']
     model = xgb.XGBClassifier(n_estimators=100, max_depth=5, eval_metric='logloss')
     model.fit(train_df[features], train_df['WIN'])
-    
     return model, latest_form, features
 
-# --- 預載入多日賽程 (TTL = 3600) ---
+# --- 預載入賽程 (TTL = 3600) ---
 @st.cache_data(ttl=3600)
 def get_all_schedules(date_list):
-    """一次性抓取多日賽程"""
     schedules = {}
     for d_obj in date_list:
         fmt_date = d_obj.strftime('%m/%d/%Y')
         key_date = d_obj.strftime('%Y-%m-%d')
         try:
             sb = scoreboardv2.ScoreboardV2(game_date=fmt_date, timeout=20)
-            df = sb.get_data_frames()[0]
+            df = sb.get_data_frames()
             if not df.empty:
                 df['HOME_ABBR'] = df['HOME_TEAM_ID'].map(team_map)
                 df['AWAY_ABBR'] = df['VISITOR_TEAM_ID'].map(team_map)
@@ -74,75 +68,70 @@ def get_all_schedules(date_list):
             schedules[key_date] = []
     return schedules
 
-# 執行初始化
-with st.spinner('🚀 正在同步最新數據...'):
+# 啟動同步
+with st.spinner('🚀 數據同步中...'):
     try:
         model, latest_form_df, features = get_model_and_stats('2025-26')
     except:
         model, latest_form_df, features = get_model_and_stats('2024-25')
-    
     recent_dates = [datetime.now() - timedelta(days=i) for i in range(4)]
     all_schedules = get_all_schedules(recent_dates)
 
-# 3. 側邊欄日期選單
-st.sidebar.header("🔍 預測設定")
-date_labels = [d.strftime('%Y-%m-%d') + (" (今日)" if i == 0 else "") for i, d in enumerate(recent_dates)]
-selected_label = st.sidebar.selectbox("選擇預測日期", date_labels)
-selected_date_key = selected_label.split(" ")[0]
+# ----------------------
+# 3. 標籤式 UI (取代側邊欄)
+# ----------------------
+st.write("### 📅 選擇比賽日期")
+tab_labels = [d.strftime('%m/%d') + (" (今)" if i==0 else "") for i, d in enumerate(recent_dates)]
+tabs = st.tabs(tab_labels)
 
-# 4. 顯示比賽列表
-games_list = all_schedules.get(selected_date_key, [])
-
-if not games_list:
-    st.warning(f"⚠️ {selected_date_key} 暫無比賽資訊。")
-else:
-    game_options = []
-    for g in games_list:
-        away_ch = TEAM_NAME_CH.get(g['AWAY_ABBR'], g['AWAY_ABBR'])
-        home_ch = TEAM_NAME_CH.get(g['HOME_ABBR'], g['HOME_ABBR'])
-        game_options.append(f"{away_ch} @ {home_ch}")
-    
-    selected_game_idx = st.selectbox(
-        f"🎯 選擇比賽 ({selected_date_key})", 
-        range(len(game_options)), 
-        format_func=lambda x: game_options[x],
-        key=f"select_{selected_date_key}" 
-    )
-    
-    game = games_list[selected_game_idx]
-    h_abbr, a_abbr = game['HOME_ABBR'], game['AWAY_ABBR']
-    
-    h_stats = latest_form_df[latest_form_df['TEAM_ABBREVIATION'] == h_abbr][features]
-    a_stats = latest_form_df[latest_form_df['TEAM_ABBREVIATION'] == a_abbr][features]
-    
-    if not h_stats.empty and not a_stats.empty:
-        # 歸一化勝率
-        h_p_raw = model.predict_proba(h_stats)[0][1]
-        a_p_raw = model.predict_proba(a_stats)[0][1]
+for i, tab in enumerate(tabs):
+    with tab:
+        current_date_key = recent_dates[i].strftime('%Y-%m-%d')
+        games_list = all_schedules.get(current_date_key, [])
         
-        sum_p = h_p_raw + a_p_raw
-        h_final = (h_p_raw / sum_p) * 100
-        a_final = (a_p_raw / sum_p) * 100
-        
-        st.divider()
-        c1, c2 = st.columns(2)
-        with c1:
-            st.subheader(f"🏠 {TEAM_NAME_CH.get(h_abbr, h_abbr)}")
-            st.title(f"{h_final:.1f}%")
-            st.caption(f"近5場均分: {h_stats['L5_PTS'].values[0]:.1f}")
-        with c2:
-            st.subheader(f"✈️ {TEAM_NAME_CH.get(a_abbr, a_abbr)}")
-            st.title(f"{a_final:.1f}%")
-            st.caption(f"近5場均分: {a_stats['L5_PTS'].values[0]:.1f}")
+        if not games_list:
+            st.info(f"⚠️ 該日暫無比賽資訊")
+        else:
+            # 比賽選單
+            game_options = [f"{TEAM_NAME_CH.get(g['AWAY_ABBR'], g['AWAY_ABBR'])} @ {TEAM_NAME_CH.get(g['HOME_ABBR'], g['HOME_ABBR'])}" for g in games_list]
             
-        st.divider()
-        winner = h_abbr if h_final > a_final else a_abbr
-        st.success(f"📌 **預測結果：{TEAM_NAME_CH.get(winner, winner)} 較具贏面**")
-    else:
-        st.info("該球隊數據正在計算中...")
+            selected_game_idx = st.selectbox(
+                "🎯 選擇一場對決", 
+                range(len(game_options)), 
+                format_func=lambda x: game_options[x],
+                key=f"select_{current_date_key}"
+            )
+            
+            game = games_list[selected_game_idx]
+            h_abbr, a_abbr = game['HOME_ABBR'], game['AWAY_ABBR']
+            
+            # 獲取數據與預測
+            h_stats = latest_form_df[latest_form_df['TEAM_ABBREVIATION'] == h_abbr][features]
+            a_stats = latest_form_df[latest_form_df['TEAM_ABBREVIATION'] == a_abbr][features]
+            
+            if not h_stats.empty and not a_stats.empty:
+                h_raw = model.predict_proba(h_stats)
+                a_raw = model.predict_proba(a_stats)
+                total = h_raw + a_raw
+                h_final, a_final = (h_raw/total)*100, (a_raw/total)*100
+                
+                st.divider()
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.metric(f"🏠 {TEAM_NAME_CH.get(h_abbr, h_abbr)}", f"{h_final:.1f}%")
+                    st.caption(f"近5均分: {h_stats['L5_PTS'].values:.1f}")
+                with col2:
+                    st.metric(f"✈️ {TEAM_NAME_CH.get(a_abbr, a_abbr)}", f"{a_final:.1f}%")
+                    st.caption(f"近5均分: {a_stats['L5_PTS'].values:.1f}")
+                
+                st.divider()
+                rec = h_abbr if h_final > a_final else a_abbr
+                st.success(f"📌 **預測結果：{TEAM_NAME_CH.get(rec, rec)} 較具贏面**")
+            else:
+                st.warning("該場比賽暫無足夠數據進行預測")
 
-# 5. 排行榜
-with st.expander("📊 查看聯盟近五場戰力榜"):
+# 4. 戰力排行 (放在最下方收納)
+with st.expander("📊 查看全聯盟近五場戰力排行榜"):
     rank = latest_form_df.copy()
     rank['隊伍'] = rank['TEAM_ABBREVIATION'].map(TEAM_NAME_CH)
     st.dataframe(rank.sort_values('L5_PLUS_MINUS', ascending=False)[['隊伍', 'L5_PTS', 'L5_PLUS_MINUS']], hide_index=True)
