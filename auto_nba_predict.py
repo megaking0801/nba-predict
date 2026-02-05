@@ -1,4 +1,5 @@
 import streamlit as st
+# 修正後的 Import，直接調用端點，避開 library.http
 from nba_api.stats.endpoints import leaguegamefinder, scoreboardv2, commonteamroster, leagueplayerstats
 from nba_api.stats.static import teams
 import pandas as pd
@@ -174,3 +175,4 @@ for i, tab in enumerate(tabs):
             })
             st.table(compare_df)
             st.success(f"📌 系統推薦：{TEAM_NAME_CH.get(h_abbr if h_final > a_final else a_abbr)}")
+
