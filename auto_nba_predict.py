@@ -14,7 +14,9 @@ tw_tz = pytz.timezone('Asia/Taipei')
 @st.cache_resource
 def get_ai_client():
     if "GEMINI_API_KEY" in st.secrets:
-        return genai.Client(api_key=st.secrets["GEMINI_API_KEY"])
+        try:
+            return genai.Client(api_key=st.secrets["GEMINI_API_KEY"])
+        except: return None
     return None
 
 client = get_ai_client()
@@ -32,19 +34,17 @@ TEAM_NAME_CH = {
     'TOR': '多倫多暴龍', 'UTA': '猶他爵士', 'WAS': '華盛頓巫師'
 }
 
-st.set_page_config(page_title="NBA AI v7.5", layout="wide")
+st.set_page_config(page_title="NBA AI v7.6", layout="wide")
 st.title("🏀 NBA 數據預測專家")
 
 # --- 2. 獲取基礎模型數據 ---
 @st.cache_data(ttl=3600)
 def prepare_model():
-    # 抓取賽季歷史數據
     gf = leaguegamefinder.LeagueGameFinder(season_nullable='2025-26').get_data_frames()[0]
     gf['GAME_DATE'] = pd.to_datetime(gf['GAME_DATE'])
     gf['IS_HOME'] = gf['MATCHUP'].apply(lambda x: 1 if 'vs.' in x else 0)
     gf['WIN_BIN'] = gf['WL'].apply(lambda x: 1 if x == 'W' else 0)
     
-    # 計算特徵 (近況)
     gf = gf.sort_values(['TEAM_ID', 'GAME_DATE'])
     gf['L10_WIN_RATE'] = gf.groupby('TEAM_ID')['WIN_BIN'].transform(lambda x: x.shift(1).rolling(10, min_periods=1).mean())
     gf['L5_PTS'] = gf.groupby('TEAM_ID')['PTS'].transform(lambda x: x.shift(1).rolling(5, min_periods=1).mean())
@@ -52,7 +52,7 @@ def prepare_model():
     gf['B2B'] = (gf.groupby('TEAM_ID')['GAME_DATE'].diff().dt.days == 1).astype(int)
     
     feats = ['L5_PTS', 'L5_PLUS_MINUS', 'B2B', 'IS_HOME', 'L10_WIN_RATE']
-    train = gf.dropna(subset=feats)
+    train = gf.fillna(0)
     
     clf = xgb.XGBClassifier().fit(train[feats], train['WIN_BIN'])
     reg = xgb.XGBRegressor().fit(train[feats], train['PLUS_MINUS'])
@@ -61,14 +61,20 @@ def prepare_model():
 
 clf, reg, gf, feats = prepare_model()
 
-# --- 3. 抓取今日賽程 (正常 API 調用) ---
+# --- 3. 抓取今日賽程 (修正 KeyError 問題) ---
 today_str = datetime.now(tw_tz).strftime('%Y-%m-%d')
-sb = scoreboardv3.ScoreboardV3(game_date=today_str).get_data_frames()[0]
+try:
+    sb_raw = scoreboardv3.ScoreboardV3(game_date=today_str).get_data_frames()[0]
+except:
+    sb_raw = pd.DataFrame()
 
-if sb.empty:
-    st.info(f"📅 {today_str} 目前無比賽數據。")
+if sb_raw.empty:
+    st.info(f"📅 {today_str} 目前無比賽數據或 API 請求過於頻繁。")
 else:
-    # 建立 ID 對應表
+    # 核心修正：將欄位名稱統一轉換為小寫，避免 KeyError
+    sb = sb_raw.copy()
+    sb.columns = [c.lower() for c in sb.columns]
+    
     all_teams = teams.get_teams()
     id_to_abbr = {t['id']: t['abbreviation'] for t in all_teams}
     
@@ -76,18 +82,18 @@ else:
     game_results = {}
 
     for _, row in sb.iterrows():
-        h_id, a_id = row['homeTeamId'], row['awayTeamId']
+        # 現在這裡不論 API 給 homeTeamId 還是 HomeTeamId 都能抓到
+        h_id = row.get('hometeamid')
+        a_id = row.get('awayteamid')
+        
         h_abbr, a_abbr = id_to_abbr.get(h_id), id_to_abbr.get(a_id)
         
         if h_abbr and a_abbr:
-            # 取得兩隊最新數據
             h_data = gf[gf['TEAM_ABBREVIATION'] == h_abbr].tail(1)
             a_data = gf[gf['TEAM_ABBREVIATION'] == a_abbr].tail(1)
             
             if not h_data.empty and not a_data.empty:
-                # 預測勝率
                 prob = clf.predict_proba(h_data[feats])[0][1] * 100
-                # 預測分差 (保持每次更動：整數)
                 diff = round(abs(float(reg.predict(h_data[feats])[0]) - float(reg.predict(a_data[feats])[0])))
                 
                 label = f"{TEAM_NAME_CH.get(a_abbr, a_abbr)} @ {TEAM_NAME_CH.get(h_abbr, h_abbr)}"
@@ -105,17 +111,16 @@ else:
         selected = st.selectbox("🎯 選擇場次", game_options)
         res = game_results[selected]
         
-        # 顯示預測卡片
         col1, col2, col3 = st.columns(3)
         col1.metric(res['h_name'], f"{res['h_prob']:.1f}%")
         col2.metric(res['a_name'], f"{res['a_prob']:.1f}%")
         col3.metric("預測贏家", res['winner'], f"領先 {res['diff']} 分")
         
-        # AI 分析 (保持每次更動：新 SDK)
         if client:
             if st.button("🪄 生成 AI 專家分析"):
-                prompt = f"分析 NBA 比賽：{selected}，預測贏家 {res['winner']}，分差 {res['diff']}。請寫 180 字分析。"
-                response = client.models.generate_content(model="gemini-2.0-flash", contents=prompt)
-                st.info(response.text)
+                with st.spinner("AI 分析中..."):
+                    prompt = f"分析 NBA 比賽：{selected}，預測贏家 {res['winner']}，分差 {res['diff']}。請寫 180 字分析。"
+                    response = client.models.generate_content(model="gemini-2.0-flash", contents=prompt)
+                    st.info(response.text)
     else:
-        st.warning("抓取到賽程，但模型數據對齊失敗。請稍後重試。")
+        st.warning("已獲取賽程，但數據庫中找不到對應球隊。")
