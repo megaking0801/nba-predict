@@ -13,6 +13,7 @@ from datetime import datetime, timedelta
 # --- 1. 基本設定 ---
 warnings.filterwarnings('ignore')
 tw_tz = pytz.timezone('Asia/Taipei')
+us_east_tz = pytz.timezone('US/Eastern') # NBA 官方時區
 
 TEAM_NAME_CH = {
     'ATL': '亞特蘭大老鷹', 'BKN': '布魯克林籃網', 'BOS': '波士頓塞爾提克',
@@ -28,7 +29,7 @@ TEAM_NAME_CH = {
 }
 
 st.set_page_config(page_title="NBA 數據專家 v6.9", layout="wide")
-st.title("🏀 NBA 數據專家 v6.9 (單位補全 & 戰術數據修復)")
+st.title("🏀 NBA 數據專家 v6.9 (時差修正 & 單位補全)")
 
 # --- 2. 穩定抓取函數 ---
 def fetch_safe_df(endpoint_class, **kwargs):
@@ -46,18 +47,13 @@ def fetch_safe_df(endpoint_class, **kwargs):
 def load_all_data_v69():
     nba_ids = [t['id'] for t in teams.get_teams()]
     S = '2025-26'
-    ST = 'Regular Season' # 關鍵參數
+    ST = 'Regular Season' 
     
-    # [A] 團隊基礎 (PerGame)
     df_base = fetch_safe_df(leaguedashteamstats.LeagueDashTeamStats, season=S, per_mode_detailed='PerGame')
     df_adv = fetch_safe_df(leaguedashteamstats.LeagueDashTeamStats, season=S, measure_type_detailed_defense='Advanced')
-    
-    # [B] 體能積極度 (PerGame)
     df_hustle = fetch_safe_df(leaguehustlestatsteam.LeagueHustleStatsTeam, season=S, per_mode_time='PerGame')
     df_track_spd = fetch_safe_df(leaguedashptstats.LeagueDashPtStats, season=S, pt_measure_type='SpeedDistance', per_mode_simple='PerGame')
     df_track_pass = fetch_safe_df(leaguedashptstats.LeagueDashPtStats, season=S, pt_measure_type='Passing', per_mode_simple='PerGame')
-    
-    # [C] 戰術與護框 (修正 0 值)
     df_trans = fetch_safe_df(synergyplaytypes.SynergyPlayTypes, play_type_nullable='Transition', player_or_team_abbreviation='T', season=S, season_type_all_star=ST)
     df_iso = fetch_safe_df(synergyplaytypes.SynergyPlayTypes, play_type_nullable='Isolation', player_or_team_abbreviation='T', season=S, season_type_all_star=ST)
     df_rim = fetch_safe_df(leaguedashptdefend.LeagueDashPtDefend, season=S, defense_category='Less Than 6 Ft', season_type_all_star=ST)
@@ -75,7 +71,6 @@ def load_all_data_v69():
         'rim': to_map(df_rim, ['D_FG_PCT'])
     }
 
-    # [D] 模型融合分析
     gf_raw = fetch_safe_df(leaguegamefinder.LeagueGameFinder, season_nullable=S)
     gf = gf_raw[gf_raw['TEAM_ID'].isin(nba_ids)].copy()
     gf['GAME_DATE'] = pd.to_datetime(gf['GAME_DATE'])
@@ -86,7 +81,6 @@ def load_all_data_v69():
     
     def get_v(tid, m, k, default=0): return maps[m].get(int(tid), {}).get(k, default)
 
-    # 注入全維度特徵：基礎+進階+體能+戰術
     gf['T_ORTG'] = gf['TEAM_ID'].apply(lambda x: get_v(x, 'adv', 'OFF_RATING', 110))
     gf['T_DRTG'] = gf['TEAM_ID'].apply(lambda x: get_v(x, 'adv', 'DEF_RATING', 110))
     gf['T_DEFL'] = gf['TEAM_ID'].apply(lambda x: get_v(x, 'hustle', 'DEFLECTIONS', 15))
@@ -98,7 +92,6 @@ def load_all_data_v69():
     clf = xgb.XGBClassifier().fit(train_df[feats], train_df['WIN_BIN'])
     reg = xgb.XGBRegressor().fit(train_df[feats], train_df['PLUS_MINUS'])
     
-    # 球員數據 (場均)
     ps_raw = fetch_safe_df(leaguedashplayerstats.LeagueDashPlayerStats, season=S, per_mode_detailed='PerGame')
     ps_adv = fetch_safe_df(leaguedashplayerstats.LeagueDashPlayerStats, season=S, per_mode_detailed='PerGame', measure_type_detailed_defense='Advanced')
     ps_full = pd.merge(ps_raw[['PLAYER_ID', 'TEAM_ID', 'PLAYER_NAME', 'PTS', 'REB', 'AST']], ps_adv[['PLAYER_ID', 'TS_PCT', 'PIE']], on='PLAYER_ID')
@@ -107,14 +100,23 @@ def load_all_data_v69():
 
 clf, reg, gf, ps_full, feats, maps, last_update = load_all_data_v69()
 
-# --- 3. 介面顯示 ---
-dates = [datetime.now(tw_tz) - timedelta(days=i) for i in range(4)]
-tabs = st.tabs([d.strftime('%m/%d') for d in dates])
+# --- 3. 介面顯示 (時差修正邏輯) ---
+# 取得 NBA 當前日期（美國東部時間）
+nba_now = datetime.now(us_east_tz)
+# 生成分頁日期：明日預告, 今日比賽, 昨日戰果, 前日戰果
+dates_nba = [nba_now + timedelta(days=1), nba_now, nba_now - timedelta(days=1), nba_now - timedelta(days=2)]
+# Tab 標籤轉換回台灣日期顯示，方便閱讀
+tab_titles = [d.astimezone(tw_tz).strftime('%m/%d') for d in dates_nba]
+tabs = st.tabs(tab_titles)
 
 for i, tab in enumerate(tabs):
     with tab:
-        sb = fetch_safe_df(scoreboardv2.ScoreboardV2, game_date=dates[i].strftime('%m/%d/%Y'))
-        if sb.empty: st.info("📅 今日無賽程")
+        # 查詢 API 使用美國日期格式
+        search_date = dates_nba[i].strftime('%m/%d/%Y')
+        sb = fetch_safe_df(scoreboardv2.ScoreboardV2, game_date=search_date)
+        
+        if sb.empty: 
+            st.info(f"📅 美國時間 {dates_nba[i].strftime('%Y-%m-%d')} 暫無賽程數據")
         else:
             id_to_abbr = {t['id']: t['abbreviation'] for t in teams.get_teams()}
             games = {}
@@ -142,7 +144,6 @@ for i, tab in enumerate(tabs):
 
                 def get_m(m, tid, k): return maps[m].get(int(tid), {}).get(k, 0)
 
-                # 表格 1：基礎數據 (補上單位)
                 st.subheader("📊 1. 團隊場均基礎數據")
                 st.table(pd.DataFrame({
                     "指標項目": ["場均得分", "場均籃板", "場均助攻", "團隊命中率", "進攻效率 (OffRtg)", "防守效率 (DefRtg)", "比賽節奏 (Pace)"],
@@ -150,7 +151,6 @@ for i, tab in enumerate(tabs):
                     res['a_name']: [f"{get_m('base', res['a_id'], 'PTS'):.1f} 分", f"{get_m('base', res['a_id'], 'REB'):.1f} 個", f"{get_m('base', res['a_id'], 'AST'):.1f} 次", f"{get_m('base', res['a_id'], 'FG_PCT'):.1%}", f"{get_m('adv', res['a_id'], 'OFF_RATING')} pts/100", f"{get_m('adv', res['a_id'], 'DEF_RATING')} pts/100", f"{get_m('adv', res['a_id'], 'PACE')} 次"]
                 }))
 
-                # 表格 2：體能追蹤 (補上單位)
                 st.subheader("🏃‍♂️ 2. 體能與積極度追蹤 (場均)")
                 st.table(pd.DataFrame({
                     "追蹤指標": ["撥球破壞 (Deflections)", "干擾投籃 (Contested)", "場均跑動里程", "平均移動速度", "場均傳球次數"],
@@ -158,7 +158,6 @@ for i, tab in enumerate(tabs):
                     res['a_name']: [f"{get_m('hustle', res['a_id'], 'DEFLECTIONS'):.1f} 次", f"{get_m('hustle', res['a_id'], 'CONTESTED_SHOTS'):.1f} 次", f"{get_m('spd', res['a_id'], 'DIST_MILES'):.2f} mi", f"{get_m('spd', res['a_id'], 'AVG_SPEED'):.2f} mph", f"{get_m('pass', res['a_id'], 'PASSES_MADE'):.1f} 次"]
                 }))
 
-                # 表格 3：戰術與護框 (修復修復數據)
                 st.subheader("⚔️ 3. 戰術類別與護框效率")
                 st.table(pd.DataFrame({
                     "戰術/防守指標": ["轉換進攻效率 (PPP)", "單打得分效率 (PPP)", "籃框護框命中率 (D-FG%)"],
@@ -166,7 +165,6 @@ for i, tab in enumerate(tabs):
                     res['a_name']: [f"{get_m('trans', res['a_id'], 'PPP'):.2f}", f"{get_m('iso', res['a_id'], 'PPP'):.2f}", f"{get_m('rim', res['a_id'], 'D_FG_PCT'):.1%}"]
                 }))
 
-                # 4. 核心球員數據 (場均)
                 st.subheader("🚀 4. 核心球員傳統數據 (Top 6)")
                 for tid, name in [(res['h_id'], f"🏠 {res['h_name']}"), (res['a_id'], f"✈️ {res['a_name']}")]:
                     st.write(f"**{name}**")
