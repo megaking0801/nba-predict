@@ -40,7 +40,7 @@ TEAM_NAME_CH = {
     'TOR': '多倫多暴龍', 'UTA': '猶他爵士', 'WAS': '華盛頓巫師'
 }
 
-st.set_page_config(page_title="NBA AI 數據深度分析 v5.6", layout="wide")
+st.set_page_config(page_title="NBA AI 全時分析 v5.8", layout="wide")
 st.title("🏀 NBA 終極智慧預測系統")
 
 # --- 2. 側邊欄 ---
@@ -50,61 +50,46 @@ with st.sidebar:
         st.success("Gemini API: 已連線")
     else:
         st.error("Gemini API: 未設定")
-    st.info(f"v5.6: Data-Driven deep Analysis")
+    st.info(f"v5.8: Real-time AI Intelligence")
 
 # --- 3. 核心輔助函數 ---
 def get_snapshot_path(date_key):
     return f"nba_snapshot_{date_key}.json"
 
+@st.cache_data(ttl=600)
 def generate_ai_all_reports(all_games_info):
     """
-    一次將所有場次數據丟給 AI，並強迫其分析具體數值且字數達標
+    即時生成的 AI 報告，透過 Streamlit Cache 減少重複呼叫
     """
     if not AI_READY or not all_games_info:
         return {}
 
-    # 構建更詳細的數據摘要
     data_payload = ""
     for g_id, d in all_games_info.items():
-        data_payload += f"【場次 ID:{g_id}】{d['away']} (客) @ {d['home']} (主)\n"
-        data_payload += f"- 數據指標: 客隊勝率 {d['a_wr']:.0f}%, 主隊勝率 {d['h_wr']:.0f}%\n"
-        data_payload += f"- 火力表現: 客隊近五場均分 {d['a_pts']:.1f}, 主隊 {d['h_pts']:.1f}\n"
-        data_payload += f"- 體能狀況: {d['b2b_status']}\n"
-        data_payload += f"- 模型預測: {d['winner']} 贏 {d['diff']} 分\n\n"
+        data_payload += f"【場次 {g_id}】{d['away']} @ {d['home']}\n"
+        data_payload += f"- 數據: 客勝率 {d['a_wr']:.0f}%, 主勝率 {d['h_wr']:.0f}%\n"
+        data_payload += f"- 預測: {d['winner']} 贏 {d['diff']} 分 | B2B: {d['b2b_status']}\n\n"
 
     prompt = f"""
-    你是一位精通大數據分析的 NBA 資深球評。以下是今日比賽的真實預測數據：
+    你是一位 NBA 大數據球評。請針對以下賽事數據撰寫深度分析：
     {data_payload}
 
-    任務：請為上述「每一場」比賽撰寫一份深度分析報告。
-    
-    【報告要求 - 嚴格執行】：
-    1. 字數限制：每場比賽的分析內容不得少於 150 字，必須內容紮實。
-    2. 必須引用數據：報告中必須具體提到我給你的「勝率百分比」或「場均得分差」或「B2B體能狀況」。
-    3. 分析結構：
-       - 第一段：針對兩隊目前的火力差與勝率進行對比。
-       - 第二段：分析體能（B2B）或主場優勢對這場比賽的影響。
-       - 第三段：總結模型為何看好 {all_games_info[list(all_games_info.keys())[0]]['winner'] if all_games_info else '預測方'} 獲勝的關鍵 X 因素。
-    4. 語言：台灣繁體中文，語氣要專業、犀利，像專業運動專欄。
-    5. 禁止：禁止使用「火力穩定」、「表現出色」等空洞詞彙，請改用具體數值分析。
-    6. 格式：回傳嚴格的 JSON 格式，鍵值為場次 ID，內容為分析字串。
+    任務要求：
+    1. 每一場分析必須「超過 180 字」。內容要包含戰術、體能與數據對比。
+    2. 文中必須明確提到模型預測的「分差（整數）」並解釋其合理性。
+    3. 嚴格遵守 JSON 格式：{{"場次ID": "內容", ...}}
+    4. 使用台灣繁體中文，語氣犀利專業。
     """
-    
     try:
         response = model_ai.generate_content(
             prompt, 
-            generation_config={
-                "response_mime_type": "application/json", 
-                "temperature": 0.9,
-                "top_p": 0.95
-            }
+            generation_config={"response_mime_type": "application/json", "temperature": 0.8}
         )
         return json.loads(response.text)
-    except Exception as e:
-        print(f"AI Error: {e}")
+    except:
         return {}
 
-# --- 4. 數據獲取與模型 ---
+# --- 4. 數據獲取與模型訓練 ---
 @st.cache_data(ttl=600)
 def get_comprehensive_data(season):
     all_games = pd.DataFrame()
@@ -162,8 +147,8 @@ def get_schedule_for_date(date_obj):
     except: pass
     return []
 
-# --- 5. 預測與分析引擎 ---
-def run_prediction(games, clf, reg, all_games_raw, player_stats, features_list, is_snapshot=False):
+# --- 5. 預測引擎 ---
+def run_prediction(games, clf, reg, all_games_raw, player_stats, features_list):
     results = {}
     ai_input_data = {}
     
@@ -180,33 +165,31 @@ def run_prediction(games, clf, reg, all_games_raw, player_stats, features_list, 
         h_p_raw = clf.predict_proba(h_in)[:, 1][0]
         a_p_raw = clf.predict_proba(a_in)[:, 1][0]
         h_p = (float(h_p_raw) / (float(h_p_raw) + float(a_p_raw))) * 100
-        diff = round(float(reg.predict(h_in)[0]) - float(reg.predict(a_in)[0]), 1)
         
-        h_n_ch, a_n_ch = TEAM_NAME_CH.get(h_abbr, h_abbr), TEAM_NAME_CH.get(a_abbr, a_abbr)
+        # 勝分差整數化
+        raw_diff = float(reg.predict(h_in)[0]) - float(reg.predict(a_in)[0])
+        diff_int = max(1, round(abs(raw_diff)))
+        winner_side = h_abbr if raw_diff > 0 else a_abbr
         
-        # 準備 AI 輸入數據
         ai_input_data[g_id] = {
-            'home': h_n_ch, 'away': a_n_ch,
+            'home': TEAM_NAME_CH.get(h_abbr, h_abbr), 'away': TEAM_NAME_CH.get(a_abbr, a_abbr),
             'h_wr': h_feat['L10_WIN_RATE'].values[0]*100, 'a_wr': a_feat['L10_WIN_RATE'].values[0]*100,
             'h_pts': h_feat['L5_PTS'].values[0], 'a_pts': a_feat['L5_PTS'].values[0],
-            'b2b_status': f"主隊{'有B2B體能壓力' if h_feat['B2B'].values[0] else '體能正常'}, 客隊{'有B2B體能壓力' if a_feat['B2B'].values[0] else '體能正常'}",
-            'winner': h_n_ch if diff > 0 else a_n_ch,
-            'diff': abs(diff)
+            'b2b_status': f"主隊{'有' if h_feat['B2B'].values[0] else '否'}B2B, 客隊{'有' if a_feat['B2B'].values[0] else '否'}B2B",
+            'winner': TEAM_NAME_CH.get(winner_side),
+            'diff': diff_int
         }
         
         results[g_id] = {
-            'h_prob': h_p, 'a_prob': 100-h_p, 'diff': diff,
-            'winner_abbr': h_abbr if diff > 0 else a_abbr,
+            'h_prob': h_p, 'a_prob': 100-h_p, 'diff': diff_int,
+            'winner_abbr': winner_side,
+            'h_team_id': g['HOME_TEAM_ID'], 'a_team_id': g['VISITOR_TEAM_ID'],
             'h_idx': [f"🏠 勝率: {ai_input_data[g_id]['h_wr']:.0f}%", f"🏠 均分: {ai_input_data[g_id]['h_pts']:.1f}"],
-            'a_idx': [f"✈️ 勝率: {ai_input_data[g_id]['a_wr']:.0f}%", f"✈️ 均分: {ai_input_data[g_id]['a_pts']:.1f}"],
-            'h_team_id': g['HOME_TEAM_ID'], 'a_team_id': g['VISITOR_TEAM_ID']
+            'a_idx': [f"✈️ 勝率: {ai_input_data[g_id]['a_wr']:.0f}%", f"✈️ 均分: {ai_input_data[g_id]['a_pts']:.1f}"]
         }
 
-    # 執行 AI 分析
-    ai_book = {}
-    if is_snapshot and ai_input_data:
-        with st.spinner("🔍 正在進行深度大數據分析，請稍候..."):
-            ai_book = generate_ai_all_reports(ai_input_data)
+    # 即時生成 AI 報告
+    ai_book = generate_ai_all_reports(ai_input_data)
 
     final_results = {}
     for g_id, res in results.items():
@@ -217,18 +200,13 @@ def run_prediction(games, clf, reg, all_games_raw, player_stats, features_list, 
             return m.sort_values(by='PTS', ascending=False).head(5).to_dict('records')
 
         final_results[g_id] = res
-        # 字數檢查警告
-        report_content = ai_book.get(g_id, "")
-        if report_content and len(report_content) < 100:
-            report_content += "\n\n(註：AI 生成內容較短，建議解鎖後重新鎖定以獲取更完整分析。)"
-            
-        final_results[g_id]['summary_report'] = report_content if report_content else f"【數據快評】模型看好 {TEAM_NAME_CH.get(res['winner_abbr'])}，預計勝率差達 {abs(res['h_prob']-res['a_prob']):.1f}%。請鎖定數據以生成深度報告。"
+        final_results[g_id]['summary_report'] = ai_book.get(g_id, "AI 分析生成中或暫時無法連線...")
         final_results[g_id]['h_roster'] = get_roster_data(res['h_team_id'])
         final_results[g_id]['a_roster'] = get_roster_data(res['a_team_id'])
         
     return final_results
 
-# --- 6. UI ---
+# --- 6. 介面呈現 ---
 clf, reg, all_games_raw, player_stats, features = get_comprehensive_data('2025-26')
 date_list = [datetime.now(tw_tz) - timedelta(days=i) for i in range(4)]
 tabs = st.tabs([d.strftime('%m/%d') for d in date_list])
@@ -237,30 +215,28 @@ for i, tab in enumerate(tabs):
     with tab:
         current_date = date_list[i]; date_key = current_date.strftime('%Y-%m-%d')
         games = get_schedule_for_date(current_date); snapshot_file = get_snapshot_path(date_key)
-        if not games: st.info("今日暫無賽程數據"); continue
+        if not games: st.info("今日無賽程數據"); continue
 
+        # 鎖定狀態判斷
         is_locked = os.path.exists(snapshot_file)
         c_btn, c_txt = st.columns([1, 4])
         
-        if not is_locked:
-            if c_btn.button("🔒 鎖定並生成深度報告", key=f"lk_{date_key}"):
-                ld = run_prediction(games, clf, reg, all_games_raw, player_stats, features, is_snapshot=True)
-                with open(snapshot_file, 'w', encoding='utf-8') as f: json.dump(ld, f, ensure_ascii=False)
-                st.rerun()
-            c_txt.warning("目前為即時模式。點擊左側鎖定按鈕，AI 將根據全量數據產出至少 150 字的專業分析。")
-        else:
-            if c_btn.button("🔓 解鎖重新分析", key=f"ul_{date_key}"):
-                os.remove(snapshot_file); st.rerun()
-            c_txt.success("數據已鎖定，顯示深度分析報告中。")
-
-        game_names = [f"{TEAM_NAME_CH.get(g['AWAY_ABBR'], g['AWAY_ABBR'])} @ {TEAM_NAME_CH.get(g['HOME_ABBR'], g['HOME_ABBR'])}" for g in games]
-        sel_name = st.selectbox("🎯 選擇對戰場次", options=game_names, key=f"sb_{date_key}")
-        
+        # 無論是否鎖定，我們都先處理數據
         if is_locked:
             with open(snapshot_file, 'r', encoding='utf-8') as f: ds = json.load(f)
+            if c_btn.button("🔓 解鎖 (回復即時更新)", key=f"ul_{date_key}"):
+                os.remove(snapshot_file); st.rerun()
+            c_txt.success("🔒 目前顯示的是已存檔的快照數據。")
         else:
-            ds = run_prediction(games, clf, reg, all_games_raw, player_stats, features, is_snapshot=False)
+            ds = run_prediction(games, clf, reg, all_games_raw, player_stats, features)
+            if c_btn.button("🔒 鎖定 (存檔此版本)", key=f"lk_{date_key}"):
+                with open(snapshot_file, 'w', encoding='utf-8') as f: json.dump(ds, f, ensure_ascii=False)
+                st.rerun()
+            c_txt.warning("🔄 模式：即時數據與 AI 分析。點擊鎖定可封存今日報告。")
 
+        game_names = [f"{TEAM_NAME_CH.get(g['AWAY_ABBR'], g['AWAY_ABBR'])} @ {TEAM_NAME_CH.get(g['HOME_ABBR'], g['HOME_ABBR'])}" for g in games]
+        sel_name = st.selectbox("🎯 選擇場次", options=game_names, key=f"sb_{date_key}")
+        
         g_id = str(games[game_names.index(sel_name)]['GAME_ID'])
         res = ds.get(g_id, {})
         
@@ -271,12 +247,11 @@ for i, tab in enumerate(tabs):
             c1, c2, c3 = st.columns(3)
             c1.metric(f"{h_n} 勝率", f"{float(res.get('h_prob', 0)):.1f}%")
             c2.metric(f"{a_n} 勝率", f"{float(res.get('a_prob', 0)):.1f}%")
-            c3.metric("預測贏家", TEAM_NAME_CH.get(res.get('winner_abbr')), delta=f"領先 {abs(float(res.get('diff', 0)))} 分")
+            c3.metric("預測贏家", TEAM_NAME_CH.get(res.get('winner_abbr')), delta=f"領先 {res.get('diff')} 分")
 
             st.write("---")
-            st.subheader("📝 AI 深度分析專欄 (大數據驅動)")
-            # 這裡會顯示達標的 150 字以上分析
-            st.write(res.get('summary_report', "分析生成中..."))
+            st.subheader("📝 AI 深度分析專欄 (即時生成)")
+            st.write(res.get('summary_report'))
 
             l_col, r_col = st.columns(2)
             with l_col:
