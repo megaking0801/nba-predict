@@ -3,7 +3,7 @@ from nba_api.stats.endpoints import leaguegamefinder, scoreboardv2, leaguedashpl
 from nba_api.stats.static import teams
 import pandas as pd
 import xgboost as xgb
-import pytz, warnings
+import pytz, warnings, json
 from datetime import datetime, timedelta
 
 # --- 1. 基本設定 ---
@@ -23,23 +23,35 @@ TEAM_NAME_CH = {
     'TOR': '多倫多暴龍', 'UTA': '猶他爵士', 'WAS': '華盛頓巫師'
 }
 
-st.set_page_config(page_title="NBA 終極分析 v5.9", layout="wide")
-st.title("🏀 NBA 數據預測專家 v5.9 (全數據集成)")
+st.set_page_config(page_title="NBA 終極預測 v6.0", layout="wide")
+st.title("🏀 NBA 數據預測專家 v6.0")
 
-# --- 2. 核心數據載入 (包含四大因素與效率指標) ---
+# --- 2. 核心數據處理 (解決 KeyError 問題) ---
+def get_safe_team_stats(measure_type):
+    try:
+        # 手動解構以避免 nba_api 內部的 KeyError
+        raw = leaguedashteamstats.LeagueDashTeamStats(season='2025-26', measure_type_detailed_defense=measure_type)
+        data = raw.get_dict()
+        if 'resultSets' in data:
+            results = data['resultSets'][0]
+        else:
+            results = data['resultSet']
+        return pd.DataFrame(results['rowSet'], columns=results['headers'])
+    except:
+        return pd.DataFrame()
+
 @st.cache_data(ttl=3600)
-def load_full_analytical_data():
+def load_all_data_v60():
     nba_ids = [t['id'] for t in teams.get_teams()]
     
-    # A. 抓取團隊「進階效率」與「四大因素」
-    team_adv = leaguedashteamstats.LeagueDashTeamStats(season='2025-26', measure_type_detailed_defense='Advanced').get_data_frames()[0]
-    team_ff = leaguedashteamstats.LeagueDashTeamStats(season='2025-26', measure_type_detailed_defense='FourFactors').get_data_frames()[0]
+    # 抓取團隊指標
+    df_adv = get_safe_team_stats('Advanced')
+    df_ff = get_safe_team_stats('FourFactors')
     
-    # 建立數據映射
-    adv_map = team_adv.set_index('TEAM_ID')[['OFF_RATING', 'DEF_RATING', 'NET_RATING', 'PACE', 'TS_PCT']].to_dict('index')
-    ff_map = team_ff.set_index('TEAM_ID')[['EFG_PCT', 'TOV_PCT', 'OREB_PCT', 'FTA_RATE']].to_dict('index')
+    adv_map = df_adv.set_index('TEAM_ID')[['OFF_RATING', 'DEF_RATING', 'NET_RATING', 'PACE', 'TS_PCT']].to_dict('index') if not df_adv.empty else {}
+    ff_map = df_ff.set_index('TEAM_ID')[['EFG_PCT', 'TOV_PCT', 'OREB_PCT', 'FTA_RATE']].to_dict('index') if not df_ff.empty else {}
 
-    # B. 歷史戰績與休息天數
+    # 歷史戰績與賽程壓力
     gf_raw = leaguegamefinder.LeagueGameFinder(season_nullable='2025-26').get_data_frames()[0]
     gf = gf_raw[gf_raw['TEAM_ID'].isin(nba_ids)].copy()
     gf['GAME_DATE'] = pd.to_datetime(gf['GAME_DATE'])
@@ -47,36 +59,34 @@ def load_full_analytical_data():
     gf['IS_HOME'] = gf['MATCHUP'].apply(lambda x: 1 if 'vs.' in x else 0)
     gf = gf.sort_values(['TEAM_ID', 'GAME_DATE'])
     
-    # 計算休息天數 (Rest Days)
+    # 指標 3: 休息天數 (Rest Days)
     gf['REST_DAYS'] = gf.groupby('TEAM_ID')['GAME_DATE'].diff().dt.days.fillna(3)
-    gf['REST_DAYS'] = gf['REST_DAYS'].apply(lambda x: 3 if x > 3 else x) # 超過三天視為充足休息
     
-    # 注入模型特徵
-    gf['TEAM_ORTG'] = gf['TEAM_ID'].map(lambda x: adv_map.get(x, {}).get('OFF_RATING', 110))
-    gf['TEAM_DRTG'] = gf['TEAM_ID'].map(lambda x: adv_map.get(x, {}).get('DEF_RATING', 110))
-    gf['TEAM_EFG'] = gf['TEAM_ID'].map(lambda x: ff_map.get(x, {}).get('EFG_PCT', 0.5))
-    gf['TEAM_TOV'] = gf['TEAM_ID'].map(lambda x: ff_map.get(x, {}).get('TOV_PCT', 15))
-    
-    # 建立模型
-    feats = ['IS_HOME', 'REST_DAYS', 'TEAM_ORTG', 'TEAM_DRTG', 'TEAM_EFG', 'TEAM_TOV']
+    # 注入進階特徵到每一行戰績
+    gf['T_ORTG'] = gf['TEAM_ID'].map(lambda x: adv_map.get(x, {}).get('OFF_RATING', 110))
+    gf['T_DRTG'] = gf['TEAM_ID'].map(lambda x: adv_map.get(x, {}).get('DEF_RATING', 110))
+    gf['T_EFG'] = gf['TEAM_ID'].map(lambda x: ff_map.get(x, {}).get('EFG_PCT', 0.5))
+    gf['L10_W'] = gf.groupby('TEAM_ID')['WIN_BIN'].transform(lambda x: x.shift(1).rolling(10, min_periods=1).mean())
+
+    feats = ['IS_HOME', 'REST_DAYS', 'T_ORTG', 'T_DRTG', 'T_EFG', 'L10_W']
     train = gf.fillna(0)
     clf = xgb.XGBClassifier().fit(train[feats], train['WIN_BIN'])
     reg = xgb.XGBRegressor().fit(train[feats], train['PLUS_MINUS'])
     
-    # C. 球員進階數據 (表格顯示)
-    ps_base = leaguedashplayerstats.LeagueDashPlayerStats(season='2025-26', per_mode_detailed='PerGame').get_data_frames()[0]
-    ps_adv = leaguedashplayerstats.LeagueDashPlayerStats(season='2025-26', per_mode_detailed='PerGame', measure_type_detailed_defense='Advanced').get_data_frames()[0]
+    # 球員進階數據 (PIE 是你要求的綜合數據)
+    ps_raw_base = leaguedashplayerstats.LeagueDashPlayerStats(season='2025-26', per_mode_detailed='PerGame').get_data_frames()[0]
+    ps_raw_adv = leaguedashplayerstats.LeagueDashPlayerStats(season='2025-26', per_mode_detailed='PerGame', measure_type_detailed_defense='Advanced').get_data_frames()[0]
     ps_full = pd.merge(
-        ps_base[['PLAYER_ID', 'TEAM_ID', 'PLAYER_NAME', 'PTS', 'REB', 'AST']],
-        ps_adv[['PLAYER_ID', 'TS_PCT', 'EFG_PCT', 'USG_PCT', 'E_NET_RATING', 'PIE']], # PIE 是綜合表現指標
+        ps_raw_base[['PLAYER_ID', 'TEAM_ID', 'PLAYER_NAME', 'PTS', 'REB', 'AST']],
+        ps_raw_adv[['PLAYER_ID', 'TS_PCT', 'EFG_PCT', 'USG_PCT', 'E_NET_RATING', 'PIE']],
         on='PLAYER_ID', how='inner'
     )
     
-    return clf, reg, gf, ps_full, feats, adv_map, ff_map
+    return clf, reg, gf, ps_full, feats, adv_map, ff_map, datetime.now(tw_tz).strftime("%H:%M")
 
-clf, reg, gf, ps_full, feats, adv_map, ff_map = load_full_analytical_data()
+clf, reg, gf, ps_full, feats, adv_map, ff_map, last_update = load_all_data_v60()
 
-# --- 3. 介面渲染與對戰分析 ---
+# --- 3. 介面與顯示 ---
 col_t, col_l = st.columns([3, 1])
 with col_l:
     lock_prob = st.checkbox("🔒 鎖定預測勝率", value=False)
@@ -92,71 +102,72 @@ for i, tab in enumerate(tabs):
         except: sb = pd.DataFrame()
 
         if sb.empty:
-            st.info(f"📅 {current_date.strftime('%Y-%m-%d')} 目前無賽程。")
+            st.info(f"📅 {current_date.strftime('%Y-%m-%d')} 無賽程。")
         else:
             id_to_abbr = {t['id']: t['abbreviation'] for t in teams.get_teams()}
             game_results = {}
-
             for _, row in sb.iterrows():
                 h_id, a_id = row['HOME_TEAM_ID'], row['VISITOR_TEAM_ID']
                 h_abbr, a_abbr = id_to_abbr.get(h_id), id_to_abbr.get(a_id)
                 if h_abbr and a_abbr:
-                    # 獲取最新狀態
                     h_last = gf[gf['TEAM_ABBREVIATION'] == h_abbr].tail(1)
                     if not h_last.empty:
                         prob = clf.predict_proba(h_last[feats])[0][1] * 100
                         diff = round(abs(float(reg.predict(h_last[feats])[0])))
+                        h_l5 = "".join(gf[gf['TEAM_ABBREVIATION'] == h_abbr].tail(5)['WL'].tolist())
+                        a_l5 = "".join(gf[gf['TEAM_ABBREVIATION'] == a_abbr].tail(5)['WL'].tolist())
                         
                         label = f"{TEAM_NAME_CH.get(a_abbr, a_abbr)} @ {TEAM_NAME_CH.get(h_abbr, h_abbr)}"
                         game_results[label] = {
-                            'h_name': TEAM_NAME_CH.get(h_abbr, h_abbr), 'h_id': h_id, 'h_abbr': h_abbr,
-                            'a_name': TEAM_NAME_CH.get(a_abbr, a_abbr), 'a_id': a_id, 'a_abbr': a_abbr,
-                            'prob': prob, 'diff': diff,
-                            'winner': TEAM_NAME_CH.get(h_abbr if prob > 50 else a_abbr)
+                            'h_name': TEAM_NAME_CH.get(h_abbr, h_abbr), 'h_id': h_id, 'h_abbr': h_abbr, 'h_l5': h_l5,
+                            'a_name': TEAM_NAME_CH.get(a_abbr, a_abbr), 'a_id': a_id, 'a_abbr': a_abbr, 'a_l5': a_l5,
+                            'prob': prob, 'diff': diff, 'winner': TEAM_NAME_CH.get(h_abbr if prob > 50 else a_abbr)
                         }
 
             if game_results:
-                selected = st.selectbox("🎯 選擇對戰場次", list(game_results.keys()), key=f"sel_{i}")
+                selected = st.selectbox("🎯 選擇場次", list(game_results.keys()), key=f"sel_{i}")
                 res = game_results[selected]
                 
-                # 1. 核心指標卡
-                st.markdown(f"#### 🏟️ {selected} (已集成 4 Factors 分析)")
+                # 預測卡片
+                st.markdown(f"#### 🏟️ {selected}")
                 c1, c2, c3 = st.columns(3)
-                c1.metric(res['h_name'], f"{res['prob']:.1f}%")
-                c2.metric(res['a_name'], f"{100 - res['prob']:.1f}%")
-                c3.metric("預測勝方", res['winner'], f"分差 {res['diff']}")
+                c1.metric(res['h_name'], f"{res['prob']:.1f}%", f"近5場: {res['h_l5']}")
+                c2.metric(res['a_name'], f"{100 - res['prob']:.1f}%", f"近5場: {res['a_l5']}")
+                c3.metric("模型預測贏家", res['winner'], f"分差 {res['diff']}")
 
-                # 2. 團隊四大因素對比表
+                # 團隊戰力對比表
                 st.markdown("---")
-                st.markdown("##### 📊 團隊戰力關鍵指標對比 (Efficiency & Four Factors)")
+                st.markdown("##### 📊 團隊進階數據對比 (Efficiency & Four Factors)")
                 h_adv, a_adv = adv_map.get(res['h_id'], {}), adv_map.get(res['a_id'], {})
                 h_ff, a_ff = ff_map.get(res['h_id'], {}), ff_map.get(res['a_id'], {})
                 
                 comp_data = {
-                    "指標": ["進攻效率 (ORTG)", "防守效率 (DRTG)", "淨效率 (NET)", "真實命中率 (TS%)", "有效命中率 (eFG%)", "失誤率 (TOV%)", "比賽節奏 (PACE)"],
-                    res['h_name']: [h_adv.get('OFF_RATING'), h_adv.get('DEF_RATING'), h_adv.get('NET_RATING'), f"{h_adv.get('TS_PCT'):.1%}", f"{h_ff.get('EFG_PCT'):.1%}", f"{h_ff.get('TOV_PCT'):.1f}", h_adv.get('PACE')],
-                    res['a_name']: [a_adv.get('OFF_RATING'), a_adv.get('DEF_RATING'), a_adv.get('NET_RATING'), f"{a_adv.get('TS_PCT'):.1%}", f"{a_ff.get('EFG_PCT'):.1%}", f"{a_ff.get('TOV_PCT'):.1f}", a_adv.get('PACE')]
+                    "指標": ["進攻效率", "防守效率", "真實命中率", "有效命中率", "失誤率", "比賽節奏"],
+                    res['h_name']: [h_adv.get('OFF_RATING'), h_adv.get('DEF_RATING'), f"{h_adv.get('TS_PCT', 0):.1%}", f"{h_ff.get('EFG_PCT', 0):.1%}", f"{h_ff.get('TOV_PCT', 0):.1f}", h_adv.get('PACE')],
+                    res['a_name']: [a_adv.get('OFF_RATING'), a_adv.get('DEF_RATING'), f"{a_adv.get('TS_PCT', 0):.1%}", f"{a_ff.get('EFG_PCT', 0):.1%}", f"{a_ff.get('TOV_PCT', 0):.1f}", a_adv.get('PACE')]
                 }
                 st.table(pd.DataFrame(comp_data))
 
-                # 3. 本季交手紀錄 (H2H)
-                st.markdown("##### ⚔️ 本賽季歷史對戰紀錄")
+                # H2H 歷史
+                st.markdown("##### ⚔️ 本季對戰歷史紀錄")
                 h2h = gf[(gf['TEAM_ABBREVIATION'] == res['h_abbr']) & (gf['MATCHUP'].str.contains(res['a_abbr']))].sort_values('GAME_DATE', ascending=False)
                 if not h2h.empty:
                     h2h['結果'] = h2h.apply(lambda r: f"W ({r.PTS}-{int(r.PTS-r.PLUS_MINUS)})" if r.WL == 'W' else f"L ({r.PTS}-{int(r.PTS-r.PLUS_MINUS)})", axis=1)
                     st.dataframe(h2h[['GAME_DATE', 'MATCHUP', '結果']].assign(GAME_DATE=h2h['GAME_DATE'].dt.strftime('%Y-%m-%d')), hide_index=True)
                 else: st.write("本季尚未交手。")
 
-                # 4. 球員進階數據 (Top 8)
-                st.markdown("##### 🚀 核心球員進階數據 (PIE 為綜合貢獻值)")
-                def get_roster(tid):
+                # 球員進階表格
+                st.markdown("##### 🚀 預計出戰核心數據")
+                def show_roster(tid):
                     df = ps_full[ps_full['TEAM_ID'] == tid].sort_values('PTS', ascending=False).head(8)
                     return df[['PLAYER_NAME', 'PTS', 'TS_PCT', 'USG_PCT', 'E_NET_RATING', 'PIE']]
 
                 cl, cr = st.columns(2)
                 with cl:
                     st.write(f"🏠 {res['h_name']}")
-                    st.dataframe(get_roster(res['h_id']).style.format({'PTS': '{:.1f}', 'TS_PCT': '{:.1%}', 'USG_PCT': '{:.1%}', 'E_NET_RATING': '{:+.1f}', 'PIE': '{:.1%}'}), hide_index=True)
+                    st.dataframe(show_roster(res['h_id']).style.format({'PTS': '{:.1f}', 'TS_PCT': '{:.1%}', 'USG_PCT': '{:.1%}', 'E_NET_RATING': '{:+.1f}', 'PIE': '{:.1%}'}), hide_index=True)
                 with cr:
                     st.write(f"✈️ {res['a_name']}")
-                    st.dataframe(get_roster(res['a_id']).style.format({'PTS': '{:.1f}', 'TS_PCT': '{:.1%}', 'USG_PCT': '{:.1%}', 'E_NET_RATING': '{:+.1f}', 'PIE': '{:.1%}'}), hide_index=True)
+                    st.dataframe(show_roster(res['a_id']).style.format({'PTS': '{:.1f}', 'TS_PCT': '{:.1%}', 'USG_PCT': '{:.1%}', 'E_NET_RATING': '{:+.1f}', 'PIE': '{:.1%}'}), hide_index=True)
+
+st.sidebar.caption(f"🕒 更新時間：{last_update}")
