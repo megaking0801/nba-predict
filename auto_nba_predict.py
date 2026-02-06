@@ -9,7 +9,6 @@ import pandas as pd
 import xgboost as xgb
 import pytz
 from datetime import datetime, timedelta
-import time
 
 # --- 1. 基本設定 ---
 tw_tz = pytz.timezone('Asia/Taipei')
@@ -28,36 +27,28 @@ TEAM_NAME_CH = {
 }
 
 st.set_page_config(page_title="NBA 數據專家 v6.9", layout="wide")
+st.title("🏀 NBA 數據專家 v6.9 (16項指標聯動版)")
 
-# --- [修正] 安全抓取函數：防止 KeyError ---
-def safe_api_call(endpoint_func, **kwargs):
-    try:
-        # 增加一點點延遲防止被 API 封鎖
-        time.sleep(0.5)
-        return endpoint_func(**kwargs).get_data_frames()[0]
-    except Exception as e:
-        # 如果該端點出錯，回傳空 DataFrame
-        return pd.DataFrame()
-
-# --- 2. 數據抓取 ---
+# --- 2. 數據抓取 (回歸原始純化邏輯) ---
 @st.cache_data(ttl=3600)
 def load_all_data_v69():
     S = '2025-26'
     ST = 'Regular Season'
     nba_ids = [t['id'] for t in teams.get_teams()]
     
-    # 使用安全抓取
-    df_base = safe_api_call(leaguedashteamstats.LeagueDashTeamStats, season=S, per_mode_detailed='PerGame')
-    df_adv = safe_api_call(leaguedashteamstats.LeagueDashTeamStats, season=S, measure_type_detailed_defense='Advanced')
-    df_hustle = safe_api_call(leaguehustlestatsteam.LeagueHustleStatsTeam, season=S, per_mode_time='PerGame')
-    df_spd = safe_api_call(leaguedashptstats.LeagueDashPtStats, season=S, pt_measure_type='SpeedDistance', per_mode_simple='PerGame')
-    df_pass = safe_api_call(leaguedashptstats.LeagueDashPtStats, season=S, pt_measure_type='Passing', per_mode_simple='PerGame')
-    df_trans = safe_api_call(synergyplaytypes.SynergyPlayTypes, play_type_nullable='Transition', player_or_team_abbreviation='T', season=S, season_type_all_star=ST)
-    df_iso = safe_api_call(synergyplaytypes.SynergyPlayTypes, play_type_nullable='Isolation', player_or_team_abbreviation='T', season=S, season_type_all_star=ST)
-    df_rim = safe_api_call(leaguedashptdefend.LeagueDashPtDefend, season=S, defense_category='Less Than 6 Ft')
+    # 抓取各維度數據
+    df_base = leaguedashteamstats.LeagueDashTeamStats(season=S, per_mode_detailed='PerGame').get_data_frames()[0]
+    df_adv = leaguedashteamstats.LeagueDashTeamStats(season=S, measure_type_detailed_defense='Advanced').get_data_frames()[0]
+    df_hustle = leaguehustlestatsteam.LeagueHustleStatsTeam(season=S, per_mode_time='PerGame').get_data_frames()[0]
+    df_spd = leaguedashptstats.LeagueDashPtStats(season=S, pt_measure_type='SpeedDistance', per_mode_simple='PerGame').get_data_frames()[0]
+    df_pass = leaguedashptstats.LeagueDashPtStats(season=S, pt_measure_type='Passing', per_mode_simple='PerGame').get_data_frames()[0]
+    df_trans = synergyplaytypes.SynergyPlayTypes(play_type_nullable='Transition', player_or_team_abbreviation='T', season=S, season_type_all_star=ST).get_data_frames()[0]
+    df_iso = synergyplaytypes.SynergyPlayTypes(play_type_nullable='Isolation', player_or_team_abbreviation='T', season=S, season_type_all_star=ST).get_data_frames()[0]
+    df_rim = leaguedashptdefend.LeagueDashPtDefend(season=S, defense_category='Less Than 6 Ft').get_data_frames()[0]
 
     def to_map(df, cols):
-        if df is None or df.empty: return {}
+        if df.empty: return {}
+        # 自動識別 ID 欄位
         id_col = 'TEAM_ID' if 'TEAM_ID' in df.columns else (df.columns[0] if 'ID' in df.columns[0] else None)
         return df.set_index(id_col)[cols].to_dict('index') if id_col else {}
 
@@ -72,64 +63,57 @@ def load_all_data_v69():
         'rim': to_map(df_rim, ['D_FG_PCT'])
     }
 
-    gf_raw = safe_api_call(leaguegamefinder.LeagueGameFinder, season_nullable=S)
-    if gf_raw.empty: return None # 嚴重錯誤回傳 None
-    
-    gf = gf_raw[gf_raw['TEAM_ID'].isin(nba_ids)].copy()
+    # 模型訓練
+    gf = leaguegamefinder.LeagueGameFinder(season_nullable=S).get_data_frames()[0]
+    gf = gf[gf['TEAM_ID'].isin(nba_ids)]
     gf['WIN_BIN'] = gf['WL'].apply(lambda x: 1 if x == 'W' else 0)
     gf['IS_HOME'] = gf['MATCHUP'].apply(lambda x: 1 if 'vs.' in x else 0)
+    
+    # 計算休息天數
     gf['GAME_DATE'] = pd.to_datetime(gf['GAME_DATE'])
     gf = gf.sort_values(['TEAM_ID', 'GAME_DATE'])
     gf['REST_DAYS'] = gf.groupby('TEAM_ID')['GAME_DATE'].diff().dt.days.fillna(3)
 
-    def gv(tid, m, k, d=0): return maps[m].get(tid, {}).get(k, d)
+    def gv(tid, m, k, d=0):
+        return maps[m].get(tid, {}).get(k, d)
 
+    # 16 項模型指標 (對應視覺化 16 欄位)
     feats = ['IS_HOME', 'REST_DAYS', 'F_PTS', 'F_REB', 'F_AST', 'F_ORTG', 'F_DRTG', 'F_PACE', 
              'F_DEFL', 'F_CONT', 'F_DIST', 'F_SPD', 'F_PASS', 'F_TRANS', 'F_ISO', 'F_RIM']
     
-    for f, m, k, default in [
-        ('F_PTS', 'base', 'PTS', 110), ('F_REB', 'base', 'REB', 44), ('F_AST', 'base', 'AST', 25),
-        ('F_ORTG', 'adv', 'OFF_RATING', 110), ('F_DRTG', 'adv', 'DEF_RATING', 110), ('F_PACE', 'adv', 'PACE', 99),
-        ('F_DEFL', 'hustle', 'DEFLECTIONS', 15), ('F_CONT', 'hustle', 'CONTESTED_SHOTS', 40),
-        ('F_DIST', 'spd', 'DIST_MILES', 18), ('F_SPD', 'spd', 'AVG_SPEED', 4.4),
-        ('F_PASS', 'pass', 'PASSES_MADE', 280), ('F_TRANS', 'trans', 'PPP', 1.1),
-        ('F_ISO', 'iso', 'PPP', 0.9), ('F_RIM', 'rim', 'D_FG_PCT', 0.6)
-    ]:
-        gf[f] = gf['TEAM_ID'].apply(lambda x: gv(x, m, k, default))
+    gf['F_PTS'] = gf['TEAM_ID'].apply(lambda x: gv(x, 'base', 'PTS', 110))
+    gf['F_REB'] = gf['TEAM_ID'].apply(lambda x: gv(x, 'base', 'REB', 44))
+    gf['F_AST'] = gf['TEAM_ID'].apply(lambda x: gv(x, 'base', 'AST', 25))
+    gf['F_ORTG'] = gf['TEAM_ID'].apply(lambda x: gv(x, 'adv', 'OFF_RATING', 110))
+    gf['F_DRTG'] = gf['TEAM_ID'].apply(lambda x: gv(x, 'adv', 'DEF_RATING', 110))
+    gf['F_PACE'] = gf['TEAM_ID'].apply(lambda x: gv(x, 'adv', 'PACE', 99))
+    gf['F_DEFL'] = gf['TEAM_ID'].apply(lambda x: gv(x, 'hustle', 'DEFLECTIONS', 15))
+    gf['F_CONT'] = gf['TEAM_ID'].apply(lambda x: gv(x, 'hustle', 'CONTESTED_SHOTS', 40))
+    gf['F_DIST'] = gf['TEAM_ID'].apply(lambda x: gv(x, 'spd', 'DIST_MILES', 18))
+    gf['F_SPD'] = gf['TEAM_ID'].apply(lambda x: gv(x, 'spd', 'AVG_SPEED', 4.4))
+    gf['F_PASS'] = gf['TEAM_ID'].apply(lambda x: gv(x, 'pass', 'PASSES_MADE', 280))
+    gf['F_TRANS'] = gf['TEAM_ID'].apply(lambda x: gv(x, 'trans', 'PPP', 1.1))
+    gf['F_ISO'] = gf['TEAM_ID'].apply(lambda x: gv(x, 'iso', 'PPP', 0.9))
+    gf['F_RIM'] = gf['TEAM_ID'].apply(lambda x: gv(x, 'rim', 'D_FG_PCT', 0.6))
 
+    # 訓練雙模型
     clf = xgb.XGBClassifier(n_estimators=100).fit(gf[feats], gf['WIN_BIN'])
     reg = xgb.XGBRegressor(n_estimators=100).fit(gf[feats], gf['PLUS_MINUS'].fillna(0))
-    ps_raw = safe_api_call(leaguedashplayerstats.LeagueDashPlayerStats, season=S, per_mode_detailed='PerGame')
+    
+    ps_raw = leaguedashplayerstats.LeagueDashPlayerStats(season=S, per_mode_detailed='PerGame').get_data_frames()[0]
     
     return clf, reg, gf, ps_raw, feats, maps, datetime.now(tw_tz).strftime("%H:%M")
 
-# --- 側邊欄控制與鎖定 ---
-st.sidebar.title("⚙️ 控制面板")
-is_locked = st.sidebar.toggle("🔒 鎖定目前數據", value=False)
+clf, reg, gf, ps_raw, feats, maps, last_update = load_all_data_v69()
 
-if "fixed_data" not in st.session_state or not is_locked:
-    with st.spinner("正在同步最新 NBA 數據..."):
-        data = load_all_data_v69()
-        if data:
-            st.session_state.fixed_data = data
-        else:
-            st.error("無法從 NBA API 獲取數據，請稍後再試。")
-            st.stop()
-
-clf, reg, gf, ps_raw, feats, maps, last_update = st.session_state.fixed_data
-if is_locked: st.sidebar.warning(f"數據已鎖定於 {last_update}")
-
-st.title(f"🏀 NBA 數據專家 v6.9 (數據鎖定版)")
-
-# --- 3. 介面呈現 ---
+# --- 3. 介面設計 ---
 dates = [datetime.now(tw_tz) - timedelta(days=i) for i in range(3)]
 tabs = st.tabs([d.strftime('%m/%d') for d in dates])
 
 for i, tab in enumerate(tabs):
     with tab:
-        sb = safe_api_call(scoreboardv2.ScoreboardV2, game_date=dates[i].strftime('%m/%d/%Y'))
-        if sb is None or sb.empty:
-            st.info("📅 今日暫無比賽數據")
+        sb = scoreboardv2.ScoreboardV2(game_date=dates[i].strftime('%m/%d/%Y')).get_data_frames()[0]
+        if sb.empty: st.info("📅 目前無賽程")
         else:
             id_to_abbr = {t['id']: t['abbreviation'] for t in teams.get_teams()}
             for _, row in sb.iterrows():
@@ -143,22 +127,26 @@ for i, tab in enumerate(tabs):
                             diff = abs(float(reg.predict(h_last[feats])[0]))
                             
                             c1, c2, c3 = st.columns(3)
-                            c1.metric(TEAM_NAME_CH.get(h_abbr), f"{prob:.1f}% 勝率")
-                            c2.metric(TEAM_NAME_CH.get(a_abbr), f"{100-prob:.1f}% 勝率")
+                            c1.metric(TEAM_NAME_CH.get(h_abbr), f"{prob:.1f}%")
+                            c2.metric(TEAM_NAME_CH.get(a_abbr), f"{100-prob:.1f}%")
                             c3.metric("預測分差", f"{diff:.1f} 分")
 
-                            def gm(tid, m, k): return maps[m].get(tid, {}).get(k, 0)
+                            def gm(m, tid, k): return maps[m].get(tid, {}).get(k, 0)
+
+                            # 16 項指標聯動表格
                             st.write("---")
                             col_a, col_b = st.columns(2)
                             with col_a:
+                                st.write("**📊 團隊戰力指標 (含單位)**")
                                 st.table(pd.DataFrame({
-                                    "項目": ["得分", "進攻效率", "防守效率", "里程", "速度"],
-                                    "數據": [f"{gm(h_id,'base','PTS'):.1f} 分", f"{gm(h_id,'adv','OFF_RATING')} pts", f"{gm(h_id,'adv','DEF_RATING')} pts", f"{gm(h_id,'spd', 'DIST_MILES'):.2f} mi", f"{gm(h_id,'spd','AVG_SPEED'):.2f} mph"]
+                                    "項目": ["得分", "進攻效率", "防守效率", "跑動里程", "平均速度"],
+                                    "數據": [f"{gm('base',h_id,'PTS'):.1f} 分", f"{gm('adv',h_id,'OFF_RATING')} pts", f"{gm('adv',h_id,'DEF_RATING')} pts", f"{gm('spd',h_id,'DIST_MILES'):.2f} mi", f"{gm('spd',h_id,'AVG_SPEED'):.2f} mph"]
                                 }))
                             with col_b:
+                                st.write("**⚔️ 戰術與積極度**")
                                 st.table(pd.DataFrame({
                                     "項目": ["撥球破壞", "場均傳球", "轉換 PPP", "單打 PPP", "護框命中 %"],
-                                    "數據": [f"{gm(h_id,'hustle','DEFLECTIONS'):.1f} 次", f"{gm(h_id,'pass','PASSES_MADE'):.1f} 次", f"{gm(h_id,'trans','PPP'):.2f}", f"{gm(h_id,'iso','PPP'):.2f}", f"{gm(h_id,'rim','D_FG_PCT'):.1%}"]
+                                    "數據": [f"{gm('hustle',h_id,'DEFLECTIONS'):.1f} 次", f"{gm('pass',h_id,'PASSES_MADE'):.1f} 次", f"{gm('trans',h_id,'PPP'):.2f}", f"{gm('iso',h_id,'PPP'):.2f}", f"{gm('rim',h_id,'D_FG_PCT'):.1%}"]
                                 }))
 
-st.sidebar.caption(f"🕒 最後更新時間：{last_update}")
+st.sidebar.caption(f"🕒 最新同步：{last_update}")
