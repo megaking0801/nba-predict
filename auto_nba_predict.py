@@ -27,7 +27,7 @@ TEAM_NAME_CH = {
 }
 
 st.set_page_config(page_title="NBA 2026 終極盤口預測系統", layout="wide")
-st.title("🏀 NBA 終極預測系統 (勝率/分差/封盤)")
+st.title("🏀 NBA 終極預測系統 (雙模型修正版)")
 
 def get_snapshot_path(date_key):
     return f"nba_snapshot_{date_key}.json"
@@ -55,6 +55,7 @@ def get_comprehensive_data(season):
     train_df = all_games.dropna(subset=['L5_PTS', 'L10_WIN_RATE']).copy()
     features = [f'L5_{c}' for c in stats_cols] + ['B2B', 'IS_HOME', 'L3_WIN_RATE', 'L10_WIN_RATE']
     
+    # 模型訓練
     clf_model = xgb.XGBClassifier(n_estimators=150, max_depth=4, learning_rate=0.05, eval_metric='logloss')
     clf_model.fit(train_df[features], train_df['WIN_BIN'])
     
@@ -108,11 +109,13 @@ def get_locked_results_for_date(date_key, games, clf_model, reg_model, all_games
         a_feat = all_games_raw[all_games_raw['TEAM_ABBREVIATION'] == a_abbr].tail(1)[features_list].copy()
         h_feat['IS_HOME'], a_feat['IS_HOME'] = 1, 0
         
-        h_p = float(clf_model.predict_proba(h_feat)[:, 1])
-        a_p = float(clf_model.predict_proba(a_feat)[:, 1])
+        # 修正處：使用 [0] 確保獲取純量 (Scalar)
+        h_p = float(clf_model.predict_proba(h_feat)[:, 1][0])
+        a_p = float(clf_model.predict_proba(a_feat)[:, 1][0])
         h_prob, a_prob = (h_p/(h_p+a_p))*100, (a_p/(h_p+a_p))*100
         
-        h_spread, a_spread = float(reg_model.predict(h_feat)), float(reg_model.predict(a_feat))
+        h_spread = float(reg_model.predict(h_feat)[0])
+        a_spread = float(reg_model.predict(a_feat)[0])
         predicted_diff = h_spread - a_spread
         
         def get_clean_roster(t_id):
@@ -136,7 +139,7 @@ def get_locked_results_for_date(date_key, games, clf_model, reg_model, all_games
     return results, False
 
 # --- 3. UI 渲染 ---
-with st.spinner('🚀 載入雙核心模型中...'):
+with st.spinner('🚀 系統初始化中...'):
     clf_model, reg_model, all_games_raw, all_player_stats, features_list = get_comprehensive_data('2025-26')
 
 date_list = [datetime.now(tw_tz) - timedelta(days=i) for i in range(4)]
@@ -166,12 +169,11 @@ for i, tab in enumerate(tabs):
                 c1.metric(f"{TEAM_NAME_CH.get(g_data['HOME_ABBR'])} 勝率", f"{res.get('home_prob', 0):.1f}%")
                 c2.metric(f"{TEAM_NAME_CH.get(g_data['AWAY_ABBR'])} 勝率", f"{res.get('away_prob', 0):.1f}%")
                 
-                # 安全獲取勝分差數據
                 diff = res.get('predicted_diff', 0)
                 winner_abbr = g_data['HOME_ABBR'] if diff > 0 else g_data['AWAY_ABBR']
                 c3.metric("預計勝分差", f"{abs(diff)} 分", delta=f"{TEAM_NAME_CH.get(winner_abbr)} 佔優" if diff != 0 else None)
 
-                # 對戰紀錄
+                # 對戰紀錄表格
                 st.write("#### ⚔️ 本季對戰紀錄")
                 h_id, a_abbr = g_data['HOME_TEAM_ID'], g_data['AWAY_ABBR']
                 h2h = all_games_raw[((all_games_raw['TEAM_ID'] == h_id) & (all_games_raw['MATCHUP'].str.contains(a_abbr)))]
@@ -179,7 +181,7 @@ for i, tab in enumerate(tabs):
                     st.table(h2h[['GAME_DATE', 'MATCHUP', 'WL', 'PTS', 'PLUS_MINUS']].head(5))
                 else: st.caption("尚無紀錄")
 
-                # 名單
+                # 名單顯示
                 st.write("#### 👤 核心球員 (封盤名單)")
                 ch, ca = st.columns(2)
                 
