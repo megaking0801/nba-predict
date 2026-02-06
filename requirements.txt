@@ -1,7 +1,7 @@
+streamlit
 nba_api
 pandas
-streamlit==1.31.0
-altair==4.2.2
+numpy
 xgboost
 scikit-learn
-plotly
+pytz
