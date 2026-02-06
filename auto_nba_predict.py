@@ -27,7 +27,7 @@ TEAM_NAME_CH = {
     'TOR': '多倫多暴龍', 'UTA': '猶他爵士', 'WAS': '華盛頓巫師'
 }
 
-st.set_page_config(page_title="NBA 2026 深度分析系統 v4.2", layout="wide")
+st.set_page_config(page_title="NBA 2026 深度分析系統 v4.5", layout="wide")
 st.title("🏀 NBA 終極預測系統")
 
 def get_snapshot_path(date_key):
@@ -96,7 +96,7 @@ def get_schedule_for_date(date_obj):
     except: pass
     return []
 
-# --- 2. 分析引擎 ---
+# --- 2. 深度分析引擎 ---
 def run_prediction(games, clf, reg, all_games_raw, player_stats, features_list):
     results = {}
     for g in games:
@@ -113,12 +113,33 @@ def run_prediction(games, clf, reg, all_games_raw, player_stats, features_list):
         h_p = (float(clf.predict_proba(h_in)[:, 1][0]) / (float(clf.predict_proba(h_in)[:, 1][0]) + float(clf.predict_proba(a_in)[:, 1][0]))) * 100
         diff = float(reg.predict(h_in)[0]) - float(reg.predict(a_in)[0])
         
-        analysis = {"home": [], "away": []}
-        h_win_rate, a_win_rate = h_feat['L10_WIN_RATE'].values[0] * 100, a_feat['L10_WIN_RATE'].values[0] * 100
-        analysis["home"] = [f"🟢 近十場勝率: {h_win_rate:.0f}%", f"🟢 近五場得分: {h_feat['L5_PTS'].values[0]:.1f}"]
-        analysis["away"] = [f"🔵 近十場勝率: {a_win_rate:.0f}%", f"🔵 近五場得分: {a_feat['L5_PTS'].values[0]:.1f}"]
-        if h_feat['B2B'].values[0] == 1: analysis["home"].append("🔴 警訊: 背靠背體能劣勢")
-        if a_feat['B2B'].values[0] == 1: analysis["away"].append("🔴 警訊: 背靠背體能劣勢")
+        # 提取指標
+        h_wr, a_wr = h_feat['L10_WIN_RATE'].values[0]*100, a_feat['L10_WIN_RATE'].values[0]*100
+        h_pts, a_pts = h_feat['L5_PTS'].values[0], a_feat['L5_PTS'].values[0]
+        h_b2b, a_b2b = h_feat['B2B'].values[0], a_feat['B2B'].values[0]
+
+        # 1. 點列式指標
+        h_idx = [f"🟢 近十場勝率: {h_wr:.0f}%", f"🟢 近五場得分: {h_pts:.1f}"]
+        a_idx = [f"🔵 近十場勝率: {a_wr:.0f}%", f"🔵 近五場得分: {a_pts:.1f}"]
+        if h_b2b: h_idx.append("🔴 警訊: 背靠背體能劣勢")
+        if a_b2b: a_idx.append("🔴 警訊: 背靠背體能劣勢")
+
+        # 2. 整合文字分析內容
+        winner_name = TEAM_NAME_CH.get(h_abbr if diff > 0 else a_abbr)
+        loser_name = TEAM_NAME_CH.get(a_abbr if diff > 0 else h_abbr)
+        
+        summary_text = f"本場比賽模型更看好 **{winner_name}**。分析其核心優勢在於"
+        if (h_wr > a_wr and diff > 0) or (a_wr > h_wr and diff < 0):
+            summary_text += "近期更為穩定的勝率表現，"
+        if (h_pts > a_pts and diff > 0) or (a_pts > h_pts and diff < 0):
+            summary_text += "以及更強大的火力輸出能力。"
+        else:
+            summary_text += "防守端的效率以及主場數據支撐。"
+        
+        if (h_b2b and diff < 0) or (a_b2b and diff > 0):
+            summary_text += f" 反觀 **{loser_name}** 受限於背靠背(B2B)的賽程壓力，體能恐成隱憂。"
+        
+        summary_text += f" 預計最終 **{winner_name}** 將以約 {abs(round(diff,1))} 分的優勢取勝。"
 
         def get_roster_data(t_id):
             ros = get_team_roster(t_id)
@@ -129,9 +150,9 @@ def run_prediction(games, clf, reg, all_games_raw, player_stats, features_list):
         results[str(g['GAME_ID'])] = {
             'h_prob': h_p, 'a_prob': 100 - h_p, 'diff': round(diff, 1),
             'winner_abbr': h_abbr if diff > 0 else a_abbr,
-            'h_analysis': analysis["home"], 'a_analysis': analysis["away"],
-            'h_roster': get_roster_data(h_id), 'a_roster': get_roster_data(a_id),
-            'lock_time': datetime.now(tw_tz).strftime('%H:%M:%S')
+            'h_idx': h_idx, 'a_idx': a_idx,
+            'summary_report': summary_text,
+            'h_roster': get_roster_data(h_id), 'a_roster': get_roster_data(a_id)
         }
     return results
 
@@ -144,67 +165,62 @@ for i, tab in enumerate(tabs):
     with tab:
         current_date = date_list[i]; date_key = current_date.strftime('%Y-%m-%d')
         games = get_schedule_for_date(current_date); snapshot_file = get_snapshot_path(date_key)
-        
         if not games: st.info("暫無賽程"); continue
 
-        # --- 置頂鎖定區域 ---
         is_locked = os.path.exists(snapshot_file)
         btn_col, info_col = st.columns([1, 4])
-        
         if not is_locked:
-            with btn_col:
-                if st.button("🔒 鎖定今日數據", key=f"lk_{date_key}"):
-                    locked_data = run_prediction(games, clf, reg, all_games_raw, player_stats, features)
-                    with open(snapshot_file, 'w', encoding='utf-8') as f: json.dump(locked_data, f, ensure_ascii=False)
-                    st.rerun()
-            with info_col: st.warning("⏳ 即時模式：預測將隨球隊最新狀態更新。")
+            if btn_col.button("🔒 鎖定今日數據", key=f"lk_{date_key}"):
+                ld = run_prediction(games, clf, reg, all_games_raw, player_stats, features)
+                with open(snapshot_file, 'w', encoding='utf-8') as f: json.dump(ld, f, ensure_ascii=False)
+                st.rerun()
+            info_col.warning("⏳ 即時模式")
         else:
-            with btn_col:
-                if st.button("🔓 解鎖即時更新", key=f"ul_{date_key}"):
-                    os.remove(snapshot_file); st.rerun()
-            with info_col: st.success("🔒 封盤模式：顯示當初鎖定時的預測數據。")
+            if btn_col.button("解鎖即時更新", key=f"ul_{date_key}"):
+                os.remove(snapshot_file); st.rerun()
+            info_col.success("🔒 封盤模式")
 
-        # --- 下拉選單修正：顯示名稱而非數字 ---
         game_names = [f"{TEAM_NAME_CH.get(g['AWAY_ABBR'])} @ {TEAM_NAME_CH.get(g['HOME_ABBR'])}" for g in games]
-        selected_game_name = st.selectbox("🎯 選擇對戰場次", options=game_names, key=f"sb_{date_key}")
-        
-        # 根據選中的名稱找到對應的索引
-        sel_idx = game_names.index(selected_game_name)
-        g_data = games[sel_idx]
+        sel_name = st.selectbox("🎯 選擇對戰場次", options=game_names, key=f"sb_{date_key}")
         
         if is_locked:
-            with open(snapshot_file, 'r', encoding='utf-8') as f: data_source = json.load(f)
+            with open(snapshot_file, 'r', encoding='utf-8') as f: ds = json.load(f)
         else:
-            data_source = run_prediction(games, clf, reg, all_games_raw, player_stats, features)
+            ds = run_prediction(games, clf, reg, all_games_raw, player_stats, features)
 
-        res = data_source.get(str(g_data['GAME_ID']), {})
+        g_data = games[game_names.index(sel_name)]
+        res = ds.get(str(g_data['GAME_ID']), {})
         
         if res:
             h_n, a_n = TEAM_NAME_CH.get(g_data['HOME_ABBR']), TEAM_NAME_CH.get(g_data['AWAY_ABBR'])
-            w_n = TEAM_NAME_CH.get(res.get('winner_abbr'))
-            
             st.markdown(f"## 🏟️ {a_n} (客) @ {h_n} (主)")
             
             c1, c2, c3 = st.columns(3)
-            c1.metric(f"{h_n} 勝率", f"{res.get('h_prob', 0):.1f}%")
-            c2.metric(f"{a_n} 勝率", f"{res.get('a_prob', 0):.1f}%")
-            c3.metric("預測贏家", w_n, delta=f"預計贏 {abs(res.get('diff', 0))} 分")
+            c1.metric(f"{h_n} 勝率", f"{res['h_prob']:.1f}%")
+            c2.metric(f"{a_n} 勝率", f"{res['a_prob']:.1f}%")
+            c3.metric("預測贏家", TEAM_NAME_CH.get(res['winner_abbr']), delta=f"贏 {abs(res['diff'])} 分")
 
             st.write("---")
-            st.subheader("🕵️ 深度戰力解析 (雙方優缺點)")
+            # 分析報告區 (新欄位)
+            st.subheader("📝 深度戰力分析報告")
+            st.info(res.get('summary_report', "暫無分析"))
+
+            # 優劣勢對比 (保留原始資訊，修復 NULL)
+            st.write("#### 📊 雙方指標對比")
             left, right = st.columns(2)
             with left:
-                st.markdown(f"#### 🏠 {h_n}"); [st.write(x) for x in res.get('h_analysis', [])]
+                st.markdown(f"**🏠 {h_n}**")
+                for item in res.get('h_idx', []): st.write(item)
             with right:
-                st.markdown(f"#### ✈️ {a_n}"); [st.write(x) for x in res.get('a_analysis', [])]
+                st.markdown(f"**✈️ {a_n}**")
+                for item in res.get('a_idx', []): st.write(item)
 
             st.write("---")
-            st.subheader("👤 核心球員數據 (得分榜)")
+            st.subheader("👤 核心球員數據")
             def safe_df(data):
                 if not data: return pd.DataFrame(columns=['姓名','得分','籃板','助攻'])
                 df = pd.DataFrame(data)
                 return df[['PLAYER_NAME','PTS','REB','AST']].rename(columns={'PLAYER_NAME':'姓名','PTS':'得分','REB':'籃板','AST':'助攻'})
-            
-            p_left, p_right = st.columns(2)
-            with p_left: st.caption(f"{h_n} 核心前五名"); st.dataframe(safe_df(res.get('h_roster')), hide_index=True, use_container_width=True)
-            with p_right: st.caption(f"{a_n} 核心前五名"); st.dataframe(safe_df(res.get('a_roster')), hide_index=True, use_container_width=True)
+            cl, cr = st.columns(2)
+            cl.dataframe(safe_df(res.get('h_roster')), hide_index=True, use_container_width=True)
+            cr.dataframe(safe_df(res.get('a_roster')), hide_index=True, use_container_width=True)
