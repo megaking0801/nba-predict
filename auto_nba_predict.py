@@ -20,15 +20,15 @@ TEAM_NAME_CH = {
     'DAL': '達拉斯獨行俠', 'DEN': '丹佛金塊', 'DET': '底特律活塞',
     'GSW': '金州勇士', 'HOU': '休士頓火箭', 'IND': '印第安納溜馬',
     'LAC': '洛杉磯快艇', 'LAL': '洛杉磯湖人', 'MEM': '曼非斯灰熊',
-    'MIA': '邁阿密熱火', 'MIL': '密爾瓦基公鹿', 'MIN': '明尼蘇達灰狼',
+    'MIA': '邁阿密熱火', 'MIL': '密爾瓦基公鹿', 'MIN': '明尼蘇達狼',
     'NOP': '紐奧良鵜鶘', 'NYK': '紐約尼克', 'OKC': '奧克拉荷馬雷霆',
     'ORL': '奧蘭多魔術', 'PHI': '費城 76 人', 'PHX': '鳳凰城太陽',
     'POR': '波特蘭開拓者', 'SAC': '沙加謬度國王', 'SAS': '聖安東尼奧馬刺',
     'TOR': '多倫多暴龍', 'UTA': '猶他爵士', 'WAS': '華盛頓巫師'
 }
 
-st.set_page_config(page_title="NBA 2026 終極盤口預測系統", layout="wide")
-st.title("🏀 NBA 終極預測系統 (封盤時間修正版)")
+st.set_page_config(page_title="NBA 2026 預測系統 - 手動封盤版", layout="wide")
+st.title("🏀 NBA 終極預測系統 (手動封盤/解鎖機制)")
 
 def get_snapshot_path(date_key):
     return f"nba_snapshot_{date_key}.json"
@@ -105,33 +105,20 @@ def get_schedule_for_date(date_obj):
     except: pass
     return []
 
-# --- 2. 封盤與預測邏輯 (修正封盤判定) ---
-def get_locked_results_for_date(date_key, games, clf_model, reg_model, all_games_raw, player_stats, features_list):
-    snapshot_file = get_snapshot_path(date_key)
+# --- 2. 封盤邏輯核心 ---
+def run_prediction(games, clf_model, reg_model, all_games_raw, player_stats, features_list):
     now_tw = datetime.now(tw_tz)
-    today_key = now_tw.strftime('%Y-%m-%d')
-    
-    # 如果快照檔案存在，直接讀取
-    if os.path.exists(snapshot_file):
-        with open(snapshot_file, 'r', encoding='utf-8') as f:
-            return json.load(f), True
-
-    # 執行即時預測
     results = {}
     for g in games:
         h_abbr, a_abbr = g['HOME_ABBR'], g['AWAY_ABBR']
         h_id, a_id = g['HOME_TEAM_ID'], g['VISITOR_TEAM_ID']
-        
         h_feat = all_games_raw[all_games_raw['TEAM_ABBREVIATION'] == h_abbr].tail(1)[features_list].copy()
         a_feat = all_games_raw[all_games_raw['TEAM_ABBREVIATION'] == a_abbr].tail(1)[features_list].copy()
         h_feat['IS_HOME'], a_feat['IS_HOME'] = 1, 0
-        
         h_p = float(clf_model.predict_proba(h_feat)[:, 1][0])
         a_p = float(clf_model.predict_proba(a_feat)[:, 1][0])
         h_prob, a_prob = (h_p/(h_p+a_p))*100, (a_p/(h_p+a_p))*100
-        
-        h_spread = float(reg_model.predict(h_feat)[0])
-        a_spread = float(reg_model.predict(a_feat)[0])
+        h_spread, a_spread = float(reg_model.predict(h_feat)[0]), float(reg_model.predict(a_feat)[0])
         predicted_diff = h_spread - a_spread
         
         def get_clean_roster(t_id):
@@ -148,17 +135,7 @@ def get_locked_results_for_date(date_key, games, clf_model, reg_model, all_games
             'away_roster': get_clean_roster(a_id),
             'lock_time': now_tw.strftime('%Y-%m-%d %H:%M:%S')
         }
-    
-    # --- 關鍵修正：封盤判定條件 ---
-    # 只有當「正在看日期 A 的賽事」且「現在時間已經超過日期 A 的凌晨 00:00」才存檔
-    # 這邊的邏輯是：只要當天日期一到，第一次執行就鎖定。
-    # 如果你希望「還沒到 12 點前不鎖定」，我們維持存檔，但如果是「今天」且「還沒到 12 點」就不讀取存檔
-    if date_key <= today_key:
-        with open(snapshot_file, 'w', encoding='utf-8') as f:
-            json.dump(results, f, ensure_ascii=False)
-        return results, True
-            
-    return results, False
+    return results
 
 # --- 3. UI 渲染 ---
 with st.spinner('🚀 系統初始化中...'):
@@ -172,12 +149,38 @@ for i, tab in enumerate(tabs):
         current_date = date_list[i]
         date_key = current_date.strftime('%Y-%m-%d')
         games = get_schedule_for_date(current_date)
+        snapshot_file = get_snapshot_path(date_key)
         
         if not games:
             st.info(f"📅 {date_key} 暫無賽程")
         else:
-            locked_data, is_locked = get_locked_results_for_date(date_key, games, clf_model, reg_model, all_games_raw, all_player_stats, features_list)
+            # 檢查目前是否為封盤狀態
+            is_locked = os.path.exists(snapshot_file)
             
+            # --- 手動封盤按鈕區 ---
+            col_btn1, col_btn2 = st.columns([1, 5])
+            with col_btn1:
+                if is_locked:
+                    if st.button("🔓 解鎖數據", key=f"unlock_{date_key}"):
+                        os.remove(snapshot_file)
+                        st.rerun()
+                else:
+                    if st.button("🔒 鎖定今日數據", key=f"lock_{date_key}"):
+                        current_results = run_prediction(games, clf_model, reg_model, all_games_raw, all_player_stats, features_list)
+                        with open(snapshot_file, 'w', encoding='utf-8') as f:
+                            json.dump(current_results, f, ensure_ascii=False)
+                        st.rerun()
+
+            # 讀取或即時計算數據
+            if is_locked:
+                with open(snapshot_file, 'r', encoding='utf-8') as f:
+                    locked_data = json.load(f)
+                st.success(f"🔒 目前顯示為封盤數據 (鎖定時間: {list(locked_data.values())[0].get('lock_time', 'N/A')})")
+            else:
+                locked_data = run_prediction(games, clf_model, reg_model, all_games_raw, all_player_stats, features_list)
+                st.warning("⏳ 目前顯示為即時更新數據 (尚未鎖定)")
+
+            # --- 賽事顯示邏輯 ---
             options = [f"{TEAM_NAME_CH.get(g['AWAY_ABBR'], g['AWAY_ABBR'])} @ {TEAM_NAME_CH.get(g['HOME_ABBR'], g['HOME_ABBR'])}" for g in games]
             sel_game_idx = st.selectbox("🎯 選擇場次", range(len(options)), format_func=lambda x: options[x], key=f"sel_{date_key}")
             
@@ -185,12 +188,6 @@ for i, tab in enumerate(tabs):
             res = locked_data.get(str(g_data['GAME_ID']))
             
             if res:
-                # 判斷是否顯示「🔒 已封盤」標籤
-                if is_locked:
-                    st.info(f"🔒 數據已封盤 (鎖定時間: {res.get('lock_time', 'N/A')})")
-                else:
-                    st.warning("⏳ 數據即時更新中 (尚未封盤)")
-
                 c1, c2, c3 = st.columns(3)
                 c1.metric(f"{TEAM_NAME_CH.get(g_data['HOME_ABBR'])} 勝率", f"{res.get('home_prob', 0):.1f}%")
                 c2.metric(f"{TEAM_NAME_CH.get(g_data['AWAY_ABBR'])} 勝率", f"{res.get('away_prob', 0):.1f}%")
@@ -211,7 +208,7 @@ for i, tab in enumerate(tabs):
                 else: st.caption("本賽季兩隊尚未有對戰紀錄")
 
                 # 球員名單
-                st.write("#### 👤 核心球員 (封盤名單)")
+                st.write("#### 👤 核心球員 (名單狀態)")
                 ch, ca = st.columns(2)
                 def safe_display(roster_data):
                     if not roster_data: return pd.DataFrame(columns=['姓名','得分','籃板','助攻'])
