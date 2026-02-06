@@ -19,7 +19,7 @@ TEAM_NAME_CH = {
     'DAL': '達拉斯獨行俠', 'DEN': '丹佛金塊', 'DET': '底特律活塞',
     'GSW': '金州勇士', 'HOU': '休士頓火箭', 'IND': '印第安納溜馬',
     'LAC': '洛杉磯快艇', 'LAL': '洛杉磯湖人', 'MEM': '曼非斯灰熊',
-    'MIA': '邁阿密熱火', 'MIL': '密爾瓦基公鹿', 'MIN': '明尼蘇達狼',
+    'MIA': '邁阿密熱火', 'MIL': '密爾瓦基公鹿', 'MIN': '明尼蘇達灰狼',
     'NOP': '紐奧良鵜鶘', 'NYK': '紐約尼克', 'OKC': '奧克拉荷馬雷霆',
     'ORL': '奧蘭多魔術', 'PHI': '費城 76 人', 'PHX': '鳳凰城太陽',
     'POR': '波特蘭開拓者', 'SAC': '沙加謬度國王', 'SAS': '聖安東尼奧馬刺',
@@ -27,7 +27,7 @@ TEAM_NAME_CH = {
 }
 
 st.set_page_config(page_title="NBA 2026 終極盤口預測系統", layout="wide")
-st.title("🏀 NBA 終極預測系統 (雙模型修正版)")
+st.title("🏀 NBA 終極預測系統 (中文化對戰增強版)")
 
 def get_snapshot_path(date_key):
     return f"nba_snapshot_{date_key}.json"
@@ -40,11 +40,16 @@ def get_comprehensive_data(season):
     all_games['GAME_DATE'] = pd.to_datetime(all_games['GAME_DATE'])
     all_games = all_games.sort_values(['TEAM_ID', 'GAME_DATE'])
 
+    # 特徵工程
     all_games['IS_HOME'] = all_games['MATCHUP'].apply(lambda x: 1 if 'vs.' in x else 0)
     all_games['WIN_BIN'] = all_games['WL'].apply(lambda x: 1 if x == 'W' else 0)
     all_games['L3_WIN_RATE'] = all_games.groupby('TEAM_ID')['WIN_BIN'].transform(lambda x: x.shift(1).rolling(3).mean())
     all_games['L10_WIN_RATE'] = all_games.groupby('TEAM_ID')['WIN_BIN'].transform(lambda x: x.shift(1).rolling(10).mean())
     
+    # 計算比分差與對方得分
+    all_games['OPP_PTS'] = all_games['PTS'] - all_games['PLUS_MINUS']
+    all_games['SCORE_DISPLAY'] = all_games.apply(lambda r: f"{int(r['PTS'])} - {int(r['OPP_PTS'])}", axis=1)
+
     stats_cols = ['PTS', 'PLUS_MINUS', 'FG_PCT', 'TOV']
     for col in stats_cols:
         all_games[f'L5_{col}'] = all_games.groupby('TEAM_ID')[col].transform(lambda x: x.shift(1).rolling(5).mean())
@@ -55,7 +60,6 @@ def get_comprehensive_data(season):
     train_df = all_games.dropna(subset=['L5_PTS', 'L10_WIN_RATE']).copy()
     features = [f'L5_{c}' for c in stats_cols] + ['B2B', 'IS_HOME', 'L3_WIN_RATE', 'L10_WIN_RATE']
     
-    # 模型訓練
     clf_model = xgb.XGBClassifier(n_estimators=150, max_depth=4, learning_rate=0.05, eval_metric='logloss')
     clf_model.fit(train_df[features], train_df['WIN_BIN'])
     
@@ -109,7 +113,7 @@ def get_locked_results_for_date(date_key, games, clf_model, reg_model, all_games
         a_feat = all_games_raw[all_games_raw['TEAM_ABBREVIATION'] == a_abbr].tail(1)[features_list].copy()
         h_feat['IS_HOME'], a_feat['IS_HOME'] = 1, 0
         
-        # 修正處：使用 [0] 確保獲取純量 (Scalar)
+        # 修正 Scalar 轉換
         h_p = float(clf_model.predict_proba(h_feat)[:, 1][0])
         a_p = float(clf_model.predict_proba(a_feat)[:, 1][0])
         h_prob, a_prob = (h_p/(h_p+a_p))*100, (a_p/(h_p+a_p))*100
@@ -173,13 +177,21 @@ for i, tab in enumerate(tabs):
                 winner_abbr = g_data['HOME_ABBR'] if diff > 0 else g_data['AWAY_ABBR']
                 c3.metric("預計勝分差", f"{abs(diff)} 分", delta=f"{TEAM_NAME_CH.get(winner_abbr)} 佔優" if diff != 0 else None)
 
-                # 對戰紀錄表格
-                st.write("#### ⚔️ 本季對戰紀錄")
+                # --- 增強版對戰紀錄表格 ---
+                st.write("#### ⚔️ 本季對戰紀錄 (H2H)")
                 h_id, a_abbr = g_data['HOME_TEAM_ID'], g_data['AWAY_ABBR']
                 h2h = all_games_raw[((all_games_raw['TEAM_ID'] == h_id) & (all_games_raw['MATCHUP'].str.contains(a_abbr)))]
+                
                 if not h2h.empty:
-                    st.table(h2h[['GAME_DATE', 'MATCHUP', 'WL', 'PTS', 'PLUS_MINUS']].head(5))
-                else: st.caption("尚無紀錄")
+                    # 整理顯示用 DataFrame
+                    display_h2h = h2h[['GAME_DATE', 'MATCHUP', 'WL', 'SCORE_DISPLAY', 'PLUS_MINUS']].copy()
+                    display_h2h['GAME_DATE'] = display_h2h['GAME_DATE'].dt.strftime('%Y-%m-%d')
+                    
+                    # 中文化標題
+                    display_h2h.columns = ['比賽日期', '對陣組合', '結果', '比分 (主-客)', '分差']
+                    st.table(display_h2h.head(5))
+                else:
+                    st.caption("本賽季兩隊尚未有對戰紀錄")
 
                 # 名單顯示
                 st.write("#### 👤 核心球員 (封盤名單)")
