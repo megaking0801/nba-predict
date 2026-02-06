@@ -27,8 +27,8 @@ TEAM_NAME_CH = {
     'TOR': '多倫多暴龍', 'UTA': '猶他爵士', 'WAS': '華盛頓巫師'
 }
 
-st.set_page_config(page_title="NBA 數據專家 v7.2", layout="wide")
-st.title("🏀 NBA 數據專家 v7.2 (穩定性修復)")
+st.set_page_config(page_title="NBA 數據專家 v7.3", layout="wide")
+st.title("🏀 NBA 數據專家 v7.3 (數據型別自動校正)")
 
 # --- 2. 強化版安全抓取 ---
 def fetch_safe_df(endpoint_class, **kwargs):
@@ -41,19 +41,16 @@ def fetch_safe_df(endpoint_class, **kwargs):
     except: return pd.DataFrame()
 
 @st.cache_data(ttl=3600)
-def load_all_data_v72():
-    S = '2025-26'
-    ST = 'Regular Season'
+def load_all_data_v73():
+    S, ST = '2025-26', 'Regular Season'
     nba_ids = [t['id'] for t in teams.get_teams()]
     
-    # [數據抓取]
+    # [A] 抓取所有維度數據
     df_base = fetch_safe_df(leaguedashteamstats.LeagueDashTeamStats, season=S, per_mode_detailed='PerGame')
     df_adv = fetch_safe_df(leaguedashteamstats.LeagueDashTeamStats, season=S, measure_type_detailed_defense='Advanced')
     df_hustle = fetch_safe_df(leaguehustlestatsteam.LeagueHustleStatsTeam, season=S, per_mode_time='PerGame')
     df_spd = fetch_safe_df(leaguedashptstats.LeagueDashPtStats, season=S, pt_measure_type='SpeedDistance', per_mode_simple='PerGame')
     df_pass = fetch_safe_df(leaguedashptstats.LeagueDashPtStats, season=S, pt_measure_type='Passing', per_mode_simple='PerGame')
-    
-    # 戰術數據修復：如果 2025-26 為空，嘗試抓取數據
     df_trans = fetch_safe_df(synergyplaytypes.SynergyPlayTypes, play_type_nullable='Transition', player_or_team_abbreviation='T', season=S, season_type_all_star=ST)
     df_iso = fetch_safe_df(synergyplaytypes.SynergyPlayTypes, play_type_nullable='Isolation', player_or_team_abbreviation='T', season=S, season_type_all_star=ST)
     df_rim = fetch_safe_df(leaguedashptdefend.LeagueDashPtDefend, season=S, defense_category='Less Than 6 Ft', season_type_all_star=ST)
@@ -72,26 +69,23 @@ def load_all_data_v72():
         'rim': to_map(df_rim, ['D_FG_PCT'])
     }
 
-    # --- 修復 AttributeError: .dt accessor ---
+    # [B] 數據清洗與日期修復
     gf_raw = fetch_safe_df(leaguegamefinder.LeagueGameFinder, season_nullable=S)
     gf = gf_raw[gf_raw['TEAM_ID'].isin(nba_ids)].copy()
-    
-    # 關鍵：強制轉換日期格式
     gf['GAME_DATE'] = pd.to_datetime(gf['GAME_DATE'], errors='coerce')
-    gf = gf.dropna(subset=['GAME_DATE']) # 剔除日期無效的欄位
+    gf = gf.dropna(subset=['GAME_DATE']).sort_values(['TEAM_ID', 'GAME_DATE'])
     
-    gf['WIN_BIN'] = gf['WL'].apply(lambda x: 1 if x == 'W' else 0)
-    gf['IS_HOME'] = gf['MATCHUP'].apply(lambda x: 1 if 'vs.' in x else 0)
-    gf = gf.sort_values(['TEAM_ID', 'GAME_DATE'])
+    # [C] 特徵工程與型別強制轉換 (修正 IS_HOME: object 報錯)
+    gf['WIN_BIN'] = gf['WL'].apply(lambda x: 1 if x == 'W' else 0).astype(int)
+    gf['IS_HOME'] = gf['MATCHUP'].apply(lambda x: 1 if 'vs.' in x else 0).astype(int) # 強制 int
+    gf['REST_DAYS'] = gf.groupby('TEAM_ID')['GAME_DATE'].diff().dt.days.fillna(3).astype(float)
     
-    # 現在可以使用 .dt 了
-    gf['REST_DAYS'] = gf.groupby('TEAM_ID')['GAME_DATE'].diff().dt.days.fillna(3)
-
     def gv(tid, m, k, d=0): return maps[m].get(int(tid), {}).get(k, d)
-
+    
     feats = ['IS_HOME', 'REST_DAYS', 'F_PTS', 'F_REB', 'F_AST', 'F_ORTG', 'F_DRTG', 'F_PACE', 
              'F_DEFL', 'F_CONT', 'F_DIST', 'F_SPD', 'F_PASS', 'F_TRANS', 'F_ISO', 'F_RIM']
     
+    # 填充 16 項視覺化指標到 DataFrame
     gf['F_PTS'] = gf['TEAM_ID'].apply(lambda x: gv(x, 'base', 'PTS', 110))
     gf['F_REB'] = gf['TEAM_ID'].apply(lambda x: gv(x, 'base', 'REB', 44))
     gf['F_AST'] = gf['TEAM_ID'].apply(lambda x: gv(x, 'base', 'AST', 25))
@@ -107,20 +101,23 @@ def load_all_data_v72():
     gf['F_ISO'] = gf['TEAM_ID'].apply(lambda x: gv(x, 'iso', 'PPP', 0.9))
     gf['F_RIM'] = gf['TEAM_ID'].apply(lambda x: gv(x, 'rim', 'D_FG_PCT', 0.6))
 
-    # 模型純化
-    train_x = gf[feats].apply(pd.to_numeric, errors='coerce').fillna(0)
-    clf = xgb.XGBClassifier(n_estimators=100).fit(train_x, gf['WIN_BIN'])
-    reg = xgb.XGBRegressor(n_estimators=100).fit(train_x, gf['PLUS_MINUS'].fillna(0))
+    # --- 關鍵修正：將特徵矩陣轉為純浮點數 ---
+    train_x = gf[feats].astype(float).fillna(0)
+    train_y = gf['WIN_BIN'].astype(int)
     
+    clf = xgb.XGBClassifier(n_estimators=100, max_depth=5).fit(train_x, train_y)
+    reg = xgb.XGBRegressor(n_estimators=100).fit(train_x, gf['PLUS_MINUS'].astype(float).fillna(0))
+    
+    # 球員數據
     ps_raw = fetch_safe_df(leaguedashplayerstats.LeagueDashPlayerStats, season=S, per_mode_detailed='PerGame')
     ps_adv = fetch_safe_df(leaguedashplayerstats.LeagueDashPlayerStats, season=S, per_mode_detailed='PerGame', measure_type_detailed_defense='Advanced')
     ps_full = pd.merge(ps_raw[['PLAYER_ID', 'TEAM_ID', 'PLAYER_NAME', 'PTS', 'REB', 'AST']], ps_adv[['PLAYER_ID', 'TS_PCT', 'PIE']], on='PLAYER_ID')
     
     return clf, reg, gf, ps_full, feats, maps, datetime.now(tw_tz).strftime("%H:%M")
 
-clf, reg, gf, ps_full, feats, maps, last_update = load_all_data_v72()
+clf, reg, gf, ps_full, feats, maps, last_update = load_all_data_v73()
 
-# --- 3. 介面呈現 ---
+# --- 3. 介面與數據顯示 ---
 dates = [datetime.now(tw_tz) - timedelta(days=i) for i in range(4)]
 tabs = st.tabs([d.strftime('%m/%d') for d in dates])
 
@@ -137,7 +134,8 @@ for i, tab in enumerate(tabs):
                 if h_abbr and a_abbr:
                     h_last = gf[gf['TEAM_ABBREVIATION'] == h_abbr].tail(1)
                     if not h_last.empty:
-                        test_x = h_last[feats].apply(pd.to_numeric, errors='coerce').fillna(0)
+                        # 預測時也強制轉換型別
+                        test_x = h_last[feats].astype(float).fillna(0)
                         prob = clf.predict_proba(test_x)[0][1] * 100
                         diff = round(abs(float(reg.predict(test_x)[0])), 1)
                         games[f"{TEAM_NAME_CH.get(a_abbr)} @ {TEAM_NAME_CH.get(h_abbr)}"] = {
@@ -146,7 +144,7 @@ for i, tab in enumerate(tabs):
                         }
 
             if games:
-                selected = st.selectbox("🎯 選擇分析場次", list(games.keys()), key=f"s_{i}")
+                selected = st.selectbox("🎯 選擇場次", list(games.keys()), key=f"s_{i}")
                 res = games[selected]
                 st.write(f"### 🏟️ {selected}")
                 c1, c2, c3 = st.columns(3)
@@ -156,15 +154,16 @@ for i, tab in enumerate(tabs):
 
                 def gm(m, tid, k): return maps[m].get(int(tid), {}).get(k, 0)
 
-                # 表格美化與單位
-                st.subheader("📊 1. 團隊場均數據 (全指標)")
+                # --- 表格 1：帶單位的場均數據 ---
+                st.subheader("📊 1. 團隊場均數據 (含單位)")
                 st.table(pd.DataFrame({
-                    "指標項目": ["得分", "籃板", "進攻效率", "防守效率", "撥球破壞", "跑動里程"],
-                    res['h_name']: [f"{gm('base',res['h_id'],'PTS'):.1f} 分", f"{gm('base',res['h_id'],'REB'):.1f} 個", f"{gm('adv',res['h_id'],'OFF_RATING')} pts", f"{gm('adv',res['h_id'],'DEF_RATING')} pts", f"{gm('hustle',res['h_id'],'DEFLECTIONS'):.1f} 次", f"{gm('spd',res['h_id'],'DIST_MILES'):.2f} mi"],
-                    res['a_name']: [f"{gm('base',res['a_id'],'PTS'):.1f} 分", f"{gm('base',res['a_id'],'REB'):.1f} 個", f"{gm('adv',res['a_id'],'OFF_RATING')} pts", f"{gm('adv',res['a_id'],'DEF_RATING')} pts", f"{gm('hustle',res['a_id'],'DEFLECTIONS'):.1f} 次", f"{gm('spd',res['a_id'],'DIST_MILES'):.2f} mi"]
+                    "指標項目": ["得分", "籃板", "助攻", "進攻效率", "防守效率", "撥球破壞", "里程", "速度"],
+                    res['h_name']: [f"{gm('base',res['h_id'],'PTS'):.1f} 分", f"{gm('base',res['h_id'],'REB'):.1f} 個", f"{gm('base',res['h_id'],'AST'):.1f} 次", f"{gm('adv',res['h_id'],'OFF_RATING')} pts", f"{gm('adv',res['h_id'],'DEF_RATING')} pts", f"{gm('hustle',res['h_id'],'DEFLECTIONS'):.1f} 次", f"{gm('spd',res['h_id'],'DIST_MILES'):.2f} mi", f"{gm('spd',res['h_id'],'AVG_SPEED'):.2f} mph"],
+                    res['a_name']: [f"{gm('base',res['a_id'],'PTS'):.1f} 分", f"{gm('base',res['a_id'],'REB'):.1f} 個", f"{gm('base',res['a_id'],'AST'):.1f} 次", f"{gm('adv',res['a_id'],'OFF_RATING')} pts", f"{gm('adv',res['a_id'],'DEF_RATING')} pts", f"{gm('hustle',res['a_id'],'DEFLECTIONS'):.1f} 次", f"{gm('spd',res['a_id'],'DIST_MILES'):.2f} mi", f"{gm('spd',res['a_id'],'AVG_SPEED'):.2f} mph"]
                 }))
 
-                st.subheader("⚔️ 2. 戰術與護框 (模型關鍵特徵)")
+                # --- 表格 2：戰術修復表格 ---
+                st.subheader("⚔️ 2. 戰術類別與護框 (0 值修復版)")
                 st.table(pd.DataFrame({
                     "戰術指標": ["轉換進攻 PPP", "單打 PPP", "護框命中率 %"],
                     res['h_name']: [f"{gm('trans',res['h_id'],'PPP'):.2f}", f"{gm('iso',res['h_id'],'PPP'):.2f}", f"{gm('rim',res['h_id'],'D_FG_PCT'):.1%}"],
