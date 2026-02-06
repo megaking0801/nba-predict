@@ -11,16 +11,23 @@ import warnings
 import time
 import google.generativeai as genai
 
-# --- 1. AI 核心設定 ---
-try:
+# --- 1. AI 核心設定 (適配 Gemini 3) ---
+def init_ai():
     if "GEMINI_API_KEY" in st.secrets:
-        genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
-        model_ai = genai.GenerativeModel('gemini-1.5-flash')
-        AI_READY = True
-    else:
-        AI_READY = False
-except:
-    AI_READY = False
+        try:
+            genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
+            # 優先調用 Gemini 3 系列模型，並設定備援邏輯
+            # 注意：在 2026 年環境下，Gemini 3 的型號通常標記為 'gemini-3-flash' 或最新版本
+            model = genai.GenerativeModel('gemini-3-flash') 
+            return model
+        except Exception as e:
+            # 備援回 1.5 系列，確保系統不崩潰
+            try: return genai.GenerativeModel('gemini-1.5-flash')
+            except: return None
+    return None
+
+model_ai = init_ai()
+AI_READY = True if model_ai else False
 
 warnings.filterwarnings('ignore')
 tw_tz = pytz.timezone('Asia/Taipei')
@@ -38,8 +45,8 @@ TEAM_NAME_CH = {
     'TOR': '多倫多暴龍', 'UTA': '猶他爵士', 'WAS': '華盛頓巫師'
 }
 
-st.set_page_config(page_title="NBA AI 數據專家 v6.2", layout="wide")
-st.title("🏀 NBA 終極智慧預測系統 v6.2")
+st.set_page_config(page_title="NBA AI 數據專家 v6.4 (Gemini 3)", layout="wide")
+st.title("🏀 NBA 終極智慧預測系統 v6.4")
 
 # --- 2. 核心功能函數 ---
 def get_snapshot_path(date_key):
@@ -47,6 +54,7 @@ def get_snapshot_path(date_key):
 
 @st.cache_data(ttl=600)
 def get_team_roster_stats(team_id, player_stats_df):
+    """精簡球員表格：僅保留姓名、得分、籃板、助攻"""
     try:
         ros = commonteamroster.CommonTeamRoster(team_id=team_id, timeout=30).get_data_frames()[0]
         if 'PLAYER' in ros.columns:
@@ -61,33 +69,30 @@ def get_team_roster_stats(team_id, player_stats_df):
         return []
 
 def generate_ai_reports_sync(all_games_info):
-    """
-    同步生成報告：確保拿到資料才回傳，避免顯示「生成中」
-    """
+    """同步生成：確保 Gemini 3 完整輸出後才顯示"""
     if not AI_READY or not all_games_info: 
-        return {g_id: "無法取得數據分析" for g_id in all_games_info}
+        return {g_id: "AI 模型目前無法使用" for g_id in all_games_info}
     
     data_text = ""
     for g_id, d in all_games_info.items():
         data_text += f"ID:{g_id} | {d['away']} vs {d['home']} | 贏家:{d['winner']} | 分差:{d['diff']} | 客勝:{d['a_wr']:.1f}% | 主勝:{d['h_wr']:.1f}%\n"
 
-    prompt = f"""你是一位精通 NBA 的數據分析專家。請針對以下賽事撰寫深度分析報告。
-    【要求】：
+    prompt = f"""你是一位 NBA 專業分析師（使用 Gemini 3 核心）。請針對以下數據撰寫深度分析報告。
     1. 每場比賽字數「必須超過 180 字」。
-    2. 必須具體提到預測分差及勝率數據。
-    3. 語氣專業，針對對戰組合給出具體戰術觀點。
+    2. 必須提到預測分差（整數）與勝率數據。
+    3. 分析需涵蓋戰術對陣、核心球員對位與當前體能狀態。
     4. 回傳嚴格 JSON 格式: {{"場次ID": "分析內容"}}。
-    數據：\n{data_text}"""
+    數據內容：\n{data_text}"""
     
     try:
-        # 使用更穩定的生成參數
+        # Gemini 3 生成配置
         response = model_ai.generate_content(
             prompt, 
-            generation_config={"response_mime_type": "application/json", "temperature": 0.7}
+            generation_config={"response_mime_type": "application/json", "temperature": 0.8}
         )
         return json.loads(response.text)
     except Exception as e:
-        return {g_id: f"報告生成發生錯誤: {str(e)}" for g_id in all_games_info}
+        return {g_id: f"Gemini 3 處理異常: {str(e)}" for g_id in all_games_info}
 
 # --- 3. 系統數據載入 ---
 @st.cache_data(ttl=600)
@@ -114,15 +119,11 @@ def load_all_system_data(season):
     except:
         return None, None, pd.DataFrame(), pd.DataFrame(), []
 
-# --- 4. 核心預測流程 (同步化) ---
+# --- 4. 核心預測流程 (同步化 + 分差整數化) ---
 def get_full_analysis(raw_games_list, clf, reg, gf, ps, feats):
-    """
-    這個函數會確保所有數據（包括 AI 報告）都準備好才回傳
-    """
     results = {}; ai_input = {}
     t_map = {t['id']: t['abbreviation'] for t in teams.get_teams()}
     
-    # 1. 先算數學模型
     for g in raw_games_list:
         g_id = str(g['GAME_ID'])
         h_id, a_id = g['HOME_TEAM_ID'], g['VISITOR_TEAM_ID']
@@ -135,10 +136,15 @@ def get_full_analysis(raw_games_list, clf, reg, gf, ps, feats):
         h_in = h_f[feats].copy(); h_in['IS_HOME'] = 1
         a_in = a_f[feats].copy(); a_in['IS_HOME'] = 0
         
-        h_p = (clf.predict_proba(h_in)[:,1][0] / (clf.predict_proba(h_in)[:,1][0] + clf.predict_proba(a_in)[:,1][0])) * 100
-        pred_diff = float(reg.predict(h_in)[0]) - float(reg.predict(a_in)[0])
-        diff_abs = max(1, round(abs(pred_diff)))
-        win_abbr = h_code if pred_diff > 0 else a_code
+        # 勝率計算
+        h_raw_prob = clf.predict_proba(h_in)[:,1][0]
+        a_raw_prob = clf.predict_proba(a_in)[:,1][0]
+        h_p = (h_raw_prob / (h_raw_prob + a_raw_prob)) * 100
+        
+        # 勝分差整數化 (最少 1 分)
+        raw_diff = float(reg.predict(h_in)[0]) - float(reg.predict(a_in)[0])
+        diff_abs = max(1, round(abs(raw_diff)))
+        win_abbr = h_code if raw_diff > 0 else a_code
 
         ai_input[g_id] = {
             'home': TEAM_NAME_CH.get(h_code, h_code), 'away': TEAM_NAME_CH.get(a_code, a_code),
@@ -151,13 +157,11 @@ def get_full_analysis(raw_games_list, clf, reg, gf, ps, feats):
             'h_roster': get_team_roster_stats(h_id, ps), 'a_roster': get_team_roster_stats(a_id, ps)
         }
     
-    # 2. 同步呼叫 AI 並等待結果
     if ai_input:
-        with st.spinner("🧠 AI 正在進行全場次大數據深度分析，請稍候..."):
+        with st.spinner("🧠 Gemini 3 正在進行深度戰術分析..."):
             ai_reports = generate_ai_reports_sync(ai_input)
             for g_id in results:
-                results[g_id]['report'] = ai_reports.get(g_id, "分析生成失敗，請嘗試手動刷新。")
-                
+                results[g_id]['report'] = ai_reports.get(g_id, "分析報告獲取失敗")
     return results
 
 # --- 5. UI 渲染 ---
@@ -170,28 +174,25 @@ for i, tab in enumerate(tabs):
         d_key = dates[i].strftime('%Y-%m-%d')
         snap_path = get_snapshot_path(d_key)
         
-        # 賽程獲取
         try:
             sb = scoreboardv2.ScoreboardV2(game_date=dates[i].strftime('%m/%d/%Y'), timeout=30)
             raw_games = sb.get_data_frames()[0]
         except: raw_games = pd.DataFrame()
 
         if raw_games.empty:
-            st.info(f"📅 {d_key} 目前沒有賽程數據。")
+            st.info(f"📅 {d_key} 無賽程。")
             continue
 
-        # 核心數據載入邏輯
         if os.path.exists(snap_path):
             with open(snap_path, 'r', encoding='utf-8') as f: data_set = json.load(f)
-            st.success(f"已載入 {d_key} 封存數據")
+            st.success("已載入封存快照數據")
         else:
-            # 這裡會同步等待所有報告完成
             data_set = get_full_analysis(raw_games.to_dict('records'), clf, reg, gf, ps, feats)
-            if st.button("🔒 封存今日分析（不再耗費 API）", key=f"lock_{d_key}"):
+            if data_set and st.button("🔒 封存分析 (Gemini 3)", key=f"lock_{d_key}"):
                 with open(snap_path, 'w', encoding='utf-8') as f: json.dump(data_set, f, ensure_ascii=False)
                 st.rerun()
 
-        # 場次選擇與顯示
+        # 場次選擇
         game_options = [f"{v['a_name']} @ {v['h_name']}" for v in data_set.values()]
         if game_options:
             sel_game = st.selectbox("🎯 選擇場次", game_options, key=f"sel_{d_key}")
@@ -204,11 +205,11 @@ for i, tab in enumerate(tabs):
             c3.metric("預測贏家", TEAM_NAME_CH.get(curr_g['win_abbr']), delta=f"領先 {curr_g['diff']} 分")
 
             st.divider()
-            st.subheader("📝 AI 深度分析專欄")
+            st.subheader("📝 Gemini 3 深度分析")
             st.write(curr_g['report'])
 
             st.divider()
-            st.subheader("👤 核心球員場均戰力 (Top 5)")
+            st.subheader("👤 核心球員場均戰力")
             col_l, col_r = st.columns(2)
             with col_l:
                 st.markdown(f"**{curr_g['h_name']}**")
