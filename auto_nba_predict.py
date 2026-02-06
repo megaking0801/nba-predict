@@ -13,7 +13,7 @@ from datetime import datetime, timedelta
 # --- 1. 基本設定 ---
 warnings.filterwarnings('ignore')
 tw_tz = pytz.timezone('Asia/Taipei')
-us_east_tz = pytz.timezone('US/Eastern')
+us_east_tz = pytz.timezone('US/Eastern') # NBA 官方時區
 
 TEAM_NAME_CH = {
     'ATL': '亞特蘭大老鷹', 'BKN': '布魯克林籃網', 'BOS': '波士頓塞爾提克',
@@ -29,7 +29,7 @@ TEAM_NAME_CH = {
 }
 
 st.set_page_config(page_title="NBA 數據專家 v6.9", layout="wide")
-st.title("🏀 NBA 數據專家 v6.9 (KeyError 修復 & 時差優化)")
+st.title("🏀 NBA 數據專家 v6.9 (時差修正 & 單位補全)")
 
 # --- 2. 穩定抓取函數 ---
 def fetch_safe_df(endpoint_class, **kwargs):
@@ -38,14 +38,10 @@ def fetch_safe_df(endpoint_class, **kwargs):
         raw = instance.get_dict()
         res = raw['resultSets'][0] if 'resultSets' in raw else raw['resultSet']
         df = pd.DataFrame(res['rowSet'], columns=res['headers'])
-        # 統一將 ID 欄位轉為 TEAM_ID 以防 KeyError
-        for col in ['TEAM_ID', 'ID', 'teamId']:
-            if col in df.columns:
-                df['TEAM_ID'] = df[col].astype(int)
-                break
+        if 'TEAM_ID' in df.columns: df['TEAM_ID'] = df['TEAM_ID'].astype(int)
+        elif 'ID' in df.columns: df['TEAM_ID'] = df['ID'].astype(int)
         return df
-    except: 
-        return pd.DataFrame()
+    except: return pd.DataFrame()
 
 @st.cache_data(ttl=3600)
 def load_all_data_v69():
@@ -53,7 +49,6 @@ def load_all_data_v69():
     S = '2025-26'
     ST = 'Regular Season' 
     
-    # 抓取各維度數據
     df_base = fetch_safe_df(leaguedashteamstats.LeagueDashTeamStats, season=S, per_mode_detailed='PerGame')
     df_adv = fetch_safe_df(leaguedashteamstats.LeagueDashTeamStats, season=S, measure_type_detailed_defense='Advanced')
     df_hustle = fetch_safe_df(leaguehustlestatsteam.LeagueHustleStatsTeam, season=S, per_mode_time='PerGame')
@@ -63,11 +58,7 @@ def load_all_data_v69():
     df_iso = fetch_safe_df(synergyplaytypes.SynergyPlayTypes, play_type_nullable='Isolation', player_or_team_abbreviation='T', season=S, season_type_all_star=ST)
     df_rim = fetch_safe_df(leaguedashptdefend.LeagueDashPtDefend, season=S, defense_category='Less Than 6 Ft', season_type_all_star=ST)
 
-    # 修復後的 Map 轉換邏輯：增加 TEAM_ID 存在檢查
-    def to_map(df, cols):
-        if not df.empty and 'TEAM_ID' in df.columns:
-            return df.set_index('TEAM_ID')[cols].to_dict('index')
-        return {}
+    def to_map(df, cols): return df.set_index('TEAM_ID')[cols].to_dict('index') if not df.empty else {}
     
     maps = {
         'base': to_map(df_base, ['PTS', 'REB', 'AST', 'FG_PCT']),
@@ -80,67 +71,66 @@ def load_all_data_v69():
         'rim': to_map(df_rim, ['D_FG_PCT'])
     }
 
-    # 模型分析
     gf_raw = fetch_safe_df(leaguegamefinder.LeagueGameFinder, season_nullable=S)
-    gf = gf_raw[gf_raw['TEAM_ID'].isin(nba_ids)].copy() if not gf_raw.empty else pd.DataFrame()
+    gf = gf_raw[gf_raw['TEAM_ID'].isin(nba_ids)].copy()
+    gf['GAME_DATE'] = pd.to_datetime(gf['GAME_DATE'])
+    gf['WIN_BIN'] = gf['WL'].apply(lambda x: 1 if x == 'W' else 0)
+    gf['IS_HOME'] = gf['MATCHUP'].apply(lambda x: 1 if 'vs.' in x else 0)
+    gf = gf.sort_values(['TEAM_ID', 'GAME_DATE'])
+    gf['REST_DAYS'] = gf.groupby('TEAM_ID')['GAME_DATE'].diff().dt.days.fillna(3)
     
-    if not gf.empty:
-        gf['GAME_DATE'] = pd.to_datetime(gf['GAME_DATE'])
-        gf['WIN_BIN'] = gf['WL'].apply(lambda x: 1 if x == 'W' else 0)
-        gf['IS_HOME'] = gf['MATCHUP'].apply(lambda x: 1 if 'vs.' in x else 0)
-        gf = gf.sort_values(['TEAM_ID', 'GAME_DATE'])
-        gf['REST_DAYS'] = gf.groupby('TEAM_ID')['GAME_DATE'].diff().dt.days.fillna(3)
-        
-        def get_v(tid, m, k, default=0): return maps[m].get(int(tid), {}).get(k, default)
+    def get_v(tid, m, k, default=0): return maps[m].get(int(tid), {}).get(k, default)
 
-        gf['T_ORTG'] = gf['TEAM_ID'].apply(lambda x: get_v(x, 'adv', 'OFF_RATING', 110))
-        gf['T_DRTG'] = gf['TEAM_ID'].apply(lambda x: get_v(x, 'adv', 'DEF_RATING', 110))
-        gf['T_DEFL'] = gf['TEAM_ID'].apply(lambda x: get_v(x, 'hustle', 'DEFLECTIONS', 15))
-        gf['T_TRANS'] = gf['TEAM_ID'].apply(lambda x: get_v(x, 'trans', 'PPP', 1.1))
-        gf['T_RIM'] = gf['TEAM_ID'].apply(lambda x: get_v(x, 'rim', 'D_FG_PCT', 0.6))
-        
-        feats = ['IS_HOME', 'REST_DAYS', 'T_ORTG', 'T_DRTG', 'T_DEFL', 'T_TRANS', 'T_RIM']
-        train_df = gf.fillna(0)
-        clf = xgb.XGBClassifier().fit(train_df[feats], train_df['WIN_BIN'])
-        reg = xgb.XGBRegressor().fit(train_df[feats], train_df['PLUS_MINUS'])
-    else:
-        clf, reg, feats = None, None, []
-
+    gf['T_ORTG'] = gf['TEAM_ID'].apply(lambda x: get_v(x, 'adv', 'OFF_RATING', 110))
+    gf['T_DRTG'] = gf['TEAM_ID'].apply(lambda x: get_v(x, 'adv', 'DEF_RATING', 110))
+    gf['T_DEFL'] = gf['TEAM_ID'].apply(lambda x: get_v(x, 'hustle', 'DEFLECTIONS', 15))
+    gf['T_TRANS'] = gf['TEAM_ID'].apply(lambda x: get_v(x, 'trans', 'PPP', 1.1))
+    gf['T_RIM'] = gf['TEAM_ID'].apply(lambda x: get_v(x, 'rim', 'D_FG_PCT', 0.6))
+    
+    feats = ['IS_HOME', 'REST_DAYS', 'T_ORTG', 'T_DRTG', 'T_DEFL', 'T_TRANS', 'T_RIM']
+    train_df = gf.fillna(0)
+    clf = xgb.XGBClassifier().fit(train_df[feats], train_df['WIN_BIN'])
+    reg = xgb.XGBRegressor().fit(train_df[feats], train_df['PLUS_MINUS'])
+    
     ps_raw = fetch_safe_df(leaguedashplayerstats.LeagueDashPlayerStats, season=S, per_mode_detailed='PerGame')
     ps_adv = fetch_safe_df(leaguedashplayerstats.LeagueDashPlayerStats, season=S, per_mode_detailed='PerGame', measure_type_detailed_defense='Advanced')
-    ps_full = pd.merge(ps_raw[['PLAYER_ID', 'TEAM_ID', 'PLAYER_NAME', 'PTS', 'REB', 'AST']], ps_adv[['PLAYER_ID', 'TS_PCT', 'PIE']], on='PLAYER_ID') if not ps_raw.empty else pd.DataFrame()
+    ps_full = pd.merge(ps_raw[['PLAYER_ID', 'TEAM_ID', 'PLAYER_NAME', 'PTS', 'REB', 'AST']], ps_adv[['PLAYER_ID', 'TS_PCT', 'PIE']], on='PLAYER_ID')
     
     return clf, reg, gf, ps_full, feats, maps, datetime.now(tw_tz).strftime("%H:%M")
 
 clf, reg, gf, ps_full, feats, maps, last_update = load_all_data_v69()
 
-# --- 3. 介面顯示 (時差修正) ---
+# --- 3. 介面顯示 (時差修正邏輯) ---
+# 取得 NBA 當前日期（美國東部時間）
 nba_now = datetime.now(us_east_tz)
+# 生成分頁日期：明日預告, 今日比賽, 昨日戰果, 前日戰果
 dates_nba = [nba_now + timedelta(days=1), nba_now, nba_now - timedelta(days=1), nba_now - timedelta(days=2)]
+# Tab 標籤轉換回台灣日期顯示，方便閱讀
 tab_titles = [d.astimezone(tw_tz).strftime('%m/%d') for d in dates_nba]
 tabs = st.tabs(tab_titles)
 
 for i, tab in enumerate(tabs):
     with tab:
+        # 查詢 API 使用美國日期格式
         search_date = dates_nba[i].strftime('%m/%d/%Y')
         sb = fetch_safe_df(scoreboardv2.ScoreboardV2, game_date=search_date)
         
         if sb.empty: 
-            st.info(f"📅 美國時間 {dates_nba[i].strftime('%Y-%m-%d')} 目前無賽程數據回傳")
+            st.info(f"📅 美國時間 {dates_nba[i].strftime('%Y-%m-%d')} 暫無賽程數據")
         else:
             id_to_abbr = {t['id']: t['abbreviation'] for t in teams.get_teams()}
             games = {}
             for _, row in sb.iterrows():
                 h_id, a_id = row['HOME_TEAM_ID'], row['VISITOR_TEAM_ID']
                 h_abbr, a_abbr = id_to_abbr.get(h_id), id_to_abbr.get(a_id)
-                if h_abbr and a_abbr and clf:
+                if h_abbr and a_abbr:
                     h_last = gf[gf['TEAM_ABBREVIATION'] == h_abbr].tail(1)
                     if not h_last.empty:
                         prob = clf.predict_proba(h_last[feats])[0][1] * 100
                         diff = round(abs(float(reg.predict(h_last[feats])[0])), 1)
-                        games[f"{TEAM_NAME_CH.get(a_abbr, a_abbr)} @ {TEAM_NAME_CH.get(h_abbr, h_abbr)}"] = {
-                            'h_id': h_id, 'a_id': a_id, 'h_name': TEAM_NAME_CH.get(h_abbr, h_abbr), 'a_name': TEAM_NAME_CH.get(a_abbr, a_abbr),
-                            'prob': prob, 'diff': diff, 'winner': TEAM_NAME_CH.get(h_abbr if prob > 50 else a_abbr, "Unknown")
+                        games[f"{TEAM_NAME_CH.get(a_abbr)} @ {TEAM_NAME_CH.get(h_abbr)}"] = {
+                            'h_id': h_id, 'a_id': a_id, 'h_name': TEAM_NAME_CH.get(h_abbr), 'a_name': TEAM_NAME_CH.get(a_abbr),
+                            'prob': prob, 'diff': diff, 'winner': TEAM_NAME_CH.get(h_abbr if prob > 50 else a_abbr)
                         }
 
             if games:
@@ -175,11 +165,10 @@ for i, tab in enumerate(tabs):
                     res['a_name']: [f"{get_m('trans', res['a_id'], 'PPP'):.2f}", f"{get_m('iso', res['a_id'], 'PPP'):.2f}", f"{get_m('rim', res['a_id'], 'D_FG_PCT'):.1%}"]
                 }))
 
-                if not ps_full.empty:
-                    st.subheader("🚀 4. 核心球員傳統數據 (Top 6)")
-                    for tid, name in [(res['h_id'], f"🏠 {res['h_name']}"), (res['a_id'], f"✈️ {res['a_name']}")]:
-                        st.write(f"**{name}**")
-                        p_df = ps_full[ps_full['TEAM_ID'] == tid].sort_values('PTS', ascending=False).head(6)
-                        st.dataframe(p_df[['PLAYER_NAME', 'PTS', 'REB', 'AST', 'TS_PCT']].rename(columns={'PLAYER_NAME':'姓名','PTS':'得分','REB':'籃板','AST':'助攻','TS_PCT':'真實命中%'}).style.format({'得分':'{:.1f}','籃板':'{:.1f}','助攻':'{:.1f}','真實命中%':'{:.1%}'}), hide_index=True)
+                st.subheader("🚀 4. 核心球員傳統數據 (Top 6)")
+                for tid, name in [(res['h_id'], f"🏠 {res['h_name']}"), (res['a_id'], f"✈️ {res['a_name']}")]:
+                    st.write(f"**{name}**")
+                    p_df = ps_full[ps_full['TEAM_ID'] == tid].sort_values('PTS', ascending=False).head(6)
+                    st.dataframe(p_df[['PLAYER_NAME', 'PTS', 'REB', 'AST', 'TS_PCT']].rename(columns={'PLAYER_NAME':'姓名','PTS':'得分','REB':'籃板','AST':'助攻','TS_PCT':'真實命中%'}).style.format({'得分':'{:.1f}','籃板':'{:.1f}','助攻':'{:.1f}','真實命中%':'{:.1%}'}), hide_index=True)
 
 st.sidebar.caption(f"🕒 更新時間：{last_update}")
