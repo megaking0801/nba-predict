@@ -10,18 +10,16 @@ import pytz
 import warnings
 import time
 import google.generativeai as genai
-import random
 
 # --- 1. AI 核心設定 ---
 try:
     if "GEMINI_API_KEY" in st.secrets:
-        API_KEY = st.secrets["GEMINI_API_KEY"]
-        genai.configure(api_key=API_KEY)
+        genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
         model_ai = genai.GenerativeModel('gemini-1.5-flash')
         AI_READY = True
     else:
         AI_READY = False
-except Exception as e:
+except:
     AI_READY = False
 
 warnings.filterwarnings('ignore')
@@ -33,174 +31,153 @@ TEAM_NAME_CH = {
     'DAL': '達拉斯獨行俠', 'DEN': '丹佛金塊', 'DET': '底特律活塞',
     'GSW': '金州勇士', 'HOU': '休士頓火箭', 'IND': '印第安納溜馬',
     'LAC': '洛杉磯快艇', 'LAL': '洛杉磯湖人', 'MEM': '曼非斯灰熊',
-    'MIA': '邁阿密熱火', 'MIL': '密爾瓦基公鹿', 'MIN': '明尼蘇達森林狼',
+    'MIA': '邁阿密熱火', 'MIL': '密爾瓦基公鹿', 'MIN': '明尼蘇達灰狼',
     'NOP': '紐奧良鵜鶘', 'NYK': '紐約尼克', 'OKC': '奧克拉荷馬雷霆',
     'ORL': '奧蘭多魔術', 'PHI': '費城 76 人', 'PHX': '鳳凰城太陽',
     'POR': '波特蘭開拓者', 'SAC': '沙加緬度國王', 'SAS': '聖安東尼奧馬刺',
     'TOR': '多倫多暴龍', 'UTA': '猶他爵士', 'WAS': '華盛頓巫師'
 }
 
-st.set_page_config(page_title="NBA AI 穩定版 v5.9", layout="wide")
-st.title("🏀 NBA 終極智慧預測系統")
+st.set_page_config(page_title="NBA AI 數據專家 v6.0", layout="wide")
+st.title("🏀 NBA 終極智慧預測系統 v6.0")
 
-# --- 2. 側邊欄 ---
-with st.sidebar:
-    st.header("🛠️ 系統狀態")
-    if AI_READY:
-        st.success("Gemini API: 已連線")
-    else:
-        st.error("Gemini API: 未設定")
-    st.info(f"v5.9: Connection Shield & Daily Fix")
-
-# --- 3. 核心輔助函數 ---
+# --- 2. 核心功能函數 ---
 def get_snapshot_path(date_key):
     return f"nba_snapshot_{date_key}.json"
 
 @st.cache_data(ttl=600)
-def generate_ai_all_reports(all_games_info):
-    if not AI_READY or not all_games_info:
-        return {}
-    data_payload = ""
-    for g_id, d in all_games_info.items():
-        data_payload += f"【場次 {g_id}】{d['away']} @ {d['home']}\n"
-        data_payload += f"- 數據: 客勝率 {d['a_wr']:.0f}%, 主勝率 {d['h_wr']:.0f}%\n"
-        data_payload += f"- 預測: {d['winner']} 贏 {d['diff']} 分 | B2B: {d['b2b_status']}\n\n"
+def get_team_roster_stats(team_id, player_stats_df):
+    try:
+        ros = commonteamroster.CommonTeamRoster(team_id=team_id, timeout=30).get_data_frames()[0]
+        ros = ros.rename(columns={'PLAYER': 'PLAYER_NAME'})
+        if player_stats_df.empty: return ros[['PLAYER_NAME']].head(5).to_dict('records')
+        m = ros.merge(player_stats_df, on='PLAYER_NAME', how='left').fillna(0)
+        return m.sort_values(by='PTS', ascending=False).head(5).to_dict('records')
+    except: return []
 
-    prompt = f"你是一位 NBA 大數據球評。請針對以下賽事數據撰寫超過 180 字的深度戰術分析報告（台灣繁體中文）。必須解釋為何預測分差為該整數。格式為 JSON：{data_payload}"
+@st.cache_data(ttl=600)
+def generate_ai_reports_live(all_games_info):
+    if not AI_READY or not all_games_info: return {}
+    
+    data_text = ""
+    for g_id, d in all_games_info.items():
+        data_text += f"ID:{g_id} | {d['away']} vs {d['home']} | 預測贏家:{d['winner']} | 分差:{d['diff']} | 客勝率:{d['a_wr']}% | 主勝率:{d['h_wr']}%\n"
+
+    prompt = f"""你是一位 NBA 專業分析師。請針對以下數據撰寫分析，每場「必須超過 180 字」。
+    必須提到預測分差與雙方勝率。格式為 JSON: {{"場次ID": "內容"}}。
+    數據內容：\n{data_text}"""
+    
     try:
         response = model_ai.generate_content(prompt, generation_config={"response_mime_type": "application/json", "temperature": 0.8})
         return json.loads(response.text)
-    except:
-        return {}
+    except: return {g_id: "分析報告生成中，請稍後刷新..." for g_id in all_games_info}
 
-# --- 4. 數據獲取 (強化版) ---
+# --- 3. 數據與模型 ---
 @st.cache_data(ttl=600)
-def get_comprehensive_data(season):
-    all_games = pd.DataFrame()
-    for i in range(3):
-        try:
-            gamefinder = leaguegamefinder.LeagueGameFinder(season_nullable=season, timeout=60)
-            all_games = gamefinder.get_data_frames()[0]
-            if not all_games.empty: break
-        except: time.sleep(2)
-    if all_games.empty: return None, None, pd.DataFrame(), pd.DataFrame(), []
-    
-    all_games['GAME_DATE'] = pd.to_datetime(all_games['GAME_DATE'])
-    all_games = all_games.sort_values(['TEAM_ID', 'GAME_DATE'])
-    all_games['IS_HOME'] = all_games['MATCHUP'].apply(lambda x: 1 if 'vs.' in x else 0)
-    all_games['WIN_BIN'] = all_games['WL'].apply(lambda x: 1 if x == 'W' else 0)
-    all_games['L10_WIN_RATE'] = all_games.groupby('TEAM_ID')['WIN_BIN'].transform(lambda x: x.shift(1).rolling(10).mean())
-    stats_cols = ['PTS', 'PLUS_MINUS', 'FG_PCT']
-    for col in stats_cols:
-        all_games[f'L5_{col}'] = all_games.groupby('TEAM_ID')[col].transform(lambda x: x.shift(1).rolling(5).mean())
-    all_games['B2B'] = (all_games.groupby('TEAM_ID')['GAME_DATE'].diff().dt.days == 1).astype(int)
-    
-    train_df = all_games.dropna(subset=['L5_PTS', 'L10_WIN_RATE']).copy()
-    features = [f'L5_{c}' for c in stats_cols] + ['B2B', 'IS_HOME', 'L10_WIN_RATE']
-    clf = xgb.XGBClassifier(n_estimators=100, max_depth=3, learning_rate=0.1)
-    clf.fit(train_df[features], train_df['WIN_BIN'])
-    reg = xgb.XGBRegressor(n_estimators=100, max_depth=3, learning_rate=0.1)
-    reg.fit(train_df[features], train_df['PLUS_MINUS'])
-    
+def load_all_system_data(season):
     try:
-        p_stats = leaguedashplayerstats.LeagueDashPlayerStats(season=season, per_mode_detailed='PerGame').get_data_frames()[0]
-        player_stats = p_stats[['PLAYER_NAME', 'TEAM_ID', 'PTS', 'REB', 'AST']]
-    except: player_stats = pd.DataFrame()
-    return clf, reg, all_games, player_stats, features
+        gf = leaguegamefinder.LeagueGameFinder(season_nullable=season, timeout=60).get_data_frames()[0]
+        gf['GAME_DATE'] = pd.to_datetime(gf['GAME_DATE'])
+        gf = gf.sort_values(['TEAM_ID', 'GAME_DATE'])
+        gf['IS_HOME'] = gf['MATCHUP'].apply(lambda x: 1 if 'vs.' in x else 0)
+        gf['WIN_BIN'] = gf['WL'].apply(lambda x: 1 if x == 'W' else 0)
+        gf['L10_WIN_RATE'] = gf.groupby('TEAM_ID')['WIN_BIN'].transform(lambda x: x.shift(1).rolling(10).mean())
+        for c in ['PTS', 'PLUS_MINUS']:
+            gf[f'L5_{c}'] = gf.groupby('TEAM_ID')[c].transform(lambda x: x.shift(1).rolling(5).mean())
+        gf['B2B'] = (gf.groupby('TEAM_ID')['GAME_DATE'].diff().dt.days == 1).astype(int)
+        
+        train = gf.dropna(subset=['L5_PTS', 'L10_WIN_RATE']).copy()
+        feats = ['L5_PTS', 'L5_PLUS_MINUS', 'B2B', 'IS_HOME', 'L10_WIN_RATE']
+        
+        clf = xgb.XGBClassifier().fit(train[feats], train['WIN_BIN'])
+        reg = xgb.XGBRegressor().fit(train[feats], train['PLUS_MINUS'])
+        
+        ps = leaguedashplayerstats.LeagueDashPlayerStats(season=season, per_mode_detailed='PerGame').get_data_frames()[0]
+        ps = ps[['PLAYER_NAME', 'TEAM_ID', 'PTS', 'REB', 'AST']]
+        return clf, reg, gf, ps, feats
+    except: return None, None, pd.DataFrame(), pd.DataFrame(), []
 
-@st.cache_data(ttl=3600)
-def get_schedule_for_date(date_obj):
-    """強化版賽程抓取：包含重試機制與備用方案"""
-    date_str = date_obj.strftime('%m/%d/%Y')
-    t_map = {t['id']: t['abbreviation'] for t in teams.get_teams()}
-    
-    # 方案 A: ScoreboardV2
-    for _ in range(2):
-        try:
-            sb = scoreboardv2.ScoreboardV2(game_date=date_str, timeout=30)
-            df = sb.get_data_frames()[0]
-            if not df.empty:
-                df['HOME_ABBR'] = df['HOME_TEAM_ID'].map(t_map)
-                df['AWAY_ABBR'] = df['VISITOR_TEAM_ID'].map(t_map)
-                return df.to_dict('records')
-        except: time.sleep(1)
-    return []
-
-# --- 5. 預測引擎 ---
-def run_prediction(games, clf, reg, all_games_raw, player_stats, features_list):
-    results = {}; ai_input_data = {}
+# --- 4. 預測邏輯 ---
+def process_predictions(games, clf, reg, gf, ps, feats):
+    results = {}; ai_data = {}
     for g in games:
         g_id = str(g['GAME_ID'])
-        h_abbr, a_abbr = g.get('HOME_ABBR'), g.get('AWAY_ABBR')
-        if not h_abbr or not a_abbr: continue
+        h_abbr, a_abbr = g['HOME_TEAM_ID'], g['VISITOR_TEAM_ID']
+        t_map = {t['id']: t['abbreviation'] for t in teams.get_teams()}
+        h_code, a_code = t_map.get(h_abbr), t_map.get(a_abbr)
         
-        h_feat = all_games_raw[all_games_raw['TEAM_ABBREVIATION'] == h_abbr].tail(1)
-        a_feat = all_games_raw[all_games_raw['TEAM_ABBREVIATION'] == a_abbr].tail(1)
-        if h_feat.empty or a_feat.empty: continue
+        h_f = gf[gf['TEAM_ABBREVIATION'] == h_code].tail(1)
+        a_f = gf[gf['TEAM_ABBREVIATION'] == a_code].tail(1)
+        if h_f.empty or a_f.empty: continue
 
-        h_in = h_feat[features_list].copy(); h_in['IS_HOME'] = 1
-        a_in = a_feat[features_list].copy(); a_in['IS_HOME'] = 0
+        h_in = h_f[feats].copy(); h_in['IS_HOME'] = 1
+        a_in = a_f[feats].copy(); a_in['IS_HOME'] = 0
         
-        h_p = (clf.predict_proba(h_in)[:, 1][0] / (clf.predict_proba(h_in)[:, 1][0] + clf.predict_proba(a_in)[:, 1][0])) * 100
-        raw_diff = float(reg.predict(h_in)[0]) - float(reg.predict(a_in)[0])
-        diff_int = max(1, round(abs(raw_diff)))
-        winner_side = h_abbr if raw_diff > 0 else a_abbr
-        
-        ai_input_data[g_id] = {
-            'home': TEAM_NAME_CH.get(h_abbr, h_abbr), 'away': TEAM_NAME_CH.get(a_abbr, a_abbr),
-            'h_wr': h_feat['L10_WIN_RATE'].values[0]*100, 'a_wr': a_feat['L10_WIN_RATE'].values[0]*100,
-            'h_pts': h_feat['L5_PTS'].values[0], 'a_pts': a_feat['L5_PTS'].values[0],
-            'b2b_status': f"主隊{'有' if h_feat['B2B'].values[0] else '否'}B2B",
-            'winner': TEAM_NAME_CH.get(winner_side), 'diff': diff_int
+        h_prob = (clf.predict_proba(h_in)[:,1][0] / (clf.predict_proba(h_in)[:,1][0] + clf.predict_proba(a_in)[:,1][0])) * 100
+        diff = max(1, round(abs(float(reg.predict(h_in)[0]) - float(reg.predict(a_in)[0]))))
+        win_abbr = h_code if (float(reg.predict(h_in)[0]) > float(reg.predict(a_in)[0])) else a_code
+
+        ai_data[g_id] = {
+            'home': TEAM_NAME_CH.get(h_code, h_code), 'away': TEAM_NAME_CH.get(a_code, a_code),
+            'h_wr': h_f['L10_WIN_RATE'].values[0]*100, 'a_wr': a_f['L10_WIN_RATE'].values[0]*100,
+            'winner': TEAM_NAME_CH.get(win_abbr), 'diff': diff
         }
         results[g_id] = {
-            'h_prob': h_p, 'a_prob': 100-h_p, 'diff': diff_int, 'winner_abbr': winner_side,
-            'h_team_id': g['HOME_TEAM_ID'], 'a_team_id': g['VISITOR_TEAM_ID'],
-            'h_idx': [f"🏠 勝率: {ai_input_data[g_id]['h_wr']:.0f}%", f"🏠 均分: {ai_input_data[g_id]['h_pts']:.1f}"],
-            'a_idx': [f"✈️ 勝率: {ai_input_data[g_id]['a_wr']:.0f}%", f"✈️ 均分: {ai_input_data[g_id]['a_pts']:.1f}"]
+            'h_prob': h_prob, 'a_prob': 100-h_prob, 'diff': diff, 'win_abbr': win_abbr,
+            'h_name': TEAM_NAME_CH.get(h_code, h_code), 'a_name': TEAM_NAME_CH.get(a_code, a_code),
+            'h_roster': get_team_roster_stats(h_abbr, ps), 'a_roster': get_team_roster_stats(a_abbr, ps)
         }
-    ai_book = generate_ai_all_reports(ai_input_data)
-    for g_id in results:
-        results[g_id]['summary_report'] = ai_book.get(g_id, "AI 分析生成中...")
+    
+    ai_reports = generate_ai_reports_live(ai_data)
+    for g_id in results: results[g_id]['report'] = ai_reports.get(g_id, "分析生成中...")
     return results
 
-# --- 6. UI ---
-clf, reg, all_games_raw, player_stats, features = get_comprehensive_data('2025-26')
-date_list = [datetime.now(tw_tz) - timedelta(days=i) for i in range(4)]
-tabs = st.tabs([d.strftime('%m/%d') for d in date_list])
+# --- 5. UI 呈現 ---
+clf, reg, gf, ps, feats = load_all_system_data('2025-26')
+dates = [datetime.now(tw_tz) - timedelta(days=i) for i in range(4)]
+tabs = st.tabs([d.strftime('%m/%d') for d in dates])
 
 for i, tab in enumerate(tabs):
     with tab:
-        current_date = date_list[i]; date_key = current_date.strftime('%Y-%m-%d')
-        games = get_schedule_for_date(current_date); snapshot_file = get_snapshot_path(date_key)
-        
-        if not games:
-            st.warning(f"⚠️ {date_key} 找不到賽程資料。請確認今日是否有比賽，或嘗試刷新網頁。")
-            if st.button("🔄 強制刷新賽程", key=f"re_{date_key}"): st.rerun()
+        d_key = dates[i].strftime('%Y-%m-%d')
+        try:
+            raw_games = scoreboardv2.ScoreboardV2(game_date=dates[i].strftime('%m/%d/%Y')).get_data_frames()[0]
+        except: raw_games = pd.DataFrame()
+
+        if raw_games.empty:
+            st.info("尚無賽程數據")
             continue
 
-        is_locked = os.path.exists(snapshot_file)
-        c_btn, c_txt = st.columns([1, 4])
-        
-        if is_locked:
-            with open(snapshot_file, 'r', encoding='utf-8') as f: ds = json.load(f)
-            if c_btn.button("🔓 解鎖", key=f"ul_{date_key}"): os.remove(snapshot_file); st.rerun()
+        snap_path = get_snapshot_path(d_key)
+        if os.path.exists(snap_path):
+            with open(snap_path, 'r', encoding='utf-8') as f: data_set = json.load(f)
+            st.success("已載入封存快照")
         else:
-            ds = run_prediction(games, clf, reg, all_games_raw, player_stats, features)
-            if c_btn.button("🔒 鎖定", key=f"lk_{date_key}"):
-                with open(snapshot_file, 'w', encoding='utf-8') as f: json.dump(ds, f, ensure_ascii=False); st.rerun()
+            data_set = process_predictions(raw_games.to_dict('records'), clf, reg, gf, ps, feats)
+            if st.button("🔒 鎖定今日數據", key=f"lock_{d_key}"):
+                with open(snap_path, 'w', encoding='utf-8') as f: json.dump(data_set, f, ensure_ascii=False)
+                st.rerun()
 
-        game_names = [f"{TEAM_NAME_CH.get(g.get('AWAY_ABBR'), '客隊')} @ {TEAM_NAME_CH.get(g.get('HOME_ABBR'), '主隊')}" for g in games]
-        sel_name = st.selectbox("🎯 選擇場次", options=game_names, key=f"sb_{date_key}")
+        game_list = [f"{v['a_name']} @ {v['h_name']}" for v in data_set.values()]
+        sel_game = st.selectbox("🎯 選擇場次", game_list, key=f"sel_{d_key}")
         
-        idx = game_names.index(sel_name)
-        g_id = str(games[idx]['GAME_ID'])
-        res = ds.get(g_id)
+        # 顯示詳情
+        curr_g = [v for v in data_set.values() if f"{v['a_name']} @ {v['h_name']}" == sel_game][0]
         
-        if res:
-            st.markdown(f"## 🏟️ {sel_name}")
-            c1, c2, c3 = st.columns(3)
-            c1.metric("主隊勝率", f"{res['h_prob']:.1f}%")
-            c2.metric("客隊勝率", f"{res['a_prob']:.1f}%")
-            c3.metric("預測贏家", TEAM_NAME_CH.get(res['winner_abbr']), delta=f"領先 {res['diff']} 分")
-            st.info(res['summary_report'])
+        st.header(f"🏟️ {sel_game}")
+        c1, c2, c3 = st.columns(3)
+        c1.metric(f"🏠 {curr_g['h_name']} 勝率", f"{curr_g['h_prob']:.1f}%")
+        c2.metric(f"✈️ {curr_g['a_name']} 勝率", f"{curr_g['a_prob']:.1f}%")
+        c3.metric("預測贏家", TEAM_NAME_CH.get(curr_g['win_abbr']), delta=f"領先 {curr_g['diff']} 分")
+
+        st.subheader("📝 AI 深度分析")
+        st.info(curr_g['report'])
+
+        st.subheader("👤 核心球員戰力")
+        col_l, col_r = st.columns(2)
+        with col_l:
+            st.write(f"**{curr_g['h_name']}**")
+            st.table(pd.DataFrame(curr_g['h_roster']))
+        with col_r:
+            st.write(f"**{curr_g['a_name']}**")
+            st.table(pd.DataFrame(curr_g['a_roster']))
