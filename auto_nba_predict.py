@@ -20,15 +20,15 @@ TEAM_NAME_CH = {
     'DAL': '達拉斯獨行俠', 'DEN': '丹佛金塊', 'DET': '底特律活塞',
     'GSW': '金州勇士', 'HOU': '休士頓火箭', 'IND': '印第安納溜馬',
     'LAC': '洛杉磯快艇', 'LAL': '洛杉磯湖人', 'MEM': '曼非斯灰熊',
-    'MIA': '邁阿密熱火', 'MIL': '密爾瓦基公鹿', 'MIN': '明尼蘇達狼',
+    'MIA': '邁阿密熱火', 'MIL': '密爾瓦基公鹿', 'MIN': '明尼蘇達灰狼',
     'NOP': '紐奧良鵜鶘', 'NYK': '紐約尼克', 'OKC': '奧克拉荷馬雷霆',
     'ORL': '奧蘭多魔術', 'PHI': '費城 76 人', 'PHX': '鳳凰城太陽',
     'POR': '波特蘭開拓者', 'SAC': '沙加謬度國王', 'SAS': '聖安東尼奧馬刺',
     'TOR': '多倫多暴龍', 'UTA': '猶他爵士', 'WAS': '華盛頓巫師'
 }
 
-st.set_page_config(page_title="NBA 2026 預測系統 - 手動封盤版", layout="wide")
-st.title("🏀 NBA 終極預測系統 (手動封盤/解鎖機制)")
+st.set_page_config(page_title="NBA 2026 預測系統 - 深度分析版", layout="wide")
+st.title("🏀 NBA 終極預測系統 (自動分析建議)")
 
 def get_snapshot_path(date_key):
     return f"nba_snapshot_{date_key}.json"
@@ -46,6 +46,7 @@ def get_comprehensive_data(season):
     all_games['GAME_DATE'] = pd.to_datetime(all_games['GAME_DATE'])
     all_games = all_games.sort_values(['TEAM_ID', 'GAME_DATE'])
 
+    # 特徵工程
     all_games['IS_HOME'] = all_games['MATCHUP'].apply(lambda x: 1 if 'vs.' in x else 0)
     all_games['WIN_BIN'] = all_games['WL'].apply(lambda x: 1 if x == 'W' else 0)
     all_games['L3_WIN_RATE'] = all_games.groupby('TEAM_ID')['WIN_BIN'].transform(lambda x: x.shift(1).rolling(3).mean())
@@ -65,7 +66,6 @@ def get_comprehensive_data(season):
     
     clf_model = xgb.XGBClassifier(n_estimators=150, max_depth=4, learning_rate=0.05, eval_metric='logloss')
     clf_model.fit(train_df[features], train_df['WIN_BIN'])
-    
     reg_model = xgb.XGBRegressor(n_estimators=150, max_depth=4, learning_rate=0.05)
     reg_model.fit(train_df[features], train_df['PLUS_MINUS'])
 
@@ -105,34 +105,52 @@ def get_schedule_for_date(date_obj):
     except: pass
     return []
 
-# --- 2. 封盤邏輯核心 ---
+# --- 2. 預測與分析邏輯 ---
 def run_prediction(games, clf_model, reg_model, all_games_raw, player_stats, features_list):
     now_tw = datetime.now(tw_tz)
     results = {}
     for g in games:
         h_abbr, a_abbr = g['HOME_ABBR'], g['AWAY_ABBR']
         h_id, a_id = g['HOME_TEAM_ID'], g['VISITOR_TEAM_ID']
-        h_feat = all_games_raw[all_games_raw['TEAM_ABBREVIATION'] == h_abbr].tail(1)[features_list].copy()
-        a_feat = all_games_raw[all_games_raw['TEAM_ABBREVIATION'] == a_abbr].tail(1)[features_list].copy()
-        h_feat['IS_HOME'], a_feat['IS_HOME'] = 1, 0
-        h_p = float(clf_model.predict_proba(h_feat)[:, 1][0])
-        a_p = float(clf_model.predict_proba(a_feat)[:, 1][0])
+        
+        h_feat = all_games_raw[all_games_raw['TEAM_ABBREVIATION'] == h_abbr].tail(1)
+        a_feat = all_games_raw[all_games_raw['TEAM_ABBREVIATION'] == a_abbr].tail(1)
+        
+        h_feat_input = h_feat[features_list].copy()
+        a_feat_input = a_feat[features_list].copy()
+        h_feat_input['IS_HOME'], a_feat_input['IS_HOME'] = 1, 0
+        
+        h_p = float(clf_model.predict_proba(h_feat_input)[:, 1][0])
+        a_p = float(clf_model.predict_proba(a_feat_input)[:, 1][0])
         h_prob, a_prob = (h_p/(h_p+a_p))*100, (a_p/(h_p+a_p))*100
-        h_spread, a_spread = float(reg_model.predict(h_feat)[0]), float(reg_model.predict(a_feat)[0])
+        
+        h_spread = float(reg_model.predict(h_feat_input)[0])
+        a_spread = float(reg_model.predict(a_feat_input)[0])
         predicted_diff = h_spread - a_spread
         
+        # 產生分析原因
+        reasons = []
+        if h_feat['L10_WIN_RATE'].values[0] > a_feat['L10_WIN_RATE'].values[0]: reasons.append(f"🟢 {TEAM_NAME_CH.get(h_abbr)} 近期勝率較高")
+        else: reasons.append(f"🟢 {TEAM_NAME_CH.get(a_abbr)} 近期狀態更穩定")
+        
+        if h_feat['L5_PTS'].values[0] > a_feat['L5_PTS'].values[0] + 5: reasons.append(f"🔥 {TEAM_NAME_CH.get(h_abbr)} 火力旺盛")
+        elif a_feat['L5_PTS'].values[0] > h_feat['L5_PTS'].values[0] + 5: reasons.append(f"🔥 {TEAM_NAME_CH.get(a_abbr)} 火力佔優")
+        
+        if h_feat['B2B'].values[0] == 1: reasons.append(f"🏃 {TEAM_NAME_CH.get(h_abbr)} 連續出賽體力挑戰")
+        if a_feat['B2B'].values[0] == 1: reasons.append(f"🏃 {TEAM_NAME_CH.get(a_abbr)} 連續出賽體力挑戰")
+
         def get_clean_roster(t_id):
             ros = get_team_roster(t_id)
             if ros.empty or player_stats.empty: return []
             m = ros.merge(player_stats, on='PLAYER_NAME', how='left')
-            c = m[~((m['TEAM_ID'] != t_id) & (m['TEAM_ID'] != 0) & (m['TEAM_ID'].notnull()))]
-            return c.sort_values(by='PTS', ascending=False).head(5).to_dict('records')
+            return m.sort_values(by='PTS', ascending=False).head(5).to_dict('records')
 
         results[str(g['GAME_ID'])] = {
             'home_prob': h_prob, 'away_prob': a_prob,
             'predicted_diff': round(predicted_diff, 1),
             'home_roster': get_clean_roster(h_id),
             'away_roster': get_clean_roster(a_id),
+            'reasons': reasons,
             'lock_time': now_tw.strftime('%Y-%m-%d %H:%M:%S')
         }
     return results
@@ -154,33 +172,25 @@ for i, tab in enumerate(tabs):
         if not games:
             st.info(f"📅 {date_key} 暫無賽程")
         else:
-            # 檢查目前是否為封盤狀態
             is_locked = os.path.exists(snapshot_file)
-            
-            # --- 手動封盤按鈕區 ---
             col_btn1, col_btn2 = st.columns([1, 5])
             with col_btn1:
                 if is_locked:
                     if st.button("🔓 解鎖數據", key=f"unlock_{date_key}"):
-                        os.remove(snapshot_file)
-                        st.rerun()
+                        os.remove(snapshot_file); st.rerun()
                 else:
                     if st.button("🔒 鎖定今日數據", key=f"lock_{date_key}"):
                         current_results = run_prediction(games, clf_model, reg_model, all_games_raw, all_player_stats, features_list)
-                        with open(snapshot_file, 'w', encoding='utf-8') as f:
-                            json.dump(current_results, f, ensure_ascii=False)
+                        with open(snapshot_file, 'w', encoding='utf-8') as f: json.dump(current_results, f, ensure_ascii=False)
                         st.rerun()
 
-            # 讀取或即時計算數據
             if is_locked:
-                with open(snapshot_file, 'r', encoding='utf-8') as f:
-                    locked_data = json.load(f)
-                st.success(f"🔒 目前顯示為封盤數據 (鎖定時間: {list(locked_data.values())[0].get('lock_time', 'N/A')})")
+                with open(snapshot_file, 'r', encoding='utf-8') as f: locked_data = json.load(f)
+                st.success(f"🔒 封盤數據 ({locked_data[list(locked_data.keys())[0]].get('lock_time', 'N/A')})")
             else:
                 locked_data = run_prediction(games, clf_model, reg_model, all_games_raw, all_player_stats, features_list)
-                st.warning("⏳ 目前顯示為即時更新數據 (尚未鎖定)")
+                st.warning("⏳ 即時更新模式")
 
-            # --- 賽事顯示邏輯 ---
             options = [f"{TEAM_NAME_CH.get(g['AWAY_ABBR'], g['AWAY_ABBR'])} @ {TEAM_NAME_CH.get(g['HOME_ABBR'], g['HOME_ABBR'])}" for g in games]
             sel_game_idx = st.selectbox("🎯 選擇場次", range(len(options)), format_func=lambda x: options[x], key=f"sel_{date_key}")
             
@@ -191,12 +201,24 @@ for i, tab in enumerate(tabs):
                 c1, c2, c3 = st.columns(3)
                 c1.metric(f"{TEAM_NAME_CH.get(g_data['HOME_ABBR'])} 勝率", f"{res.get('home_prob', 0):.1f}%")
                 c2.metric(f"{TEAM_NAME_CH.get(g_data['AWAY_ABBR'])} 勝率", f"{res.get('away_prob', 0):.1f}%")
-                
                 diff = res.get('predicted_diff', 0)
                 winner_abbr = g_data['HOME_ABBR'] if diff > 0 else g_data['AWAY_ABBR']
-                c3.metric("預計勝分差", f"{abs(diff)} 分", delta=f"{TEAM_NAME_CH.get(winner_abbr)} 佔優" if diff != 0 else None)
+                c3.metric("預計勝分差", f"{abs(diff)} 分", delta=f"{TEAM_NAME_CH.get(winner_abbr)} 佔優")
 
-                # 對戰紀錄
+                # --- 推薦與原因分析區 ---
+                st.write("### 💡 專家推薦分析")
+                advice = "讓分盤建議："
+                if abs(diff) > 8: advice += f"🔥 強力看好 {TEAM_NAME_CH.get(winner_abbr)}"
+                elif abs(diff) > 3: advice += f"✅ 看好 {TEAM_NAME_CH.get(winner_abbr)}"
+                else: advice += "⚠️ 實力接近，建議避開讓分盤"
+                
+                st.info(f"{advice}")
+                
+                # 顯示原因列表
+                for r in res.get('reasons', []):
+                    st.write(f"  {r}")
+
+                # 表格部分
                 st.write("#### ⚔️ 本季對戰紀錄 (H2H)")
                 h_id, a_abbr = g_data['HOME_TEAM_ID'], g_data['AWAY_ABBR']
                 h2h = all_games_raw[((all_games_raw['TEAM_ID'] == h_id) & (all_games_raw['MATCHUP'].str.contains(a_abbr)))]
@@ -205,13 +227,10 @@ for i, tab in enumerate(tabs):
                     display_h2h['GAME_DATE'] = display_h2h['GAME_DATE'].dt.strftime('%Y-%m-%d')
                     display_h2h.columns = ['比賽日期', '對陣組合', '結果', '比分 (主-客)', '分差']
                     st.table(display_h2h.head(5))
-                else: st.caption("本賽季兩隊尚未有對戰紀錄")
 
-                # 球員名單
                 st.write("#### 👤 核心球員 (名單狀態)")
                 ch, ca = st.columns(2)
                 def safe_display(roster_data):
-                    if not roster_data: return pd.DataFrame(columns=['姓名','得分','籃板','助攻'])
                     df = pd.DataFrame(roster_data)
                     for col in ['PLAYER_NAME', 'PTS', 'REB', 'AST']:
                         if col not in df.columns: df[col] = 0
@@ -222,9 +241,3 @@ for i, tab in enumerate(tabs):
                 with ca:
                     st.caption(TEAM_NAME_CH.get(g_data['AWAY_ABBR']))
                     st.dataframe(safe_display(res.get('away_roster', [])), hide_index=True)
-
-                advice = "讓分盤建議："
-                if abs(diff) > 8: advice += f"🔥 強力看好 {TEAM_NAME_CH.get(winner_abbr)}"
-                elif abs(diff) > 3: advice += f"✅ 看好 {TEAM_NAME_CH.get(winner_abbr)}"
-                else: advice += "⚠️ 實力接近，建議避開讓分盤"
-                st.success(f"📌 {advice} (預測分差: {abs(diff)})")
