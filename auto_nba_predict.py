@@ -1,5 +1,5 @@
 import streamlit as st
-from nba_api.stats.endpoints import leaguegamefinder, scoreboardv3, leaguedashplayerstats
+from nba_api.stats.endpoints import leaguegamefinder, scoreboardv2, leaguedashplayerstats
 from nba_api.stats.static import teams
 import pandas as pd
 import xgboost as xgb
@@ -7,7 +7,7 @@ import pytz, warnings, json
 from datetime import datetime
 from google import genai
 
-# --- 1. AI & 基本設定 (持續記住每次更動) ---
+# --- 1. AI & 基本設定 (持續記住：2026 新 SDK) ---
 warnings.filterwarnings('ignore')
 tw_tz = pytz.timezone('Asia/Taipei')
 
@@ -21,6 +21,7 @@ def get_ai_client():
 
 client = get_ai_client()
 
+# 保持每次更動：完整中文化
 TEAM_NAME_CH = {
     'ATL': '亞特蘭大老鷹', 'BKN': '布魯克林籃網', 'BOS': '波士頓塞爾提克',
     'CHA': '夏洛特黃蜂', 'CHI': '芝加哥公牛', 'CLE': '克里夫蘭騎士',
@@ -34,23 +35,20 @@ TEAM_NAME_CH = {
     'TOR': '多倫多暴龍', 'UTA': '猶他爵士', 'WAS': '華盛頓巫師'
 }
 
-st.set_page_config(page_title="NBA AI v7.7", layout="wide")
-st.title("🏀 NBA 數據預測專家 v7.7")
+st.set_page_config(page_title="NBA AI v5.0 (Stable)", layout="wide")
+st.title("🏀 NBA 數據預測專家 v5.0")
 
-# --- 2. 獲取基礎模型數據 (加入球隊過濾) ---
+# --- 2. 核心數據載入 ---
 @st.cache_data(ttl=3600)
-def prepare_model():
-    # 1. 取得 30 支球隊的正式 ID 列表
-    nba_teams = teams.get_teams()
-    nba_ids = [t['id'] for t in nba_teams]
-    
-    # 2. 抓取數據並過濾掉非 NBA 球隊 (如 G-League)
+def load_base_data():
+    # 抓取 2025-26 賽季數據
     gf_raw = leaguegamefinder.LeagueGameFinder(season_nullable='2025-26').get_data_frames()[0]
+    nba_ids = [t['id'] for t in teams.get_teams()]
     gf = gf_raw[gf_raw['TEAM_ID'].isin(nba_ids)].copy()
     
     gf['GAME_DATE'] = pd.to_datetime(gf['GAME_DATE'])
-    gf['IS_HOME'] = gf['MATCHUP'].apply(lambda x: 1 if 'vs.' in x else 0)
     gf['WIN_BIN'] = gf['WL'].apply(lambda x: 1 if x == 'W' else 0)
+    gf['IS_HOME'] = gf['MATCHUP'].apply(lambda x: 1 if 'vs.' in x else 0)
     
     gf = gf.sort_values(['TEAM_ID', 'GAME_DATE'])
     gf['L10_WIN_RATE'] = gf.groupby('TEAM_ID')['WIN_BIN'].transform(lambda x: x.shift(1).rolling(10, min_periods=1).mean())
@@ -66,47 +64,35 @@ def prepare_model():
     
     return clf, reg, gf, feats
 
-clf, reg, gf, feats = prepare_model()
+clf, reg, gf, feats = load_base_data()
 
-# --- 3. 抓取今日賽程 ---
-# 2026-02-06
-today_str = datetime.now(tw_tz).strftime('%Y-%m-%d')
+# --- 3. 穩定抓取 ScoreboardV2 ---
+today_str = datetime.now(tw_tz).strftime('%m/%d/%Y') # V2 需要的格式
 try:
-    sb_raw = scoreboardv3.ScoreboardV3(game_date=today_str).get_data_frames()[0]
+    sb = scoreboardv2.ScoreboardV2(game_date=today_str).get_data_frames()[0]
 except:
-    sb_raw = pd.DataFrame()
+    sb = pd.DataFrame()
 
-if sb_raw.empty:
-    st.info(f"📅 {today_str} 目前尚未發布比賽數據。")
+if sb.empty:
+    st.info(f"📅 {today_str} 目前無賽程數據。")
 else:
-    sb = sb_raw.copy()
-    sb.columns = [c.lower() for c in sb.columns]
-    
-    all_nba_teams = teams.get_teams()
-    id_to_abbr = {t['id']: t['abbreviation'] for t in all_nba_teams}
-    
+    # V2 固定欄位名稱：HOME_TEAM_ID, VISITOR_TEAM_ID
+    id_to_abbr = {t['id']: t['abbreviation'] for t in teams.get_teams()}
     game_options = []
     game_results = {}
 
     for _, row in sb.iterrows():
-        # 修正：確保 ID 是整數，以利匹配
-        h_id = int(row.get('hometeamid', 0))
-        a_id = row.get('awayteamid', 0)
-        if a_id: a_id = int(a_id)
-        
+        h_id, a_id = row['HOME_TEAM_ID'], row['VISITOR_TEAM_ID']
         h_abbr, a_abbr = id_to_abbr.get(h_id), id_to_abbr.get(a_id)
         
         if h_abbr and a_abbr:
-            # 匹配球隊歷史數據
             h_data = gf[gf['TEAM_ABBREVIATION'] == h_abbr].tail(1)
             a_data = gf[gf['TEAM_ABBREVIATION'] == a_abbr].tail(1)
             
-            # 如果還是找不到，嘗試用 TEAM_ID 匹配 (雙保險)
-            if h_data.empty: h_data = gf[gf['TEAM_ID'] == h_id].tail(1)
-            if a_data.empty: a_data = gf[gf['TEAM_ID'] == a_id].tail(1)
-            
             if not h_data.empty and not a_data.empty:
+                # 預測
                 prob = clf.predict_proba(h_data[feats])[0][1] * 100
+                # 每次更動：整數分差
                 diff = round(abs(float(reg.predict(h_data[feats])[0]) - float(reg.predict(a_data[feats])[0])))
                 
                 label = f"{TEAM_NAME_CH.get(a_abbr, a_abbr)} @ {TEAM_NAME_CH.get(h_abbr, h_abbr)}"
@@ -119,7 +105,7 @@ else:
                 }
 
     if game_options:
-        selected = st.selectbox("🎯 選擇場次", game_options)
+        selected = st.selectbox("🎯 選擇今日場次", game_options)
         res = game_results[selected]
         
         col1, col2, col3 = st.columns(3)
@@ -127,14 +113,12 @@ else:
         col2.metric(res['a_name'], f"{res['a_prob']:.1f}%")
         col3.metric("預測贏家", res['winner'], f"領先 {res['diff']} 分")
         
+        # 每次更動：AI 專家分析
         if client:
-            if st.button("🪄 生成 AI 專家分析"):
+            if st.button("🪄 生成 AI 深度報告"):
                 with st.spinner("AI 分析中..."):
-                    p = f"分析 NBA 比賽：{selected}，預測贏家 {res['winner']}，分差 {res['diff']}。請寫 180 字分析。"
-                    response = client.models.generate_content(model="gemini-2.0-flash", contents=p)
+                    prompt = f"分析 NBA 比賽：{selected}，預測贏家 {res['winner']}，分差 {res['diff']}。請寫 180 字分析。"
+                    response = client.models.generate_content(model="gemini-2.0-flash", contents=prompt)
                     st.info(response.text)
     else:
-        st.warning("⚠️ 已抓到賽程，但數據對齊失敗。正在嘗試從備援數據讀取...")
-        # 顯示 Debug 資訊方便排錯
-        if not sb.empty:
-            st.write("API 抓取到的球隊 ID:", sb[['hometeamid', 'awayteamid']].values.tolist())
+        st.warning("已獲取賽程，但模型數據對齊中。")
