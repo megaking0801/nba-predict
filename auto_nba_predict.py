@@ -1,5 +1,5 @@
 import streamlit as st
-from nba_api.stats.endpoints import leaguegamefinder, scoreboardv2, leaguedashplayerstats
+from nba_api.stats.endpoints import leaguegamefinder, scoreboardv2, leaguedashplayerstats, leaguedashteamstats
 from nba_api.stats.static import teams
 import pandas as pd
 import xgboost as xgb
@@ -20,23 +20,29 @@ TEAM_NAME_CH = {
     'NOP': '紐奧良鵜鶘', 'NYK': '紐約尼克', 'OKC': '奧克拉荷馬雷霆',
     'ORL': '奧蘭多魔術', 'PHI': '費城 76 人', 'PHX': '鳳凰城太陽',
     'POR': '波特蘭開拓者', 'SAC': '沙加邁度國王', 'SAS': '聖安東尼奧馬刺',
-    'TOR': '多倫多暴龍', 'UTA': '猶他代理', 'WAS': '華盛頓巫師'
+    'TOR': '多倫多暴龍', 'UTA': '猶他爵士', 'WAS': '華盛頓巫師'
 }
 
-st.set_page_config(page_title="NBA 進階分析 v5.6", layout="wide")
-st.title("🏀 NBA 終極數據預測 v5.6")
+st.set_page_config(page_title="NBA 進階分析 v5.7", layout="wide")
+st.title("🏀 NBA 終極數據預測 v5.7")
 
-# --- 2. 核心數據載入 (集成進階指標到模型) ---
+# --- 2. 核心數據載入 (修正 API 調用) ---
 @st.cache_data(ttl=3600)
-def load_all_data_v56():
+def load_all_data_v57():
     nba_teams = teams.get_teams()
     nba_ids = [t['id'] for t in nba_teams]
     
-    # 1. 團隊進階數據 (TS%, NetRating) - 用於模型分析
-    team_adv = leaguedashplayerstats.LeagueDashTeamStats(season='2025-26', measure_type_detailed_defense='Advanced').get_data_frames()[0]
-    team_adv_map = team_adv.set_index('TEAM_ID')[['TS_PCT', 'E_NET_RATING', 'EFG_PCT']].to_dict('index')
-    
-    # 2. 歷史戰績
+    # 修正：使用 leaguedashteamstats 獲取團隊進階指標
+    try:
+        team_adv_raw = leaguedashteamstats.LeagueDashTeamStats(
+            season='2025-26', 
+            measure_type_detailed_defense='Advanced'
+        ).get_data_frames()[0]
+        team_adv_map = team_adv_raw.set_index('TEAM_ID')[['TS_PCT', 'E_NET_RATING', 'EFG_PCT']].to_dict('index')
+    except:
+        team_adv_map = {}
+
+    # 歷史戰績
     gf_raw = leaguegamefinder.LeagueGameFinder(season_nullable='2025-26').get_data_frames()[0]
     gf = gf_raw[gf_raw['TEAM_ID'].isin(nba_ids)].copy()
     gf['GAME_DATE'] = pd.to_datetime(gf['GAME_DATE'])
@@ -44,22 +50,21 @@ def load_all_data_v56():
     gf['IS_HOME'] = gf['MATCHUP'].apply(lambda x: 1 if 'vs.' in x else 0)
     gf = gf.sort_values(['TEAM_ID', 'GAME_DATE'])
     
-    # 注入進階數據到每一行 (模型現在看得到 TS% 和 淨效率了)
+    # 指標注入
     gf['TEAM_TS'] = gf['TEAM_ID'].map(lambda x: team_adv_map.get(x, {}).get('TS_PCT', 0.55))
     gf['TEAM_NET_RTG'] = gf['TEAM_ID'].map(lambda x: team_adv_map.get(x, {}).get('E_NET_RATING', 0))
     
-    # 特徵工程
     gf['L10_WIN_RATE'] = gf.groupby('TEAM_ID')['WIN_BIN'].transform(lambda x: x.shift(1).rolling(10, min_periods=1).mean())
     gf['L5_PLUS_MINUS'] = gf.groupby('TEAM_ID')['PLUS_MINUS'].transform(lambda x: x.shift(1).rolling(5, min_periods=1).mean())
     gf['B2B'] = (gf.groupby('TEAM_ID')['GAME_DATE'].diff().dt.days == 1).astype(int)
     
-    # 模型特徵組合 (包含進階數據)
+    # 模型特徵 (包含進階數據)
     feats = ['L5_PLUS_MINUS', 'B2B', 'IS_HOME', 'L10_WIN_RATE', 'TEAM_TS', 'TEAM_NET_RTG']
     train = gf.fillna(0)
     clf = xgb.XGBClassifier().fit(train[feats], train['WIN_BIN'])
     reg = xgb.XGBRegressor().fit(train[feats], train['PLUS_MINUS'])
     
-    # 3. 球員進階數據 (用於下方表格顯示)
+    # 球員進階數據 (表格顯示)
     ps_base = leaguedashplayerstats.LeagueDashPlayerStats(season='2025-26', per_mode_detailed='PerGame', measure_type_detailed_defense='Base').get_data_frames()[0]
     ps_adv = leaguedashplayerstats.LeagueDashPlayerStats(season='2025-26', per_mode_detailed='PerGame', measure_type_detailed_defense='Advanced').get_data_frames()[0]
     ps_full = pd.merge(
@@ -70,7 +75,7 @@ def load_all_data_v56():
     
     return clf, reg, gf, ps_full, feats, datetime.now(tw_tz).strftime("%H:%M:%S")
 
-clf, reg, gf, ps_full, feats, last_update = load_all_data_v56()
+clf, reg, gf, ps_full, feats, last_update = load_all_data_v57()
 
 # --- 3. 工具函數 ---
 def get_fast_roster(team_id, ps_df):
@@ -81,8 +86,8 @@ def get_fast_roster(team_id, ps_df):
     return res
 
 # --- 4. 介面渲染 ---
-col_title, col_lock = st.columns([3, 1])
-with col_lock:
+col_t, col_l = st.columns([3, 1])
+with col_l:
     lock_prob = st.checkbox("🔒 鎖定預測勝率", value=False)
 
 dates = [datetime.now(tw_tz) - timedelta(days=i) for i in range(4)]
@@ -107,6 +112,7 @@ for i, tab in enumerate(tabs):
                 if h_abbr and a_abbr:
                     h_data = gf[gf['TEAM_ABBREVIATION'] == h_abbr].tail(1)
                     if not h_data.empty:
+                        # 預測
                         prob = clf.predict_proba(h_data[feats])[0][1] * 100
                         diff = round(abs(float(reg.predict(h_data[feats])[0])))
                         
@@ -122,26 +128,24 @@ for i, tab in enumerate(tabs):
                 selected = st.selectbox("🎯 選擇對戰", list(game_results.keys()), key=f"sel_{i}")
                 res = game_results[selected]
                 
-                # 如果鎖定勝率，這裡會顯示固定的視覺效果
-                st.markdown(f"#### 🏟️ {selected} (分析包含 TS% / NetRating)")
+                st.markdown(f"#### 🏟️ {selected}")
                 c1, c2, c3 = st.columns(3)
                 c1.metric(res['h_name'], f"{res['prob']:.1f}%")
                 c2.metric(res['a_name'], f"{100 - res['prob']:.1f}%")
                 c3.metric("預估贏家", res['winner'], f"分差 {res['diff']}")
                 
-                # 表格顯示
                 st.markdown("---")
-                st.markdown("##### 🚀 核心球員進階數據分析")
+                st.markdown("##### 🚀 核心球員進階數據 (Top 8)")
                 def format_style(df):
                     return df.style.format({
                         '得分': '{:.1f}', '籃板': '{:.1f}', '助攻': '{:.1f}',
                         'TS%': '{:.1%}', 'eFG%': '{:.1%}', 'USG%': '{:.1%}', '淨效率': '{:+.1f}'
                     })
-                col_l, col_r = st.columns(2)
-                with col_l:
+                cl, cr = st.columns(2)
+                with cl:
                     st.write(f"🏠 {res['h_name']}")
                     st.dataframe(format_style(get_fast_roster(res['h_id'], ps_full)), hide_index=True, use_container_width=True)
-                with col_r:
+                with cr:
                     st.write(f"✈️ {res['a_name']}")
                     st.dataframe(format_style(get_fast_roster(res['a_id'], ps_full)), hide_index=True, use_container_width=True)
 
