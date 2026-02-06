@@ -1,8 +1,7 @@
 streamlit
 nba_api
 pandas
-numpy
 xgboost
 scikit-learn
+google-generativeai
 pytz
-google.generativeai
