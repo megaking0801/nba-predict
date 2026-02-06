@@ -7,7 +7,7 @@ import pytz, warnings, json
 from datetime import datetime
 from google import genai
 
-# --- 1. AI & 基本設定 ---
+# --- 1. AI & 基本設定 (持續記住每次更動) ---
 warnings.filterwarnings('ignore')
 tw_tz = pytz.timezone('Asia/Taipei')
 
@@ -34,13 +34,20 @@ TEAM_NAME_CH = {
     'TOR': '多倫多暴龍', 'UTA': '猶他爵士', 'WAS': '華盛頓巫師'
 }
 
-st.set_page_config(page_title="NBA AI v7.6", layout="wide")
-st.title("🏀 NBA 數據預測專家")
+st.set_page_config(page_title="NBA AI v7.7", layout="wide")
+st.title("🏀 NBA 數據預測專家 v7.7")
 
-# --- 2. 獲取基礎模型數據 ---
+# --- 2. 獲取基礎模型數據 (加入球隊過濾) ---
 @st.cache_data(ttl=3600)
 def prepare_model():
-    gf = leaguegamefinder.LeagueGameFinder(season_nullable='2025-26').get_data_frames()[0]
+    # 1. 取得 30 支球隊的正式 ID 列表
+    nba_teams = teams.get_teams()
+    nba_ids = [t['id'] for t in nba_teams]
+    
+    # 2. 抓取數據並過濾掉非 NBA 球隊 (如 G-League)
+    gf_raw = leaguegamefinder.LeagueGameFinder(season_nullable='2025-26').get_data_frames()[0]
+    gf = gf_raw[gf_raw['TEAM_ID'].isin(nba_ids)].copy()
+    
     gf['GAME_DATE'] = pd.to_datetime(gf['GAME_DATE'])
     gf['IS_HOME'] = gf['MATCHUP'].apply(lambda x: 1 if 'vs.' in x else 0)
     gf['WIN_BIN'] = gf['WL'].apply(lambda x: 1 if x == 'W' else 0)
@@ -61,7 +68,8 @@ def prepare_model():
 
 clf, reg, gf, feats = prepare_model()
 
-# --- 3. 抓取今日賽程 (修正 KeyError 問題) ---
+# --- 3. 抓取今日賽程 ---
+# 2026-02-06
 today_str = datetime.now(tw_tz).strftime('%Y-%m-%d')
 try:
     sb_raw = scoreboardv3.ScoreboardV3(game_date=today_str).get_data_frames()[0]
@@ -69,28 +77,33 @@ except:
     sb_raw = pd.DataFrame()
 
 if sb_raw.empty:
-    st.info(f"📅 {today_str} 目前無比賽數據或 API 請求過於頻繁。")
+    st.info(f"📅 {today_str} 目前尚未發布比賽數據。")
 else:
-    # 核心修正：將欄位名稱統一轉換為小寫，避免 KeyError
     sb = sb_raw.copy()
     sb.columns = [c.lower() for c in sb.columns]
     
-    all_teams = teams.get_teams()
-    id_to_abbr = {t['id']: t['abbreviation'] for t in all_teams}
+    all_nba_teams = teams.get_teams()
+    id_to_abbr = {t['id']: t['abbreviation'] for t in all_nba_teams}
     
     game_options = []
     game_results = {}
 
     for _, row in sb.iterrows():
-        # 現在這裡不論 API 給 homeTeamId 還是 HomeTeamId 都能抓到
-        h_id = row.get('hometeamid')
-        a_id = row.get('awayteamid')
+        # 修正：確保 ID 是整數，以利匹配
+        h_id = int(row.get('hometeamid', 0))
+        a_id = row.get('awayteamid', 0)
+        if a_id: a_id = int(a_id)
         
         h_abbr, a_abbr = id_to_abbr.get(h_id), id_to_abbr.get(a_id)
         
         if h_abbr and a_abbr:
+            # 匹配球隊歷史數據
             h_data = gf[gf['TEAM_ABBREVIATION'] == h_abbr].tail(1)
             a_data = gf[gf['TEAM_ABBREVIATION'] == a_abbr].tail(1)
+            
+            # 如果還是找不到，嘗試用 TEAM_ID 匹配 (雙保險)
+            if h_data.empty: h_data = gf[gf['TEAM_ID'] == h_id].tail(1)
+            if a_data.empty: a_data = gf[gf['TEAM_ID'] == a_id].tail(1)
             
             if not h_data.empty and not a_data.empty:
                 prob = clf.predict_proba(h_data[feats])[0][1] * 100
@@ -101,10 +114,8 @@ else:
                 game_results[label] = {
                     'h_name': TEAM_NAME_CH.get(h_abbr, h_abbr),
                     'a_name': TEAM_NAME_CH.get(a_abbr, a_abbr),
-                    'h_prob': prob,
-                    'a_prob': 100 - prob,
-                    'diff': diff,
-                    'winner': TEAM_NAME_CH.get(h_abbr if prob > 50 else a_abbr)
+                    'h_prob': prob, 'a_prob': 100 - prob,
+                    'diff': diff, 'winner': TEAM_NAME_CH.get(h_abbr if prob > 50 else a_abbr)
                 }
 
     if game_options:
@@ -119,8 +130,11 @@ else:
         if client:
             if st.button("🪄 生成 AI 專家分析"):
                 with st.spinner("AI 分析中..."):
-                    prompt = f"分析 NBA 比賽：{selected}，預測贏家 {res['winner']}，分差 {res['diff']}。請寫 180 字分析。"
-                    response = client.models.generate_content(model="gemini-2.0-flash", contents=prompt)
+                    p = f"分析 NBA 比賽：{selected}，預測贏家 {res['winner']}，分差 {res['diff']}。請寫 180 字分析。"
+                    response = client.models.generate_content(model="gemini-2.0-flash", contents=p)
                     st.info(response.text)
     else:
-        st.warning("已獲取賽程，但數據庫中找不到對應球隊。")
+        st.warning("⚠️ 已抓到賽程，但數據對齊失敗。正在嘗試從備援數據讀取...")
+        # 顯示 Debug 資訊方便排錯
+        if not sb.empty:
+            st.write("API 抓取到的球隊 ID:", sb[['hometeamid', 'awayteamid']].values.tolist())
