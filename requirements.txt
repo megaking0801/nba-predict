@@ -5,3 +5,4 @@ numpy
 xgboost
 scikit-learn
 pytz
+google.generativeai
