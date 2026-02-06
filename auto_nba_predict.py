@@ -27,7 +27,7 @@ TEAM_NAME_CH = {
     'TOR': '多倫多暴龍', 'UTA': '猶他爵士', 'WAS': '華盛頓巫師'
 }
 
-st.set_page_config(page_title="NBA 2026 深度分析系統 v4.5", layout="wide")
+st.set_page_config(page_title="NBA 2026 深度分析系統 v4.6", layout="wide")
 st.title("🏀 NBA 終極預測系統")
 
 def get_snapshot_path(date_key):
@@ -113,33 +113,19 @@ def run_prediction(games, clf, reg, all_games_raw, player_stats, features_list):
         h_p = (float(clf.predict_proba(h_in)[:, 1][0]) / (float(clf.predict_proba(h_in)[:, 1][0]) + float(clf.predict_proba(a_in)[:, 1][0]))) * 100
         diff = float(reg.predict(h_in)[0]) - float(reg.predict(a_in)[0])
         
-        # 提取指標
         h_wr, a_wr = h_feat['L10_WIN_RATE'].values[0]*100, a_feat['L10_WIN_RATE'].values[0]*100
         h_pts, a_pts = h_feat['L5_PTS'].values[0], a_feat['L5_PTS'].values[0]
         h_b2b, a_b2b = h_feat['B2B'].values[0], a_feat['B2B'].values[0]
 
-        # 1. 點列式指標
         h_idx = [f"🟢 近十場勝率: {h_wr:.0f}%", f"🟢 近五場得分: {h_pts:.1f}"]
         a_idx = [f"🔵 近十場勝率: {a_wr:.0f}%", f"🔵 近五場得分: {a_pts:.1f}"]
         if h_b2b: h_idx.append("🔴 警訊: 背靠背體能劣勢")
         if a_b2b: a_idx.append("🔴 警訊: 背靠背體能劣勢")
 
-        # 2. 整合文字分析內容
         winner_name = TEAM_NAME_CH.get(h_abbr if diff > 0 else a_abbr)
-        loser_name = TEAM_NAME_CH.get(a_abbr if diff > 0 else h_abbr)
-        
-        summary_text = f"本場比賽模型更看好 **{winner_name}**。分析其核心優勢在於"
-        if (h_wr > a_wr and diff > 0) or (a_wr > h_wr and diff < 0):
-            summary_text += "近期更為穩定的勝率表現，"
-        if (h_pts > a_pts and diff > 0) or (a_pts > h_pts and diff < 0):
-            summary_text += "以及更強大的火力輸出能力。"
-        else:
-            summary_text += "防守端的效率以及主場數據支撐。"
-        
-        if (h_b2b and diff < 0) or (a_b2b and diff > 0):
-            summary_text += f" 反觀 **{loser_name}** 受限於背靠背(B2B)的賽程壓力，體能恐成隱憂。"
-        
-        summary_text += f" 預計最終 **{winner_name}** 將以約 {abs(round(diff,1))} 分的優勢取勝。"
+        summary_text = f"本場比賽模型更看好 **{winner_name}**。優勢在於"
+        summary_text += "近期穩定的勝率與火力輸出。"
+        summary_text += f" 預計最終將以約 {abs(round(diff,1))} 分優勢取勝。"
 
         def get_roster_data(t_id):
             ros = get_team_roster(t_id)
@@ -148,7 +134,7 @@ def run_prediction(games, clf, reg, all_games_raw, player_stats, features_list):
             return m.sort_values(by='PTS', ascending=False).head(5).to_dict('records')
 
         results[str(g['GAME_ID'])] = {
-            'h_prob': h_p, 'a_prob': 100 - h_p, 'diff': round(diff, 1),
+            'h_prob': float(h_p), 'a_prob': float(100 - h_p), 'diff': float(round(diff, 1)),
             'winner_abbr': h_abbr if diff > 0 else a_abbr,
             'h_idx': h_idx, 'a_idx': a_idx,
             'summary_report': summary_text,
@@ -165,26 +151,32 @@ for i, tab in enumerate(tabs):
     with tab:
         current_date = date_list[i]; date_key = current_date.strftime('%Y-%m-%d')
         games = get_schedule_for_date(current_date); snapshot_file = get_snapshot_path(date_key)
-        if not games: st.info("暫無賽程"); continue
+        if not games: st.info("今日暫無賽程"); continue
 
         is_locked = os.path.exists(snapshot_file)
         btn_col, info_col = st.columns([1, 4])
+        
         if not is_locked:
             if btn_col.button("🔒 鎖定今日數據", key=f"lk_{date_key}"):
                 ld = run_prediction(games, clf, reg, all_games_raw, player_stats, features)
                 with open(snapshot_file, 'w', encoding='utf-8') as f: json.dump(ld, f, ensure_ascii=False)
                 st.rerun()
-            info_col.warning("⏳ 即時模式")
+            info_col.warning("⏳ 即時預測模式")
         else:
-            if btn_col.button("解鎖即時更新", key=f"ul_{date_key}"):
+            if btn_col.button("🔓 解鎖更新", key=f"ul_{date_key}"):
                 os.remove(snapshot_file); st.rerun()
-            info_col.success("🔒 封盤模式")
+            info_col.success("🔒 封盤鎖定中")
 
-        game_names = [f"{TEAM_NAME_CH.get(g['AWAY_ABBR'])} @ {TEAM_NAME_CH.get(g['HOME_ABBR'])}" for g in games]
+        game_names = [f"{TEAM_NAME_CH.get(g['AWAY_ABBR'], g['AWAY_ABBR'])} @ {TEAM_NAME_CH.get(g['HOME_ABBR'], g['HOME_ABBR'])}" for g in games]
         sel_name = st.selectbox("🎯 選擇對戰場次", options=game_names, key=f"sb_{date_key}")
         
+        # 讀取數據源 (報錯防禦)
         if is_locked:
-            with open(snapshot_file, 'r', encoding='utf-8') as f: ds = json.load(f)
+            try:
+                with open(snapshot_file, 'r', encoding='utf-8') as f: ds = json.load(f)
+            except: 
+                st.error("封盤檔案毀損或格式不符，請點擊解鎖按鈕重新鎖定。")
+                st.stop()
         else:
             ds = run_prediction(games, clf, reg, all_games_raw, player_stats, features)
 
@@ -192,20 +184,24 @@ for i, tab in enumerate(tabs):
         res = ds.get(str(g_data['GAME_ID']), {})
         
         if res:
-            h_n, a_n = TEAM_NAME_CH.get(g_data['HOME_ABBR']), TEAM_NAME_CH.get(g_data['AWAY_ABBR'])
+            h_n, a_n = TEAM_NAME_CH.get(g_data['HOME_ABBR'], g_data['HOME_ABBR']), TEAM_NAME_CH.get(g_data['AWAY_ABBR'], g_data['AWAY_ABBR'])
             st.markdown(f"## 🏟️ {a_n} (客) @ {h_n} (主)")
             
             c1, c2, c3 = st.columns(3)
-            c1.metric(f"{h_n} 勝率", f"{res['h_prob']:.1f}%")
-            c2.metric(f"{a_n} 勝率", f"{res['a_prob']:.1f}%")
-            c3.metric("預測贏家", TEAM_NAME_CH.get(res['winner_abbr']), delta=f"贏 {abs(res['diff'])} 分")
+            # --- 修正 KeyError 與 格式化報錯 ---
+            h_p = res.get('h_prob', 0)
+            a_p = res.get('a_prob', 0)
+            diff_val = res.get('diff', 0)
+            w_abbr = res.get('winner_abbr', 'N/A')
+            
+            c1.metric(f"{h_n} 勝率", f"{float(h_p):.1f}%")
+            c2.metric(f"{a_n} 勝率", f"{float(a_p):.1f}%")
+            c3.metric("預測贏家", TEAM_NAME_CH.get(w_abbr, w_abbr), delta=f"預計贏 {abs(float(diff_val))} 分")
 
             st.write("---")
-            # 分析報告區 (新欄位)
             st.subheader("📝 深度戰力分析報告")
-            st.info(res.get('summary_report', "暫無分析"))
+            st.info(res.get('summary_report', "數據分析中，請稍候..."))
 
-            # 優劣勢對比 (保留原始資訊，修復 NULL)
             st.write("#### 📊 雙方指標對比")
             left, right = st.columns(2)
             with left:
