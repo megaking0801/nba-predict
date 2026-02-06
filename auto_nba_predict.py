@@ -23,21 +23,18 @@ TEAM_NAME_CH = {
     'TOR': '多倫多暴龍', 'UTA': '猶他爵士', 'WAS': '華盛頓巫師'
 }
 
-st.set_page_config(page_title="NBA 進階分析 v5.7", layout="wide")
-st.title("🏀 NBA 終極數據預測 v5.7")
+st.set_page_config(page_title="NBA 進階分析 v5.8", layout="wide")
+st.title("🏀 NBA 終極數據預測 v5.8")
 
-# --- 2. 核心數據載入 (修正 API 調用) ---
+# --- 2. 核心數據載入 (包含模型特徵工程) ---
 @st.cache_data(ttl=3600)
-def load_all_data_v57():
+def load_all_data_v58():
     nba_teams = teams.get_teams()
     nba_ids = [t['id'] for t in nba_teams]
     
-    # 修正：使用 leaguedashteamstats 獲取團隊進階指標
+    # 團隊進階數據
     try:
-        team_adv_raw = leaguedashteamstats.LeagueDashTeamStats(
-            season='2025-26', 
-            measure_type_detailed_defense='Advanced'
-        ).get_data_frames()[0]
+        team_adv_raw = leaguedashteamstats.LeagueDashTeamStats(season='2025-26', measure_type_detailed_defense='Advanced').get_data_frames()[0]
         team_adv_map = team_adv_raw.set_index('TEAM_ID')[['TS_PCT', 'E_NET_RATING', 'EFG_PCT']].to_dict('index')
     except:
         team_adv_map = {}
@@ -50,22 +47,23 @@ def load_all_data_v57():
     gf['IS_HOME'] = gf['MATCHUP'].apply(lambda x: 1 if 'vs.' in x else 0)
     gf = gf.sort_values(['TEAM_ID', 'GAME_DATE'])
     
-    # 指標注入
+    # 模型特徵：注入進階指標
     gf['TEAM_TS'] = gf['TEAM_ID'].map(lambda x: team_adv_map.get(x, {}).get('TS_PCT', 0.55))
     gf['TEAM_NET_RTG'] = gf['TEAM_ID'].map(lambda x: team_adv_map.get(x, {}).get('E_NET_RATING', 0))
     
+    # 計算 L10 勝率與 L5 正負值
     gf['L10_WIN_RATE'] = gf.groupby('TEAM_ID')['WIN_BIN'].transform(lambda x: x.shift(1).rolling(10, min_periods=1).mean())
     gf['L5_PLUS_MINUS'] = gf.groupby('TEAM_ID')['PLUS_MINUS'].transform(lambda x: x.shift(1).rolling(5, min_periods=1).mean())
     gf['B2B'] = (gf.groupby('TEAM_ID')['GAME_DATE'].diff().dt.days == 1).astype(int)
     
-    # 模型特徵 (包含進階數據)
+    # 模型訓練
     feats = ['L5_PLUS_MINUS', 'B2B', 'IS_HOME', 'L10_WIN_RATE', 'TEAM_TS', 'TEAM_NET_RTG']
     train = gf.fillna(0)
     clf = xgb.XGBClassifier().fit(train[feats], train['WIN_BIN'])
     reg = xgb.XGBRegressor().fit(train[feats], train['PLUS_MINUS'])
     
     # 球員進階數據 (表格顯示)
-    ps_base = leaguedashplayerstats.LeagueDashPlayerStats(season='2025-26', per_mode_detailed='PerGame', measure_type_detailed_defense='Base').get_data_frames()[0]
+    ps_base = leaguedashplayerstats.LeagueDashPlayerStats(season='2025-26', per_mode_detailed='PerGame').get_data_frames()[0]
     ps_adv = leaguedashplayerstats.LeagueDashPlayerStats(season='2025-26', per_mode_detailed='PerGame', measure_type_detailed_defense='Advanced').get_data_frames()[0]
     ps_full = pd.merge(
         ps_base[['PLAYER_ID', 'TEAM_ID', 'PLAYER_NAME', 'PTS', 'REB', 'AST']],
@@ -75,7 +73,7 @@ def load_all_data_v57():
     
     return clf, reg, gf, ps_full, feats, datetime.now(tw_tz).strftime("%H:%M:%S")
 
-clf, reg, gf, ps_full, feats, last_update = load_all_data_v57()
+clf, reg, gf, ps_full, feats, last_update = load_all_data_v58()
 
 # --- 3. 工具函數 ---
 def get_fast_roster(team_id, ps_df):
@@ -84,6 +82,18 @@ def get_fast_roster(team_id, ps_df):
     res = output[['PLAYER_NAME', 'PTS', 'REB', 'AST', 'TS_PCT', 'EFG_PCT', 'USG_PCT', 'E_NET_RATING']]
     res.columns = ['球員', '得分', '籃板', '助攻', 'TS%', 'eFG%', 'USG%', '淨效率']
     return res
+
+def get_head_to_head(gf_df, team_a_abbr, team_b_abbr):
+    # 篩選兩隊在本賽季的交手紀錄
+    h2h = gf_df[
+        (gf_df['TEAM_ABBREVIATION'] == team_a_abbr) & 
+        (gf_df['MATCHUP'].str.contains(team_b_abbr))
+    ].copy()
+    if h2h.empty: return None
+    h2h = h2h.sort_values('GAME_DATE', ascending=False)
+    # 整理顯示格式
+    h2h['結果'] = h2h.apply(lambda r: f"W ({r.PTS}-{int(r.PTS-r.PLUS_MINUS)})" if r.WL == 'W' else f"L ({r.PTS}-{int(r.PTS-r.PLUS_MINUS)})", axis=1)
+    return h2h[['GAME_DATE', 'MATCHUP', '結果']]
 
 # --- 4. 介面渲染 ---
 col_t, col_l = st.columns([3, 1])
@@ -111,15 +121,18 @@ for i, tab in enumerate(tabs):
                 h_abbr, a_abbr = id_to_abbr.get(h_id), id_to_abbr.get(a_id)
                 if h_abbr and a_abbr:
                     h_data = gf[gf['TEAM_ABBREVIATION'] == h_abbr].tail(1)
-                    if not h_data.empty:
-                        # 預測
+                    a_data = gf[gf['TEAM_ABBREVIATION'] == a_abbr].tail(1)
+                    if not h_data.empty and not a_data.empty:
                         prob = clf.predict_proba(h_data[feats])[0][1] * 100
                         diff = round(abs(float(reg.predict(h_data[feats])[0])))
+                        # 計算近五場勝負走勢
+                        h_l5 = "".join(gf[gf['TEAM_ABBREVIATION'] == h_abbr].tail(5)['WL'].tolist())
+                        a_l5 = "".join(gf[gf['TEAM_ABBREVIATION'] == a_abbr].tail(5)['WL'].tolist())
                         
                         label = f"{TEAM_NAME_CH.get(a_abbr, a_abbr)} @ {TEAM_NAME_CH.get(h_abbr, h_abbr)}"
                         game_results[label] = {
-                            'h_name': TEAM_NAME_CH.get(h_abbr, h_abbr), 'h_id': h_id,
-                            'a_name': TEAM_NAME_CH.get(a_abbr, a_abbr), 'a_id': a_id,
+                            'h_name': TEAM_NAME_CH.get(h_abbr, h_abbr), 'h_id': h_id, 'h_abbr': h_abbr, 'h_l5': h_l5,
+                            'a_name': TEAM_NAME_CH.get(a_abbr, a_abbr), 'a_id': a_id, 'a_abbr': a_abbr, 'a_l5': a_l5,
                             'prob': prob, 'diff': diff,
                             'winner': TEAM_NAME_CH.get(h_abbr if prob > 50 else a_abbr)
                         }
@@ -130,10 +143,20 @@ for i, tab in enumerate(tabs):
                 
                 st.markdown(f"#### 🏟️ {selected}")
                 c1, c2, c3 = st.columns(3)
-                c1.metric(res['h_name'], f"{res['prob']:.1f}%")
-                c2.metric(res['a_name'], f"{100 - res['prob']:.1f}%")
+                c1.metric(res['h_name'], f"{res['prob']:.1f}%", f"近5場: {res['h_l5']}")
+                c2.metric(res['a_name'], f"{100 - res['prob']:.1f}%", f"近5場: {res['a_l5']}")
                 c3.metric("預估贏家", res['winner'], f"分差 {res['diff']}")
                 
+                # 新增：本賽季對戰紀錄
+                st.markdown("---")
+                st.markdown("##### ⚔️ 本賽季歷史對戰紀錄")
+                h2h_df = get_head_to_head(gf, res['h_abbr'], res['a_abbr'])
+                if h2h_df is not None:
+                    st.table(h2h_df.assign(GAME_DATE=h2h_df['GAME_DATE'].dt.strftime('%Y-%m-%d')))
+                else:
+                    st.write("雙方本賽季尚未有對戰紀錄。")
+                
+                # 原有：球員表格
                 st.markdown("---")
                 st.markdown("##### 🚀 核心球員進階數據 (Top 8)")
                 def format_style(df):
