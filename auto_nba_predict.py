@@ -1,5 +1,8 @@
 import streamlit as st
-from nba_api.stats.endpoints import leaguegamefinder, scoreboardv2, leaguedashplayerstats, leaguedashteamstats
+from nba_api.stats.endpoints import (
+    leaguegamefinder, scoreboardv2, leaguedashplayerstats, 
+    leaguedashteamstats, leaguehustlestatsteam, leaguedashptstats
+)
 from nba_api.stats.static import teams
 import pandas as pd
 import xgboost as xgb
@@ -23,56 +26,81 @@ TEAM_NAME_CH = {
     'TOR': '多倫多暴龍', 'UTA': '猶他爵士', 'WAS': '華盛頓巫師'
 }
 
-st.set_page_config(page_title="NBA 數據預測 v6.1", layout="wide")
-st.title("🏀 NBA 數據預測專家 v6.1 (中文寬版)")
+st.set_page_config(page_title="NBA 追蹤分析 v6.2", layout="wide")
+st.title("🏀 NBA 數據專家 v6.2 (Tracking & Hustle)")
 
-# --- 2. 核心數據處理 (標準版邏輯) ---
+# --- 2. 核心數據處理 ---
 def get_safe_team_stats(measure_type):
     try:
         raw = leaguedashteamstats.LeagueDashTeamStats(season='2025-26', measure_type_detailed_defense=measure_type)
         data = raw.get_dict()
-        if 'resultSets' in data:
-            results = data['resultSets'][0]
-        else:
-            results = data['resultSet']
+        if 'resultSets' in data: results = data['resultSets'][0]
+        else: results = data['resultSet']
         return pd.DataFrame(results['rowSet'], columns=results['headers'])
-    except:
-        return pd.DataFrame()
+    except: return pd.DataFrame()
 
 @st.cache_data(ttl=3600)
-def load_all_data_v61():
+def load_all_data_v62():
     nba_ids = [t['id'] for t in teams.get_teams()]
     
-    # 抓取團隊指標
+    # 1. 基礎與進階數據
     df_adv = get_safe_team_stats('Advanced')
     df_ff = get_safe_team_stats('FourFactors')
     
+    # 2. 抓取 Hustle (拚勁) 數據: 干擾投籃、撥球
+    try:
+        hustle = leaguehustlestatsteam.LeagueHustleStatsTeam(season='2025-26').get_data_frames()[0]
+        hustle_map = hustle.set_index('TEAM_ID')[['CONTESTED_SHOTS', 'DEFLECTIONS']].to_dict('index')
+    except: hustle_map = {}
+
+    # 3. 抓取 Tracking (追蹤) 數據: 跑動與傳球
+    try:
+        # 跑動距離與速度
+        track_spd = leaguedashptstats.LeagueDashPtStats(season='2025-26', pt_measure_type='SpeedDistance').get_data_frames()[0]
+        # 傳球數據
+        track_pass = leaguedashptstats.LeagueDashPtStats(season='2025-26', pt_measure_type='Passing').get_data_frames()[0]
+        
+        # 合併 Tracking 數據字典
+        spd_map = track_spd.set_index('TEAM_ID')[['DIST_MILES', 'AVG_SPEED']].to_dict('index')
+        pass_map = track_pass.set_index('TEAM_ID')[['PASSES_MADE']].to_dict('index')
+    except: 
+        spd_map, pass_map = {}, {}
+
+    # 建立映射字典
     adv_map = df_adv.set_index('TEAM_ID')[['OFF_RATING', 'DEF_RATING', 'NET_RATING', 'PACE', 'TS_PCT']].to_dict('index') if not df_adv.empty else {}
     ff_map = df_ff.set_index('TEAM_ID')[['EFG_PCT', 'TOV_PCT', 'OREB_PCT', 'FTA_RATE']].to_dict('index') if not df_ff.empty else {}
 
-    # 歷史戰績與賽程壓力
+    # 4. 歷史戰績整合
     gf_raw = leaguegamefinder.LeagueGameFinder(season_nullable='2025-26').get_data_frames()[0]
     gf = gf_raw[gf_raw['TEAM_ID'].isin(nba_ids)].copy()
     gf['GAME_DATE'] = pd.to_datetime(gf['GAME_DATE'])
     gf['WIN_BIN'] = gf['WL'].apply(lambda x: 1 if x == 'W' else 0)
     gf['IS_HOME'] = gf['MATCHUP'].apply(lambda x: 1 if 'vs.' in x else 0)
     gf = gf.sort_values(['TEAM_ID', 'GAME_DATE'])
-    
-    # 休息天數
     gf['REST_DAYS'] = gf.groupby('TEAM_ID')['GAME_DATE'].diff().dt.days.fillna(3)
     
-    # 注入特徵
+    # 注入模型特徵 (包含新增的 Tracking 數據)
     gf['T_ORTG'] = gf['TEAM_ID'].map(lambda x: adv_map.get(x, {}).get('OFF_RATING', 110))
     gf['T_DRTG'] = gf['TEAM_ID'].map(lambda x: adv_map.get(x, {}).get('DEF_RATING', 110))
     gf['T_EFG'] = gf['TEAM_ID'].map(lambda x: ff_map.get(x, {}).get('EFG_PCT', 0.5))
+    
+    # 新增特徵注入
+    gf['T_DIST'] = gf['TEAM_ID'].map(lambda x: spd_map.get(x, {}).get('DIST_MILES', 18.0)) # 場均跑動里程
+    gf['T_SPD'] = gf['TEAM_ID'].map(lambda x: spd_map.get(x, {}).get('AVG_SPEED', 4.0))   # 平均速度
+    gf['T_PASS'] = gf['TEAM_ID'].map(lambda x: pass_map.get(x, {}).get('PASSES_MADE', 280)) # 傳球數
+    gf['T_DFL'] = gf['TEAM_ID'].map(lambda x: hustle_map.get(x, {}).get('DEFLECTIONS', 12)) # 撥球數
+    gf['T_CON'] = gf['TEAM_ID'].map(lambda x: hustle_map.get(x, {}).get('CONTESTED_SHOTS', 50)) # 干擾投籃
+
     gf['L10_W'] = gf.groupby('TEAM_ID')['WIN_BIN'].transform(lambda x: x.shift(1).rolling(10, min_periods=1).mean())
 
-    feats = ['IS_HOME', 'REST_DAYS', 'T_ORTG', 'T_DRTG', 'T_EFG', 'L10_W']
+    # 更新特徵列表
+    feats = ['IS_HOME', 'REST_DAYS', 'T_ORTG', 'T_DRTG', 'T_EFG', 'L10_W', 'T_DIST', 'T_SPD', 'T_PASS', 'T_DFL', 'T_CON']
+    
     train = gf.fillna(0)
     clf = xgb.XGBClassifier().fit(train[feats], train['WIN_BIN'])
     reg = xgb.XGBRegressor().fit(train[feats], train['PLUS_MINUS'])
     
-    # 球員數據 (含 PIE)
+    # 球員數據
     ps_raw_base = leaguedashplayerstats.LeagueDashPlayerStats(season='2025-26', per_mode_detailed='PerGame').get_data_frames()[0]
     ps_raw_adv = leaguedashplayerstats.LeagueDashPlayerStats(season='2025-26', per_mode_detailed='PerGame', measure_type_detailed_defense='Advanced').get_data_frames()[0]
     ps_full = pd.merge(
@@ -81,9 +109,15 @@ def load_all_data_v61():
         on='PLAYER_ID', how='inner'
     )
     
-    return clf, reg, gf, ps_full, feats, adv_map, ff_map, datetime.now(tw_tz).strftime("%H:%M")
+    # 打包所有數據字典供前端顯示
+    full_maps = {
+        'adv': adv_map, 'ff': ff_map, 'spd': spd_map, 
+        'pass': pass_map, 'hustle': hustle_map
+    }
+    
+    return clf, reg, gf, ps_full, feats, full_maps, datetime.now(tw_tz).strftime("%H:%M")
 
-clf, reg, gf, ps_full, feats, adv_map, ff_map, last_update = load_all_data_v61()
+clf, reg, gf, ps_full, feats, full_maps, last_update = load_all_data_v62()
 
 # --- 3. 介面與顯示 ---
 col_t, col_l = st.columns([3, 1])
@@ -134,59 +168,60 @@ for i, tab in enumerate(tabs):
                 c2.metric(res['a_name'], f"{100 - res['prob']:.1f}%", f"近5場: {res['a_l5']}")
                 c3.metric("模型預測贏家", res['winner'], f"分差 {res['diff']}")
 
-                # 2. 團隊戰力對比表 (純中文)
-                st.markdown("---")
-                st.markdown("##### 📊 團隊進階戰力對比")
-                h_adv, a_adv = adv_map.get(res['h_id'], {}), adv_map.get(res['a_id'], {})
-                h_ff, a_ff = ff_map.get(res['h_id'], {}), ff_map.get(res['a_id'], {})
+                # 2. 數據對比區 (分為兩張表：效率 vs 體能)
+                h_adv, a_adv = full_maps['adv'].get(res['h_id'], {}), full_maps['adv'].get(res['a_id'], {})
+                h_ff, a_ff = full_maps['ff'].get(res['h_id'], {}), full_maps['ff'].get(res['a_id'], {})
                 
-                comp_data = {
-                    "數據指標": ["進攻效率 (ORTG)", "防守效率 (DRTG)", "真實命中率 (TS%)", "有效命中率 (eFG%)", "失誤率 (TOV%)", "比賽節奏 (PACE)"],
-                    res['h_name']: [h_adv.get('OFF_RATING'), h_adv.get('DEF_RATING'), f"{h_adv.get('TS_PCT', 0):.1%}", f"{h_ff.get('EFG_PCT', 0):.1%}", f"{h_ff.get('TOV_PCT', 0):.1f}", h_adv.get('PACE')],
-                    res['a_name']: [a_adv.get('OFF_RATING'), a_adv.get('DEF_RATING'), f"{a_adv.get('TS_PCT', 0):.1%}", f"{a_ff.get('EFG_PCT', 0):.1%}", f"{a_ff.get('TOV_PCT', 0):.1f}", a_adv.get('PACE')]
-                }
-                st.table(pd.DataFrame(comp_data))
+                # 數據提取 helper
+                def get_stat(d, k, fmt="{:.1f}"): return fmt.format(d.get(k, 0))
 
-                # 3. H2H 歷史 (中文欄位)
-                st.markdown("##### ⚔️ 本季對戰歷史紀錄")
+                st.markdown("---")
+                c_tbl1, c_tbl2 = st.columns(2)
+                
+                with c_tbl1:
+                    st.markdown("##### 📊 進階戰力 (Efficiency)")
+                    comp_data = {
+                        "指標": ["進攻效率", "防守效率", "真實命中 (TS%)", "有效命中 (eFG%)", "失誤率"],
+                        res['h_name']: [h_adv.get('OFF_RATING'), h_adv.get('DEF_RATING'), get_stat(h_adv, 'TS_PCT', "{:.1%}"), get_stat(h_ff, 'EFG_PCT', "{:.1%}"), h_ff.get('TOV_PCT')],
+                        res['a_name']: [a_adv.get('OFF_RATING'), a_adv.get('DEF_RATING'), get_stat(a_adv, 'TS_PCT', "{:.1%}"), get_stat(a_ff, 'EFG_PCT', "{:.1%}"), a_ff.get('TOV_PCT')]
+                    }
+                    st.table(pd.DataFrame(comp_data))
+
+                with c_tbl2:
+                    st.markdown("##### 🏃‍♂️ 體能與執行 (Tracking)")
+                    h_spd, a_spd = full_maps['spd'].get(res['h_id'], {}), full_maps['spd'].get(res['a_id'], {})
+                    h_pass, a_pass = full_maps['pass'].get(res['h_id'], {}), full_maps['pass'].get(res['a_id'], {})
+                    h_hus, a_hus = full_maps['hustle'].get(res['h_id'], {}), full_maps['hustle'].get(res['a_id'], {})
+
+                    track_data = {
+                        "指標": ["跑動距離 (英里)", "平均速度 (MPH)", "場均傳球數", "撥球破壞 (Deflections)", "干擾投籃 (Contested)"],
+                        res['h_name']: [h_spd.get('DIST_MILES'), h_spd.get('AVG_SPEED'), int(h_pass.get('PASSES_MADE', 0)), h_hus.get('DEFLECTIONS'), int(h_hus.get('CONTESTED_SHOTS', 0))],
+                        res['a_name']: [a_spd.get('DIST_MILES'), a_spd.get('AVG_SPEED'), int(a_pass.get('PASSES_MADE', 0)), a_hus.get('DEFLECTIONS'), int(a_hus.get('CONTESTED_SHOTS', 0))]
+                    }
+                    st.table(pd.DataFrame(track_data))
+
+                # 3. H2H
+                st.markdown("##### ⚔️ 本季對戰歷史")
                 h2h = gf[(gf['TEAM_ABBREVIATION'] == res['h_abbr']) & (gf['MATCHUP'].str.contains(res['a_abbr']))].sort_values('GAME_DATE', ascending=False)
                 if not h2h.empty:
                     h2h['結果'] = h2h.apply(lambda r: f"W ({r.PTS}-{int(r.PTS-r.PLUS_MINUS)})" if r.WL == 'W' else f"L ({r.PTS}-{int(r.PTS-r.PLUS_MINUS)})", axis=1)
-                    # 重新命名欄位
-                    h2h_display = h2h[['GAME_DATE', 'MATCHUP', '結果']].rename(columns={
-                        'GAME_DATE': '比賽日期', 'MATCHUP': '對戰組合', '結果': '比賽結果'
-                    })
-                    h2h_display['比賽日期'] = h2h_display['比賽日期'].dt.strftime('%Y-%m-%d')
+                    h2h_display = h2h[['GAME_DATE', 'MATCHUP', '結果']].rename(columns={'GAME_DATE': '日期', 'MATCHUP': '對戰', '結果': '賽果'})
+                    h2h_display['日期'] = h2h_display['日期'].dt.strftime('%Y-%m-%d')
                     st.dataframe(h2h_display, hide_index=True, use_container_width=True)
                 else: st.write("本季尚未交手。")
 
-                # 4. 球員數據 (寬版、中文標題)
+                # 4. 球員數據 (寬版)
                 st.markdown("##### 🚀 預計出戰核心數據")
-                
                 def get_formatted_roster(tid):
                     df = ps_full[ps_full['TEAM_ID'] == tid].sort_values('PTS', ascending=False).head(8)
-                    # 篩選並重命名
                     df = df[['PLAYER_NAME', 'PTS', 'TS_PCT', 'USG_PCT', 'E_NET_RATING', 'PIE']]
-                    df.columns = ['球員姓名', '場均得分', '真實命中率(TS%)', '使用率(USG%)', '淨效率值', '貢獻值(PIE)']
+                    df.columns = ['球員', '得分', 'TS%', 'USG%', '淨效率', 'PIE']
                     return df
 
-                # 改為上下分列顯示，讓表格更寬更清楚
-                st.subheader(f"🏠 {res['h_name']} 核心球員")
-                st.dataframe(
-                    get_formatted_roster(res['h_id']).style.format({
-                        '場均得分': '{:.1f}', '真實命中率(TS%)': '{:.1%}', '使用率(USG%)': '{:.1%}', '淨效率值': '{:+.1f}', '貢獻值(PIE)': '{:.1%}'
-                    }), 
-                    hide_index=True, 
-                    use_container_width=True
-                )
+                st.subheader(f"🏠 {res['h_name']}")
+                st.dataframe(get_formatted_roster(res['h_id']).style.format({'得分':'{:.1f}', 'TS%':'{:.1%}', 'USG%':'{:.1%}', '淨效率':'{:+.1f}', 'PIE':'{:.1%}'}), hide_index=True, use_container_width=True)
                 
-                st.subheader(f"✈️ {res['a_name']} 核心球員")
-                st.dataframe(
-                    get_formatted_roster(res['a_id']).style.format({
-                        '場均得分': '{:.1f}', '真實命中率(TS%)': '{:.1%}', '使用率(USG%)': '{:.1%}', '淨效率值': '{:+.1f}', '貢獻值(PIE)': '{:.1%}'
-                    }), 
-                    hide_index=True, 
-                    use_container_width=True
-                )
+                st.subheader(f"✈️ {res['a_name']}")
+                st.dataframe(get_formatted_roster(res['a_id']).style.format({'得分':'{:.1f}', 'TS%':'{:.1%}', 'USG%':'{:.1%}', '淨效率':'{:+.1f}', 'PIE':'{:.1%}'}), hide_index=True, use_container_width=True)
 
 st.sidebar.caption(f"🕒 更新時間：{last_update}")
