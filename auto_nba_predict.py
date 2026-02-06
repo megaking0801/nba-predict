@@ -8,17 +8,17 @@ from datetime import datetime, timedelta
 from google import genai
 from google.genai import types
 
-# --- 1. AI 初始化 (保持每次更動) ---
+# --- 1. AI 初始化 (持續記住每次更動) ---
 @st.cache_resource
-def init_ai_v71():
+def init_ai_v72():
     if "GEMINI_API_KEY" in st.secrets:
         try:
             client = genai.Client(api_key=st.secrets["GEMINI_API_KEY"])
             return client, "gemini-2.0-flash"
-        except Exception as e: return None, str(e)
-    return None, "Missing API Key"
+        except Exception: return None, "AI Init Error"
+    return None, "No API Key"
 
-client_ai, model_id = init_ai_v71()
+client_ai, model_id = init_ai_v72()
 tw_tz = pytz.timezone('Asia/Taipei')
 warnings.filterwarnings('ignore')
 
@@ -36,8 +36,8 @@ TEAM_NAME_CH = {
     'TOR': '多倫多暴龍', 'UTA': '猶他爵士', 'WAS': '華盛頓巫師'
 }
 
-st.set_page_config(page_title="NBA AI 專家 v7.1", layout="wide")
-st.title("🏀 NBA 終極智慧預測系統 v7.1")
+st.set_page_config(page_title="NBA AI 專家 v7.2", layout="wide")
+st.title("🏀 NBA 終極智慧預測系統 v7.2")
 
 # --- 2. 數據庫加載 ---
 @st.cache_data(ttl=600)
@@ -63,30 +63,22 @@ def load_base_data(season):
 
 clf, reg, gf, ps, feats, error_msg = load_base_data('2025-26')
 if error_msg:
-    st.error(f"⚠️ 數據初始化失敗: {error_msg}")
+    st.error(f"⚠️ 數據載入失敗: {error_msg}")
     st.stop()
 
-# --- 3. 賽程獲取 (強制多版本檢查) ---
-def fetch_games_multi_check(d_obj):
+# --- 3. 賽程獲取 ---
+def fetch_games_v72(d_obj):
     d_v3 = d_obj.strftime('%Y-%m-%d')
-    d_v2 = d_obj.strftime('%m/%d/%Y')
-    
-    # 嘗試 V3
     try:
-        sb3 = scoreboardv3.ScoreboardV3(game_date=d_v3, timeout=20).get_data_frames()[0]
+        sb3 = scoreboardv3.ScoreboardV3(game_date=d_v3, timeout=30).get_data_frames()[0]
         if not sb3.empty:
-            return sb3.rename(columns={'gameId': 'GAME_ID', 'homeTeamId': 'HOME_TEAM_ID', 'awayTeamId': 'VISITOR_TEAM_ID'}).to_dict('records'), "V3"
+            # 確保欄位名稱正確
+            res = sb3.rename(columns={'gameId': 'GAME_ID', 'homeTeamId': 'HOME_TEAM_ID', 'awayTeamId': 'VISITOR_TEAM_ID'})
+            return res.to_dict('records')
     except: pass
-    
-    # 嘗試 V2
-    try:
-        sb2 = scoreboardv2.ScoreboardV2(game_date=d_v2, timeout=20).get_data_frames()[0]
-        if not sb2.empty: return sb2.to_dict('records'), "V2"
-    except: pass
-    
-    return [], None
+    return []
 
-# --- 4. 球員表格 (保持精簡更動) ---
+# --- 4. 球員表格 (精簡更動) ---
 def get_roster_stats(team_id, player_stats_df):
     try:
         ros = commonteamroster.CommonTeamRoster(team_id=team_id, timeout=20).get_data_frames()[0]
@@ -98,34 +90,53 @@ def get_roster_stats(team_id, player_stats_df):
         return final.to_dict('records')
     except: return []
 
-# --- 5. 同步分析與 AI (保持整數分差) ---
-def analyze_games(raw_list, clf, reg, gf, ps, feats):
+# --- 5. 同步分析與 AI (修復顯示問題) ---
+def analyze_v72(raw_list, clf, reg, gf, ps, feats):
     results = {}; ai_input = {}
+    # 建立 ID 到簡寫的對照表
     t_map = {t['id']: t['abbreviation'] for t in teams.get_teams()}
+    
     for g in raw_list:
         g_id = str(g.get('GAME_ID', ''))
         h_id, a_id = g.get('HOME_TEAM_ID'), g.get('VISITOR_TEAM_ID')
         h_code, a_code = t_map.get(h_id), t_map.get(a_id)
-        h_f, a_f = gf[gf['TEAM_ABBREVIATION'] == h_code].tail(1), gf[gf['TEAM_ABBREVIATION'] == a_code].tail(1)
+        
+        if not h_code or not a_code: continue
+        
+        # 強制抓取最近的一筆球隊歷史數據
+        h_f = gf[gf['TEAM_ABBREVIATION'] == h_code].tail(1)
+        a_f = gf[gf['TEAM_ABBREVIATION'] == a_code].tail(1)
+        
         if h_f.empty or a_f.empty: continue
 
+        # 預測
         h_p = (clf.predict_proba(h_f[feats])[:,1][0] / (clf.predict_proba(h_f[feats])[:,1][0] + clf.predict_proba(a_f[feats])[:,1][0])) * 100
         diff_abs = max(1, round(abs(float(reg.predict(h_f[feats])[0]) - float(reg.predict(a_f[feats])[0]))))
         win_abbr = h_code if h_p > 50 else a_code
 
-        ai_input[g_id] = {'home': TEAM_NAME_CH.get(h_code, h_code), 'away': TEAM_NAME_CH.get(a_code, a_code), 'winner': TEAM_NAME_CH.get(win_abbr), 'diff': diff_abs}
-        results[g_id] = {'h_prob': h_p, 'a_prob': 100-h_p, 'diff': diff_abs, 'win_abbr': win_abbr, 'h_name': TEAM_NAME_CH.get(h_code, h_code), 'a_name': TEAM_NAME_CH.get(a_code, a_code), 'h_roster': get_roster_stats(h_id, ps), 'a_roster': get_roster_stats(a_id, ps)}
+        h_name_ch = TEAM_NAME_CH.get(h_code, h_code)
+        a_name_ch = TEAM_NAME_CH.get(a_code, a_code)
 
+        ai_input[g_id] = {'home': h_name_ch, 'away': a_name_ch, 'winner': TEAM_NAME_CH.get(win_abbr), 'diff': diff_abs}
+        results[g_id] = {
+            'h_prob': h_p, 'a_prob': 100-h_p, 'diff': diff_abs, 'win_abbr': win_abbr,
+            'h_name': h_name_ch, 'a_name': a_name_ch, 
+            'h_roster': get_roster_stats(h_id, ps), 'a_roster': get_roster_stats(a_id, ps)
+        }
+
+    # 同步生成 AI 報告
     if ai_input and client_ai:
         try:
-            res = client_ai.models.generate_content(model=model_id, contents=f"分析以下 NBA 比賽並以 JSON 回傳: {ai_input}", config=types.GenerateContentConfig(response_mime_type="application/json"))
+            prompt = f"你是 NBA 專家。分析以下 JSON 比賽，寫 180 字分析。回傳 JSON: {{'場次ID': '內容'}}\n{ai_input}"
+            res = client_ai.models.generate_content(model=model_id, contents=prompt, config=types.GenerateContentConfig(response_mime_type="application/json"))
             reports = json.loads(res.text)
             for gid in results: results[gid]['report'] = reports.get(gid, "分析已完成")
-        except: 
-            for gid in results: results[gid]['report'] = "AI 分析目前無法生成"
+        except:
+            for gid in results: results[gid]['report'] = "AI 分析生成中..."
+            
     return results
 
-# --- 6. 頁面渲染 ---
+# --- 6. 介面渲染 ---
 dates = [datetime.now(tw_tz) - timedelta(days=i) for i in range(4)]
 tabs = st.tabs([d.strftime('%m/%d') for d in dates])
 
@@ -135,30 +146,43 @@ for i, tab in enumerate(tabs):
         d_key = d_obj.strftime('%Y-%m-%d')
         snap_path = f"nba_snapshot_{d_key}.json"
         
+        # 封存優先
         if os.path.exists(snap_path):
             with open(snap_path, 'r', encoding='utf-8') as f: data_set = json.load(f)
-            st.success(f"已載入 {d_key} 封存數據")
+            st.success(f"✅ 已載入 {d_key} 封存數據")
         else:
-            raw_games, api_ver = fetch_games_multi_check(d_obj)
+            raw_games = fetch_games_v72(d_obj)
             if not raw_games:
-                st.warning(f"⚠️ 2026/02/06 NBA API 尚未更新，請嘗試點擊下方按鈕或稍後刷新。")
-                if st.button("🔄 強制重新抓取數據", key=f"ref_{d_key}"):
-                    st.cache_data.clear()
-                    st.rerun()
+                st.info(f"🚫 {d_key} 無賽程。")
                 data_set = {}
             else:
-                st.info(f"成功透過 {api_ver} 獲取賽程")
-                data_set = analyze_games(raw_games, clf, reg, gf, ps, feats)
+                st.success("成功透過 V3 獲取賽程，運算中...")
+                data_set = analyze_v72(raw_games, clf, reg, gf, ps, feats)
                 if data_set and st.button("🔒 封存分析報告", key=f"lock_{d_key}"):
                     with open(snap_path, 'w', encoding='utf-8') as f: json.dump(data_set, f, ensure_ascii=False)
                     st.rerun()
 
+        # 渲染內容
         if data_set:
-            sel_game = st.selectbox("🎯 場次選擇", [f"{v['a_name']} @ {v['h_name']}" for v in data_set.values()], key=f"sel_{d_key}")
+            options = [f"{v['a_name']} @ {v['h_name']}" for v in data_set.values()]
+            sel_game = st.selectbox("🎯 選擇場次", options, key=f"sel_{d_key}")
+            
             curr_g = next(v for v in data_set.values() if f"{v['a_name']} @ {v['h_name']}" == sel_game)
+            
             st.markdown(f"### 🏟️ {sel_game}")
             c1, c2, c3 = st.columns(3)
             c1.metric(f"🏠 {curr_g['h_name']}", f"{curr_g['h_prob']:.1f}%")
             c2.metric(f"✈️ {curr_g['a_name']}", f"{curr_g['a_prob']:.1f}%")
-            c3.metric("預測贏家", TEAM_NAME_CH.get(curr_g['win_abbr']), delta=f"領先 {curr_g['diff']} 分")
-            st.info(curr_g.get('report', '暫無分析'))
+            c3.metric("贏家", TEAM_NAME_CH.get(curr_g['win_abbr']), delta=f"領先 {curr_g['diff']} 分")
+            
+            st.info(curr_g.get('report', '數據分析完成，請鎖定報告以保存。'))
+            
+            l, r = st.columns(2)
+            with l:
+                st.write(f"**{curr_g['h_name']} 核心**")
+                st.dataframe(pd.DataFrame(curr_g['h_roster']), hide_index=True)
+            with r:
+                st.write(f"**{curr_g['a_name']} 核心**")
+                st.dataframe(pd.DataFrame(curr_g['a_roster']), hide_index=True)
+        elif not os.path.exists(snap_path) and raw_games:
+            st.warning("數據對齊失敗，可能因為球隊名稱不匹配歷史數據。")
