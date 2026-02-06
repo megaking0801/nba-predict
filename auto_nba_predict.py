@@ -27,17 +27,9 @@ TEAM_NAME_CH = {
 }
 
 st.set_page_config(page_title="NBA 數據專家 v6.9", layout="wide")
+st.title("🏀 NBA 數據專家 v6.9 (16項指標聯動版)")
 
-# --- [新增] 鎖定數據按鈕於側邊欄 ---
-st.sidebar.title("⚙️ 控制面板")
-is_locked = st.sidebar.toggle("🔒 鎖定目前數據", value=False, help="開啟後將停止自動更新數據，維持目前的預測結果。")
-
-if is_locked:
-    st.sidebar.warning("數據已鎖定，目前的分析不會隨時間變更。")
-
-st.title("🏀 NBA 數據專家 v6.9 (數據鎖定版)")
-
-# --- 2. 數據抓取 ---
+# --- 2. 數據抓取 (回歸原始純化邏輯) ---
 @st.cache_data(ttl=3600)
 def load_all_data_v69():
     S = '2025-26'
@@ -56,6 +48,7 @@ def load_all_data_v69():
 
     def to_map(df, cols):
         if df.empty: return {}
+        # 自動識別 ID 欄位
         id_col = 'TEAM_ID' if 'TEAM_ID' in df.columns else (df.columns[0] if 'ID' in df.columns[0] else None)
         return df.set_index(id_col)[cols].to_dict('index') if id_col else {}
 
@@ -70,16 +63,21 @@ def load_all_data_v69():
         'rim': to_map(df_rim, ['D_FG_PCT'])
     }
 
+    # 模型訓練
     gf = leaguegamefinder.LeagueGameFinder(season_nullable=S).get_data_frames()[0]
     gf = gf[gf['TEAM_ID'].isin(nba_ids)]
     gf['WIN_BIN'] = gf['WL'].apply(lambda x: 1 if x == 'W' else 0)
     gf['IS_HOME'] = gf['MATCHUP'].apply(lambda x: 1 if 'vs.' in x else 0)
+    
+    # 計算休息天數
     gf['GAME_DATE'] = pd.to_datetime(gf['GAME_DATE'])
     gf = gf.sort_values(['TEAM_ID', 'GAME_DATE'])
     gf['REST_DAYS'] = gf.groupby('TEAM_ID')['GAME_DATE'].diff().dt.days.fillna(3)
 
-    def gv(tid, m, k, d=0): return maps[m].get(tid, {}).get(k, d)
+    def gv(tid, m, k, d=0):
+        return maps[m].get(tid, {}).get(k, d)
 
+    # 16 項模型指標 (對應視覺化 16 欄位)
     feats = ['IS_HOME', 'REST_DAYS', 'F_PTS', 'F_REB', 'F_AST', 'F_ORTG', 'F_DRTG', 'F_PACE', 
              'F_DEFL', 'F_CONT', 'F_DIST', 'F_SPD', 'F_PASS', 'F_TRANS', 'F_ISO', 'F_RIM']
     
@@ -98,6 +96,7 @@ def load_all_data_v69():
     gf['F_ISO'] = gf['TEAM_ID'].apply(lambda x: gv(x, 'iso', 'PPP', 0.9))
     gf['F_RIM'] = gf['TEAM_ID'].apply(lambda x: gv(x, 'rim', 'D_FG_PCT', 0.6))
 
+    # 訓練雙模型
     clf = xgb.XGBClassifier(n_estimators=100).fit(gf[feats], gf['WIN_BIN'])
     reg = xgb.XGBRegressor(n_estimators=100).fit(gf[feats], gf['PLUS_MINUS'].fillna(0))
     
@@ -105,16 +104,9 @@ def load_all_data_v69():
     
     return clf, reg, gf, ps_raw, feats, maps, datetime.now(tw_tz).strftime("%H:%M")
 
-# --- 鎖定邏輯處理 ---
-if "fixed_data" not in st.session_state:
-    st.session_state.fixed_data = load_all_data_v69()
+clf, reg, gf, ps_raw, feats, maps, last_update = load_all_data_v69()
 
-if not is_locked:
-    st.session_state.fixed_data = load_all_data_v69()
-
-clf, reg, gf, ps_raw, feats, maps, last_update = st.session_state.fixed_data
-
-# --- 3. 介面呈現 ---
+# --- 3. 介面設計 ---
 dates = [datetime.now(tw_tz) - timedelta(days=i) for i in range(3)]
 tabs = st.tabs([d.strftime('%m/%d') for d in dates])
 
@@ -139,20 +131,22 @@ for i, tab in enumerate(tabs):
                             c2.metric(TEAM_NAME_CH.get(a_abbr), f"{100-prob:.1f}%")
                             c3.metric("預測分差", f"{diff:.1f} 分")
 
-                            def gm(tid, m, k): return maps[m].get(tid, {}).get(k, 0)
+                            def gm(m, tid, k): return maps[m].get(tid, {}).get(k, 0)
+
+                            # 16 項指標聯動表格
                             st.write("---")
                             col_a, col_b = st.columns(2)
                             with col_a:
-                                st.write("**📊 團隊戰力指標**")
+                                st.write("**📊 團隊戰力指標 (含單位)**")
                                 st.table(pd.DataFrame({
-                                    "項目": ["得分", "進攻效率", "防守效率", "里程", "速度"],
-                                    "數據": [f"{gm(h_id,'base','PTS'):.1f} 分", f"{gm(h_id,'adv','OFF_RATING')} pts", f"{gm(h_id,'adv','DEF_RATING')} pts", f"{gm(h_id,'spd','DIST_MILES'):.2f} mi", f"{gm(h_id,'spd','AVG_SPEED'):.2f} mph"]
+                                    "項目": ["得分", "進攻效率", "防守效率", "跑動里程", "平均速度"],
+                                    "數據": [f"{gm('base',h_id,'PTS'):.1f} 分", f"{gm('adv',h_id,'OFF_RATING')} pts", f"{gm('adv',h_id,'DEF_RATING')} pts", f"{gm('spd',h_id,'DIST_MILES'):.2f} mi", f"{gm('spd',h_id,'AVG_SPEED'):.2f} mph"]
                                 }))
                             with col_b:
                                 st.write("**⚔️ 戰術與積極度**")
                                 st.table(pd.DataFrame({
                                     "項目": ["撥球破壞", "場均傳球", "轉換 PPP", "單打 PPP", "護框命中 %"],
-                                    "數據": [f"{gm(h_id,'hustle','DEFLECTIONS'):.1f} 次", f"{gm(h_id,'pass','PASSES_MADE'):.1f} 次", f"{gm(h_id,'trans','PPP'):.2f}", f"{gm(h_id,'iso','PPP'):.2f}", f"{gm(h_id,'rim', 'D_FG_PCT'):.1%}"]
+                                    "數據": [f"{gm('hustle',h_id,'DEFLECTIONS'):.1f} 次", f"{gm('pass',h_id,'PASSES_MADE'):.1f} 次", f"{gm('trans',h_id,'PPP'):.2f}", f"{gm('iso',h_id,'PPP'):.2f}", f"{gm('rim',h_id,'D_FG_PCT'):.1%}"]
                                 }))
 
-st.sidebar.caption(f"🕒 最後更新：{last_update}")
+st.sidebar.caption(f"🕒 最新同步：{last_update}")
