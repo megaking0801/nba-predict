@@ -40,24 +40,35 @@ TEAM_NAME_EN_MAP = {
     'Utah': 'UTA', 'Washington': 'WAS'
 }
 
-st.set_page_config(page_title="NBA 專家 v8.2 - 讓分盤深度版", layout="wide")
+st.set_page_config(page_title="NBA 專家 v8.3 - 讓分模式與主客標註", layout="wide")
 
-# 初始化 Session State (鎖定賠率與讓分)
+# 初始化 Session State
 if 'saved_odds' not in st.session_state: st.session_state.saved_odds = {}
 if 'saved_spread' not in st.session_state: st.session_state.saved_spread = {}
 
-# --- 2. 數據載入 ---
+# --- 2. 數據載入 (保持完整) ---
+def fetch_safe_df(endpoint_class, **kwargs):
+    try:
+        instance = endpoint_class(**kwargs)
+        raw = instance.get_dict()
+        res = raw['resultSets'][0] if 'resultSets' in raw else raw['resultSet']
+        return pd.DataFrame(res['rowSet'], columns=res['headers'])
+    except: return pd.DataFrame()
+
+def normalize_name(name):
+    if not isinstance(name, str): return ""
+    return unicodedata.normalize('NFD', name).encode('ascii', 'ignore').decode("utf-8").lower().replace('.', '').strip()
+
 @st.cache_data(ttl=3600)
-def load_all_data_v82():
+def load_all_data_v83():
     nba_ids = [t['id'] for t in teams.get_teams()]
     S = '2025-26'
-    
     ps_raw = fetch_safe_df(leaguedashplayerstats.LeagueDashPlayerStats, season=S, per_mode_detailed='PerGame')
     ps_adv = fetch_safe_df(leaguedashplayerstats.LeagueDashPlayerStats, season=S, per_mode_detailed='PerGame', measure_type_detailed_defense='Advanced')
     ps_full = pd.merge(ps_raw[['PLAYER_ID', 'TEAM_ID', 'PLAYER_NAME', 'PTS', 'REB', 'AST']], ps_adv[['PLAYER_ID', 'TS_PCT']], on='PLAYER_ID')
     player_db = {normalize_name(row['PLAYER_NAME']): row['PTS'] for _, row in ps_full.iterrows()}
     
-    # Maps (進階數據表)
+    # Maps
     df_base = fetch_safe_df(leaguedashteamstats.LeagueDashTeamStats, season=S, per_mode_detailed='PerGame')
     df_adv = fetch_safe_df(leaguedashteamstats.LeagueDashTeamStats, season=S, measure_type_detailed_defense='Advanced')
     df_hustle = fetch_safe_df(leaguehustlestatsteam.LeagueHustleStatsTeam, season=S, per_mode_time='PerGame')
@@ -77,25 +88,12 @@ def load_all_data_v82():
     
     clf = xgb.XGBClassifier().fit(gf[['REST_DAYS']].fillna(0), gf['WIN_BIN'])
     reg = xgb.XGBRegressor().fit(gf[['REST_DAYS']].fillna(0), gf['PLUS_MINUS'].fillna(0))
-    
     return clf, reg, gf, ps_full, maps, player_db, datetime.now(tw_tz).strftime("%H:%M")
 
-def fetch_safe_df(endpoint_class, **kwargs):
-    try:
-        instance = endpoint_class(**kwargs)
-        raw = instance.get_dict()
-        res = raw['resultSets'][0] if 'resultSets' in raw else raw['resultSet']
-        return pd.DataFrame(res['rowSet'], columns=res['headers'])
-    except: return pd.DataFrame()
+clf, reg, gf, ps_full, maps, player_db, last_update = load_all_data_v83()
 
-def normalize_name(name):
-    if not isinstance(name, str): return ""
-    return unicodedata.normalize('NFD', name).encode('ascii', 'ignore').decode("utf-8").lower().replace('.', '').strip()
-
-clf, reg, gf, ps_full, maps, player_db, last_update = load_all_data_v82()
-
-# --- 3. 介面呈現 ---
-st.title("🏀 NBA 數據專家 v8.2 (受讓盤深度解析)")
+# --- 3. 介面 ---
+st.title("🏀 NBA 數據專家 v8.3 (主客場全標註版)")
 
 nba_now = datetime.now(us_east_tz)
 dates_nba = [nba_now + timedelta(days=1), nba_now, nba_now - timedelta(days=1)]
@@ -112,97 +110,82 @@ for i, tab in enumerate(tabs):
         id_to_abbr = {t['id']: t['abbreviation'] for t in teams.get_teams()}
         analysis_results = []
 
-        # --- 賠率與讓分鎖定區 ---
-        st.subheader("💰 賠率與讓分盤鎖定系統")
-        is_locked = st.toggle("🔒 鎖定數值 (避免跑掉)", key=f"lock_{i}")
+        # --- 賠率與讓分鎖定區 (加入主客提示) ---
+        st.subheader("💰 賠率與讓分輸入")
+        is_locked = st.toggle("🔒 鎖定數值", key=f"lock_{i}")
         
-        with st.expander("展開輸入當前運彩數值", expanded=not is_locked):
+        with st.expander("展開輸入當前數值", expanded=not is_locked):
             o_cols = st.columns(3)
             idx_count = 0
             for _, row in sb.iterrows():
-                h_id, a_id = row['HOME_TEAM_ID'], row['VISITOR_TEAM_ID']
-                h_abbr, a_abbr = id_to_abbr.get(h_id), id_to_abbr.get(a_id)
+                h_abbr, a_abbr = id_to_abbr.get(row['HOME_TEAM_ID']), id_to_abbr.get(row['VISITOR_TEAM_ID'])
                 if not h_abbr or not a_abbr: continue
-                
                 game_key = f"{current_date_str}_{a_abbr}_{h_abbr}"
-                # 讀取暫存
-                def_oh = st.session_state.saved_odds.get(f"{game_key}_h", 1.75)
-                def_oa = st.session_state.saved_odds.get(f"{game_key}_a", 1.75)
-                def_sp = st.session_state.saved_spread.get(f"{game_key}_sp", -1.5) # 預設主隊讓 1.5
-
+                
                 with o_cols[idx_count % 3]:
-                    st.write(f"**{TEAM_NAME_CH.get(a_abbr)} @ {TEAM_NAME_CH.get(h_abbr)}**")
-                    oh = st.number_input(f"🏠 {h_abbr} 賠率", value=def_oh, step=0.01, key=f"h_o_{game_key}", disabled=is_locked)
-                    oa = st.number_input(f"✈️ {a_abbr} 賠率", value=def_oa, step=0.01, key=f"a_o_{game_key}", disabled=is_locked)
-                    sp = st.number_input(f"🚩 讓分 (主隊負號代表讓分)", value=def_sp, step=0.5, key=f"sp_{game_key}", disabled=is_locked)
+                    st.write(f"**{TEAM_NAME_CH.get(a_abbr)} [客] @ {TEAM_NAME_CH.get(h_abbr)} [主]**")
+                    oh = st.number_input(f"🏠 {h_abbr} [主] 賠率", value=st.session_state.saved_odds.get(f"{game_key}_h", 1.75), step=0.01, key=f"ho_{game_key}", disabled=is_locked)
+                    oa = st.number_input(f"✈️ {a_abbr} [客] 賠率", value=st.session_state.saved_odds.get(f"{game_key}_a", 1.75), step=0.01, key=f"ao_{game_key}", disabled=is_locked)
+                    sp = st.number_input(f"🚩 主隊讓分 (獨贏填0)", value=st.session_state.saved_spread.get(f"{game_key}_sp", -1.5), step=0.5, key=f"sp_{game_key}", disabled=is_locked)
                     
-                    st.session_state.saved_odds[f"{game_key}_h"] = oh
-                    st.session_state.saved_odds[f"{game_key}_a"] = oa
-                    st.session_state.saved_spread[f"{game_key}_sp"] = sp
+                    if sp == 0: st.caption("ℹ️ 目前模式：不讓分 (獨贏)")
+                    else: st.caption(f"ℹ️ 目前模式：讓分盤 (主隊{'讓' if sp<0 else '受讓'} {abs(sp)})")
+                    
+                    st.session_state.saved_odds[f"{game_key}_h"], st.session_state.saved_odds[f"{game_key}_a"], st.session_state.saved_spread[f"{game_key}_sp"] = oh, oa, sp
                 
                 # AI 計算
                 h_last = gf[gf['TEAM_ABBREVIATION'] == h_abbr].tail(1)
                 ai_p_h = clf.predict_proba(h_last[['REST_DAYS']])[0][1]*100 if not h_last.empty else 50.0
                 ai_m_h = reg.predict(h_last[['REST_DAYS']])[0] if not h_last.empty else 0.0
                 
-                # 讓分盤邏輯：AI 預測分差 vs 莊家讓分
-                # sp 為負代表主隊讓分，例如 -5.5，若 ai_m_h 是 +8.2，代表 AI 覺得主隊贏超過讓分
-                spread_diff = ai_m_h + sp # 正值代表看好主隊過盤，負值看好客隊過盤
-                
                 analysis_results.append({
-                    'label': f"{TEAM_NAME_CH.get(a_abbr)} @ {TEAM_NAME_CH.get(h_abbr)}",
+                    'label': f"{TEAM_NAME_CH.get(a_abbr)} [客] @ {TEAM_NAME_CH.get(h_abbr)} [主]",
                     'h_ch': TEAM_NAME_CH.get(h_abbr), 'a_ch': TEAM_NAME_CH.get(a_abbr),
-                    'h_id': h_id, 'a_id': a_id, 'ai_p_h': ai_p_h, 'ai_m_h': ai_m_h,
-                    'sp': sp, 'spread_diff': spread_diff, 'oh': oh, 'oa': oa
+                    'h_id': row['HOME_TEAM_ID'], 'a_id': row['VISITOR_TEAM_ID'], 'ai_p_h': ai_p_h, 'ai_m_h': ai_m_h,
+                    'sp': sp, 'spread_diff': ai_m_h + sp, 'oh': oh, 'oa': oa
                 })
                 idx_count += 1
 
-        # --- Top 3 推薦 (加入受讓分考量) ---
+        # --- Top 3 推薦 (加入主客提示) ---
         st.divider()
-        st.subheader("🔥 AI 推薦：最值得買的盤口 (含受讓建議)")
+        st.subheader("🔥 AI 推薦：最佳過盤組合")
         recs = []
         for d in analysis_results:
-            if d['spread_diff'] > 1.0: # 領先盤口 1 分以上
-                recs.append({'pick': d['h_ch'], 'type': '讓分/過盤', 'val': d['spread_diff'], 'match': d['label']})
-            elif d['spread_diff'] < -1.0:
-                recs.append({'pick': d['a_ch'], 'type': '受讓/過盤', 'val': abs(d['spread_diff']), 'match': d['label']})
+            if d['spread_diff'] > 1.0: recs.append({'pick': f"{d['h_ch']} [主]", 'val': d['spread_diff'], 'match': d['label']})
+            elif d['spread_diff'] < -1.0: recs.append({'pick': f"{d['a_ch']} [客]", 'val': abs(d['spread_diff']), 'match': d['label']})
         
         top_3 = sorted(recs, key=lambda x: x['val'], reverse=True)[:3]
         rc1, rc2, rc3 = st.columns(3)
         for idx, r in enumerate(top_3):
             with [rc1, rc2, rc3][idx]:
-                st.warning(f"**No.{idx+1} {r['pick']} ({r['type']})**\n\n{r['match']}\n\n預測優勢: {r['val']:.1f} 分")
+                st.warning(f"**No.{idx+1} {r['pick']}**\n\n{r['match']}\n\n預測優勢: {r['val']:.1f} 分")
 
-        # --- 單場詳細分析 (深度分差對照) ---
+        # --- 單場深度分析 (主客對照) ---
         st.divider()
-        sel_label = st.selectbox("🔍 單場深度分差對照 (決定讓分怎麼買)", [d['label'] for d in analysis_results], key=f"sel_{i}")
+        sel_label = st.selectbox("🔍 詳細數據對比", [d['label'] for d in analysis_results], key=f"sel_{i}")
         curr = next(d for d in analysis_results if d['label'] == sel_label)
         
         c1, c2, c3 = st.columns(3)
-        c1.metric(curr['h_ch'], f"{curr['ai_p_h']:.1f}%", f"預測分差: {curr['ai_m_h']:+.1f}")
-        c2.metric("莊家盤口", f"{curr['sp']:+.1f}", "負號=讓分 / 正號=受讓")
+        c1.metric(f"{curr['h_ch']} [主]", f"{curr['ai_p_h']:.1f}%", f"預測分差: {curr['ai_m_h']:+.1f}")
+        c2.metric(f"{curr['a_ch']} [客]", f"{100-curr['ai_p_h']:.1f}%", f"預測分差: {-curr['ai_m_h']:+.1f}")
         
-        # 核心判定建議
-        adv_text = ""
-        if curr['spread_diff'] > 2: adv_text = f"🔥 強力看好 {curr['h_ch']} 過盤"
-        elif curr['spread_diff'] > 0.5: adv_text = f"✅ 看好 {curr['h_ch']} 險勝過盤"
-        elif curr['spread_diff'] < -2: adv_text = f"🔥 強力看好 {curr['a_ch']} 受讓/倒打"
-        elif curr['spread_diff'] < -0.5: adv_text = f"✅ 看好 {curr['a_ch']} 咬住分差"
-        else: adv_text = "⚠️ 盤口極度精準，建議避開"
+        diff = curr['spread_diff']
+        adv_text = f"🔥 {curr['h_ch']} 過盤" if diff > 2 else (f"✅ {curr['h_ch']} 過盤" if diff > 0.5 else (f"🔥 {curr['a_ch']} 過盤" if diff < -2 else (f"✅ {curr['a_ch']} 過盤" if diff < -0.5 else "⚠️ 建議避開")))
         c3.subheader(adv_text)
 
-        # 團隊進階數據表格 (v6.9 核心)
+        # 進階數據表格
         def get_m(m, tid, k): return maps.get(m, {}).get(int(tid), {}).get(k, 0)
         st.table(pd.DataFrame({
-            "指標": ["進攻效率", "防守效率", "節奏", "轉換進攻(PPP)", "場均傳球", "干擾投籃", "撥球"],
-            curr['h_ch']: [get_m('adv',curr['h_id'],'OFF_RATING'), get_m('adv',curr['h_id'],'DEF_RATING'), get_m('adv',curr['h_id'],'PACE'), get_m('trans',curr['h_id'],'PPP'), get_m('pass',curr['h_id'],'PASSES_MADE'), get_m('hustle',curr['h_id'],'CONTESTED_SHOTS'), get_m('hustle',curr['h_id'],'DEFLECTIONS')],
-            curr['a_ch']: [get_m('adv',curr['a_id'],'OFF_RATING'), get_m('adv',curr['a_id'],'DEF_RATING'), get_m('adv',curr['a_id'],'PACE'), get_m('trans',curr['a_id'],'PPP'), get_m('pass',curr['a_id'],'PASSES_MADE'), get_m('hustle',curr['a_id'],'CONTESTED_SHOTS'), get_m('hustle',curr['a_id'],'DEFLECTIONS')]
+            "指標項目": ["進攻效率", "防守效率", "節奏", "轉換進攻(PPP)", "場均傳球", "干擾投籃", "撥球"],
+            f"{curr['h_ch']} [主]": [get_m('adv',curr['h_id'],'OFF_RATING'), get_m('adv',curr['h_id'],'DEF_RATING'), get_m('adv',curr['h_id'],'PACE'), get_m('trans',curr['h_id'],'PPP'), get_m('pass',curr['h_id'],'PASSES_MADE'), get_m('hustle',curr['h_id'],'CONTESTED_SHOTS'), get_m('hustle',curr['h_id'],'DEFLECTIONS')],
+            f"{curr['a_ch']} [客]": [get_m('adv',curr['a_id'],'OFF_RATING'), get_m('adv',curr['a_id'],'DEF_RATING'), get_m('adv',curr['a_id'],'PACE'), get_m('trans',curr['a_id'],'PPP'), get_m('pass',curr['a_id'],'PASSES_MADE'), get_m('hustle',curr['a_id'],'CONTESTED_SHOTS'), get_m('hustle',curr['a_id'],'DEFLECTIONS')]
         }))
         
         # 核心球員
         p1, p2 = st.columns(2)
-        for tid, name, col in [(curr['h_id'], curr['h_ch'], p1), (curr['a_id'], curr['a_ch'], p2)]:
+        for tid, name, tag, col in [(curr['h_id'], curr['h_ch'], "[主]", p1), (curr['a_id'], curr['a_ch'], "[客]", p2)]:
             with col:
+                st.write(f"**{name} {tag} 核心球員**")
                 p_df = ps_full[ps_full['TEAM_ID'] == tid].sort_values('PTS', ascending=False).head(6)
                 st.dataframe(p_df[['PLAYER_NAME', 'PTS', 'REB', 'AST', 'TS_PCT']].rename(columns={'PLAYER_NAME':'姓名','PTS':'得分','TS_PCT':'真實命中%'}), hide_index=True)
 
