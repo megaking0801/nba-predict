@@ -7,31 +7,55 @@ from nba_api.stats.endpoints import (
 from nba_api.stats.static import teams
 import pandas as pd
 import xgboost as xgb
-import pytz, warnings
+import pytz, warnings, requests, unicodedata
+import numpy as np
 from datetime import datetime, timedelta
+from bs4 import BeautifulSoup
 
 # --- 1. 基本設定 ---
 warnings.filterwarnings('ignore')
 tw_tz = pytz.timezone('Asia/Taipei')
-us_east_tz = pytz.timezone('US/Eastern') # NBA 官方時區
+us_east_tz = pytz.timezone('US/Eastern')
 
-TEAM_NAME_CH = {
-    'ATL': '亞特蘭大老鷹', 'BKN': '布魯克林籃網', 'BOS': '波士頓塞爾提克',
-    'CHA': '夏洛特黃蜂', 'CHI': '芝加哥公牛', 'CLE': '克里夫蘭騎士',
-    'DAL': '達拉斯獨行俠', 'DEN': '丹佛金塊', 'DET': '底特律活塞',
-    'GSW': '金州勇士', 'HOU': '休士頓火箭', 'IND': '印第安納溜馬',
-    'LAC': '洛杉磯快艇', 'LAL': '洛杉磯湖人', 'MEM': '曼非斯灰熊',
-    'MIA': '邁阿密熱火', 'MIL': '密爾瓦基公鹿', 'MIN': '明尼蘇達灰狼',
-    'NOP': '紐奧良鵜鶘', 'NYK': '紐約尼克', 'OKC': '奧克拉荷馬雷霆',
-    'ORL': '奧蘭多魔術', 'PHI': '費城 76 人', 'PHX': '鳳凰城太陽',
-    'POR': '波特蘭開拓者', 'SAC': '沙加邁度國王', 'SAS': '聖安東尼奧馬刺',
-    'TOR': '多倫多暴龍', 'UTA': '猶他爵士', 'WAS': '華盛頓巫師'
+# 英文隊名對照 (CBS 爬蟲用)
+TEAM_NAME_EN_MAP = {
+    'Atlanta Hawks': 'ATL', 'Brooklyn Nets': 'BKN', 'Boston Celtics': 'BOS',
+    'Charlotte Hornets': 'CHA', 'Chicago Bulls': 'CHI', 'Cleveland Cavaliers': 'CLE',
+    'Dallas Mavericks': 'DAL', 'Denver Nuggets': 'DEN', 'Detroit Pistons': 'DET',
+    'Golden State Warriors': 'GSW', 'Houston Rockets': 'HOU', 'Indiana Pacers': 'IND',
+    'Los Angeles Clippers': 'LAC', 'L.A. Clippers': 'LAC', 'Los Angeles Lakers': 'LAL', 'L.A. Lakers': 'LAL',
+    'Memphis Grizzlies': 'MEM', 'Miami Heat': 'MIA', 'Milwaukee Bucks': 'MIL',
+    'Minnesota Timberwolves': 'MIN', 'New Orleans Pelicans': 'NOP', 'New York Knicks': 'NYK',
+    'Oklahoma City Thunder': 'OKC', 'Orlando Magic': 'ORL', 'Philadelphia 76ers': 'PHI',
+    'Phoenix Suns': 'PHX', 'Portland Trail Blazers': 'POR', 'Sacramento Kings': 'SAC',
+    'San Antonio Spurs': 'SAS', 'Toronto Raptors': 'TOR', 'Utah Jazz': 'UTA', 'Washington Wizards': 'WAS'
 }
 
-st.set_page_config(page_title="NBA 數據專家 v6.9", layout="wide")
-st.title("🏀 NBA 數據專家 v6.9 (時差修正 & 單位補全)")
+# 中文隊名顯示
+TEAM_NAME_CH = {v: k for k, v in {
+    '亞特蘭大老鷹': 'ATL', '布魯克林籃網': 'BKN', '波士頓塞爾提克': 'BOS',
+    '夏洛特黃蜂': 'CHA', '芝加哥公牛': 'CHI', '克里夫蘭騎士': 'CLE',
+    '達拉斯獨行俠': 'DAL', '丹佛金塊': 'DEN', '底特律活塞': 'DET',
+    '金州勇士': 'GSW', '休士頓火箭': 'HOU', '印第安納溜馬': 'IND',
+    '洛杉磯快艇': 'LAC', '洛杉磯湖人': 'LAL', '曼非斯灰熊': 'MEM',
+    '邁阿密熱火': 'MIA', '密爾瓦基公鹿': 'MIL', '明尼蘇達灰狼': 'MIN',
+    '紐奧良鵜鶘': 'NOP', '紐約尼克': 'NYK', '奧克拉荷馬雷霆': 'OKC',
+    '奧蘭多魔術': 'ORL', '費城 76 人': 'PHI', '鳳凰城太陽': 'PHX',
+    '波特蘭開拓者': 'POR', '沙加邁度國王': 'SAC', '聖安東尼奧馬刺': 'SAS',
+    '多倫多暴龍': 'TOR', '猶他爵士': 'UTA', '華盛頓巫師': 'WAS'
+}.items()}
 
-# --- 2. 穩定抓取函數 ---
+st.set_page_config(page_title="NBA 數據專家 v7.2", layout="wide")
+st.title("🏀 NBA 數據專家 v7.2 (傷病權重自動修正版)")
+
+# --- 2. 核心功能函數 ---
+
+def normalize_name(name):
+    """標準化球員姓名以進行比對 (移除特殊符號、轉小寫)"""
+    if not isinstance(name, str): return ""
+    name = unicodedata.normalize('NFD', name).encode('ascii', 'ignore').decode("utf-8")
+    return name.lower().replace('.', '').strip()
+
 def fetch_safe_df(endpoint_class, **kwargs):
     try:
         instance = endpoint_class(**kwargs)
@@ -39,136 +63,178 @@ def fetch_safe_df(endpoint_class, **kwargs):
         res = raw['resultSets'][0] if 'resultSets' in raw else raw['resultSet']
         df = pd.DataFrame(res['rowSet'], columns=res['headers'])
         if 'TEAM_ID' in df.columns: df['TEAM_ID'] = df['TEAM_ID'].astype(int)
-        elif 'ID' in df.columns: df['TEAM_ID'] = df['ID'].astype(int)
         return df
     except: return pd.DataFrame()
 
+# 🔥 爬取傷病並解析狀態
+@st.cache_data(ttl=600)
+def fetch_live_injuries():
+    url = "https://www.cbssports.com/nba/injuries/"
+    headers = {'User-Agent': 'Mozilla/5.0'}
+    try:
+        response = requests.get(url, headers=headers)
+        soup = BeautifulSoup(response.text, 'html.parser')
+        injury_data = {}
+        
+        for section in soup.find_all('div', class_='TeamLogoNameLockup-name'):
+            team_raw = section.get_text().strip()
+            abbr = TEAM_NAME_EN_MAP.get(team_raw)
+            if not abbr: continue
+            
+            table = section.find_next('table')
+            rows = table.find_all('tr')[1:]
+            team_injuries = []
+            
+            for row in rows:
+                cols = row.find_all('td')
+                if len(cols) >= 3:
+                    name = cols[0].get_text(strip=True)
+                    status = cols[2].get_text(strip=True) # Out, Questionable, Day-to-Day
+                    desc = cols[3].get_text(strip=True) if len(cols) > 3 else ""
+                    
+                    # 判斷是否出戰
+                    is_out = any(x in status.lower() for x in ['out', 'injured', 'susp'])
+                    is_dqs = any(x in status.lower() for x in ['day-to-day', 'questionable', 'doubtful'])
+                    
+                    team_injuries.append({
+                        'name': name,
+                        'status': status,
+                        'desc': desc,
+                        'is_out': is_out,
+                        'is_dqs': is_dqs
+                    })
+            injury_data[abbr] = team_injuries
+        return injury_data
+    except: return {}
+
 @st.cache_data(ttl=3600)
-def load_all_data_v69():
+def load_data_and_model():
     nba_ids = [t['id'] for t in teams.get_teams()]
     S = '2025-26'
-    ST = 'Regular Season' 
     
-    df_base = fetch_safe_df(leaguedashteamstats.LeagueDashTeamStats, season=S, per_mode_detailed='PerGame')
-    df_adv = fetch_safe_df(leaguedashteamstats.LeagueDashTeamStats, season=S, measure_type_detailed_defense='Advanced')
-    df_hustle = fetch_safe_df(leaguehustlestatsteam.LeagueHustleStatsTeam, season=S, per_mode_time='PerGame')
-    df_track_spd = fetch_safe_df(leaguedashptstats.LeagueDashPtStats, season=S, pt_measure_type='SpeedDistance', per_mode_simple='PerGame')
-    df_track_pass = fetch_safe_df(leaguedashptstats.LeagueDashPtStats, season=S, pt_measure_type='Passing', per_mode_simple='PerGame')
-    df_trans = fetch_safe_df(synergyplaytypes.SynergyPlayTypes, play_type_nullable='Transition', player_or_team_abbreviation='T', season=S, season_type_all_star=ST)
-    df_iso = fetch_safe_df(synergyplaytypes.SynergyPlayTypes, play_type_nullable='Isolation', player_or_team_abbreviation='T', season=S, season_type_all_star=ST)
-    df_rim = fetch_safe_df(leaguedashptdefend.LeagueDashPtDefend, season=S, defense_category='Less Than 6 Ft', season_type_all_star=ST)
-
-    def to_map(df, cols): return df.set_index('TEAM_ID')[cols].to_dict('index') if not df.empty else {}
-    
-    maps = {
-        'base': to_map(df_base, ['PTS', 'REB', 'AST', 'FG_PCT']),
-        'adv': to_map(df_adv, ['OFF_RATING', 'DEF_RATING', 'PACE']),
-        'hustle': to_map(df_hustle, ['DEFLECTIONS', 'CONTESTED_SHOTS']),
-        'spd': to_map(df_track_spd, ['DIST_MILES', 'AVG_SPEED']),
-        'pass': to_map(df_track_pass, ['PASSES_MADE']),
-        'trans': to_map(df_trans, ['PPP']),
-        'iso': to_map(df_iso, ['PPP']),
-        'rim': to_map(df_rim, ['D_FG_PCT'])
-    }
-
+    # 訓練模型數據
     gf_raw = fetch_safe_df(leaguegamefinder.LeagueGameFinder, season_nullable=S)
     gf = gf_raw[gf_raw['TEAM_ID'].isin(nba_ids)].copy()
     gf['GAME_DATE'] = pd.to_datetime(gf['GAME_DATE'])
-    gf['WIN_BIN'] = gf['WL'].apply(lambda x: 1 if x == 'W' else 0)
-    gf['IS_HOME'] = gf['MATCHUP'].apply(lambda x: 1 if 'vs.' in x else 0)
     gf = gf.sort_values(['TEAM_ID', 'GAME_DATE'])
-    gf['REST_DAYS'] = gf.groupby('TEAM_ID')['GAME_DATE'].diff().dt.days.fillna(3)
     
-    def get_v(tid, m, k, default=0): return maps[m].get(int(tid), {}).get(k, default)
-
-    gf['T_ORTG'] = gf['TEAM_ID'].apply(lambda x: get_v(x, 'adv', 'OFF_RATING', 110))
-    gf['T_DRTG'] = gf['TEAM_ID'].apply(lambda x: get_v(x, 'adv', 'DEF_RATING', 110))
-    gf['T_DEFL'] = gf['TEAM_ID'].apply(lambda x: get_v(x, 'hustle', 'DEFLECTIONS', 15))
-    gf['T_TRANS'] = gf['TEAM_ID'].apply(lambda x: get_v(x, 'trans', 'PPP', 1.1))
-    gf['T_RIM'] = gf['TEAM_ID'].apply(lambda x: get_v(x, 'rim', 'D_FG_PCT', 0.6))
+    gf['ROLL_PTS'] = gf.groupby('TEAM_ID')['PTS'].transform(lambda x: x.rolling(5).mean())
+    gf['ROLL_DIFF'] = gf.groupby('TEAM_ID')['PLUS_MINUS'].transform(lambda x: x.rolling(5).mean())
+    gf['WIN_BIN'] = gf['WL'].apply(lambda x: 1 if x == 'W' else 0)
     
-    feats = ['IS_HOME', 'REST_DAYS', 'T_ORTG', 'T_DRTG', 'T_DEFL', 'T_TRANS', 'T_RIM']
-    train_df = gf.fillna(0)
-    clf = xgb.XGBClassifier().fit(train_df[feats], train_df['WIN_BIN'])
+    feats = ['ROLL_PTS', 'ROLL_DIFF']
+    train_df = gf.dropna(subset=feats)
+    clf = xgb.XGBClassifier(n_estimators=100, learning_rate=0.05).fit(train_df[feats], train_df['WIN_BIN'])
     reg = xgb.XGBRegressor().fit(train_df[feats], train_df['PLUS_MINUS'])
     
-    ps_raw = fetch_safe_df(leaguedashplayerstats.LeagueDashPlayerStats, season=S, per_mode_detailed='PerGame')
-    ps_adv = fetch_safe_df(leaguedashplayerstats.LeagueDashPlayerStats, season=S, per_mode_detailed='PerGame', measure_type_detailed_defense='Advanced')
-    ps_full = pd.merge(ps_raw[['PLAYER_ID', 'TEAM_ID', 'PLAYER_NAME', 'PTS', 'REB', 'AST']], ps_adv[['PLAYER_ID', 'TS_PCT', 'PIE']], on='PLAYER_ID')
+    # 球員數據 (用於計算傷病權重)
+    ps = fetch_safe_df(leaguedashplayerstats.LeagueDashPlayerStats, season=S, per_mode_detailed='PerGame')
+    # 建立姓名查找字典 (Normalize Key -> PPG)
+    player_stats = {}
+    if not ps.empty:
+        for _, row in ps.iterrows():
+            norm_name = normalize_name(row['PLAYER_NAME'])
+            player_stats[norm_name] = row['PTS']
+            
+    return clf, reg, gf, feats, player_stats, datetime.now(tw_tz).strftime("%H:%M")
+
+clf, reg, gf, feats, player_stats, last_update = load_data_and_model()
+injury_report = fetch_live_injuries()
+
+# --- 3. 邏輯運算：計算傷病衝擊值 ---
+def calculate_injury_impact(team_abbr, injuries, player_stats_db):
+    """計算球隊因傷病損失的勝率百分比"""
+    impact_score = 0
+    details = []
     
-    return clf, reg, gf, ps_full, feats, maps, datetime.now(tw_tz).strftime("%H:%M")
+    for inj in injuries:
+        p_name = normalize_name(inj['name'])
+        ppg = player_stats_db.get(p_name, 0) # 查不到視為 0 分
+        
+        weight = 0
+        if inj['is_out']: weight = 1.0
+        elif inj['is_dqs']: weight = 0.5 # 每日觀察算一半權重
+        
+        # 權重規則 (Star Value System)
+        penalty = 0
+        if ppg >= 25: penalty = 12.0 # 超級巨星 (-12%)
+        elif ppg >= 18: penalty = 7.0 # 核心 (-7%)
+        elif ppg >= 12: penalty = 3.0 # 主力 (-3%)
+        elif ppg >= 8: penalty = 1.0  # 輪替 (-1%)
+        
+        final_penalty = penalty * weight
+        if final_penalty > 0:
+            impact_score += final_penalty
+            status_icon = "❌" if inj['is_out'] else "⚠️"
+            details.append(f"{status_icon} {inj['name']} ({ppg:.1f}分) -{final_penalty:.1f}%")
+            
+    return impact_score, details
 
-clf, reg, gf, ps_full, feats, maps, last_update = load_all_data_v69()
-
-# --- 3. 介面顯示 (時差修正邏輯) ---
-# 取得 NBA 當前日期（美國東部時間）
+# --- 4. 介面顯示 ---
 nba_now = datetime.now(us_east_tz)
-# 生成分頁日期：明日預告, 今日比賽, 昨日戰果, 前日戰果
-dates_nba = [nba_now + timedelta(days=1), nba_now, nba_now - timedelta(days=1), nba_now - timedelta(days=2)]
-# Tab 標籤轉換回台灣日期顯示，方便閱讀
-tab_titles = [d.astimezone(tw_tz).strftime('%m/%d') for d in dates_nba]
-tabs = st.tabs(tab_titles)
+dates_nba = [nba_now + timedelta(days=1), nba_now, nba_now - timedelta(days=1)]
+tabs = st.tabs([d.astimezone(tw_tz).strftime('%m/%d') for d in dates_nba])
 
 for i, tab in enumerate(tabs):
     with tab:
-        # 查詢 API 使用美國日期格式
         search_date = dates_nba[i].strftime('%m/%d/%Y')
         sb = fetch_safe_df(scoreboardv2.ScoreboardV2, game_date=search_date)
         
-        if sb.empty: 
-            st.info(f"📅 美國時間 {dates_nba[i].strftime('%Y-%m-%d')} 暫無賽程數據")
+        if sb.empty:
+            st.info(f"📅 {dates_nba[i].strftime('%Y-%m-%d')} 暫無賽程")
         else:
             id_to_abbr = {t['id']: t['abbreviation'] for t in teams.get_teams()}
-            games = {}
             for _, row in sb.iterrows():
                 h_id, a_id = row['HOME_TEAM_ID'], row['VISITOR_TEAM_ID']
                 h_abbr, a_abbr = id_to_abbr.get(h_id), id_to_abbr.get(a_id)
+                
                 if h_abbr and a_abbr:
-                    h_last = gf[gf['TEAM_ABBREVIATION'] == h_abbr].tail(1)
-                    if not h_last.empty:
-                        prob = clf.predict_proba(h_last[feats])[0][1] * 100
-                        diff = round(abs(float(reg.predict(h_last[feats])[0])), 1)
-                        games[f"{TEAM_NAME_CH.get(a_abbr)} @ {TEAM_NAME_CH.get(h_abbr)}"] = {
-                            'h_id': h_id, 'a_id': a_id, 'h_name': TEAM_NAME_CH.get(h_abbr), 'a_name': TEAM_NAME_CH.get(a_abbr),
-                            'prob': prob, 'diff': diff, 'winner': TEAM_NAME_CH.get(h_abbr if prob > 50 else a_abbr)
-                        }
-
-            if games:
-                selected = st.selectbox("🎯 選擇分析場次", list(games.keys()), key=f"s_{i}")
-                res = games[selected]
-                st.markdown(f"### 🏟️ {selected}")
-                c1, c2, c3 = st.columns(3)
-                c1.metric(res['h_name'], f"{res['prob']:.1f}%")
-                c2.metric(res['a_name'], f"{100-res['prob']:.1f}%")
-                c3.metric("AI 預測贏家", res['winner'], f"分差預測: {res['diff']} 分")
-
-                def get_m(m, tid, k): return maps[m].get(int(tid), {}).get(k, 0)
-
-                st.subheader("📊 1. 團隊場均基礎數據")
-                st.table(pd.DataFrame({
-                    "指標項目": ["場均得分", "場均籃板", "場均助攻", "團隊命中率", "進攻效率 (OffRtg)", "防守效率 (DefRtg)", "比賽節奏 (Pace)"],
-                    res['h_name']: [f"{get_m('base', res['h_id'], 'PTS'):.1f} 分", f"{get_m('base', res['h_id'], 'REB'):.1f} 個", f"{get_m('base', res['h_id'], 'AST'):.1f} 次", f"{get_m('base', res['h_id'], 'FG_PCT'):.1%}", f"{get_m('adv', res['h_id'], 'OFF_RATING')} pts/100", f"{get_m('adv', res['h_id'], 'DEF_RATING')} pts/100", f"{get_m('adv', res['h_id'], 'PACE')} 次"],
-                    res['a_name']: [f"{get_m('base', res['a_id'], 'PTS'):.1f} 分", f"{get_m('base', res['a_id'], 'REB'):.1f} 個", f"{get_m('base', res['a_id'], 'AST'):.1f} 次", f"{get_m('base', res['a_id'], 'FG_PCT'):.1%}", f"{get_m('adv', res['a_id'], 'OFF_RATING')} pts/100", f"{get_m('adv', res['a_id'], 'DEF_RATING')} pts/100", f"{get_m('adv', res['a_id'], 'PACE')} 次"]
-                }))
-
-                st.subheader("🏃‍♂️ 2. 體能與積極度追蹤 (場均)")
-                st.table(pd.DataFrame({
-                    "追蹤指標": ["撥球破壞 (Deflections)", "干擾投籃 (Contested)", "場均跑動里程", "平均移動速度", "場均傳球次數"],
-                    res['h_name']: [f"{get_m('hustle', res['h_id'], 'DEFLECTIONS'):.1f} 次", f"{get_m('hustle', res['h_id'], 'CONTESTED_SHOTS'):.1f} 次", f"{get_m('spd', res['h_id'], 'DIST_MILES'):.2f} mi", f"{get_m('spd', res['h_id'], 'AVG_SPEED'):.2f} mph", f"{get_m('pass', res['h_id'], 'PASSES_MADE'):.1f} 次"],
-                    res['a_name']: [f"{get_m('hustle', res['a_id'], 'DEFLECTIONS'):.1f} 次", f"{get_m('hustle', res['a_id'], 'CONTESTED_SHOTS'):.1f} 次", f"{get_m('spd', res['a_id'], 'DIST_MILES'):.2f} mi", f"{get_m('spd', res['a_id'], 'AVG_SPEED'):.2f} mph", f"{get_m('pass', res['a_id'], 'PASSES_MADE'):.1f} 次"]
-                }))
-
-                st.subheader("⚔️ 3. 戰術類別與護框效率")
-                st.table(pd.DataFrame({
-                    "戰術/防守指標": ["轉換進攻效率 (PPP)", "單打得分效率 (PPP)", "籃框護框命中率 (D-FG%)"],
-                    res['h_name']: [f"{get_m('trans', res['h_id'], 'PPP'):.2f}", f"{get_m('iso', res['h_id'], 'PPP'):.2f}", f"{get_m('rim', res['h_id'], 'D_FG_PCT'):.1%}"],
-                    res['a_name']: [f"{get_m('trans', res['a_id'], 'PPP'):.2f}", f"{get_m('iso', res['a_id'], 'PPP'):.2f}", f"{get_m('rim', res['a_id'], 'D_FG_PCT'):.1%}"]
-                }))
-
-                st.subheader("🚀 4. 核心球員傳統數據 (Top 6)")
-                for tid, name in [(res['h_id'], f"🏠 {res['h_name']}"), (res['a_id'], f"✈️ {res['a_name']}")]:
-                    st.write(f"**{name}**")
-                    p_df = ps_full[ps_full['TEAM_ID'] == tid].sort_values('PTS', ascending=False).head(6)
-                    st.dataframe(p_df[['PLAYER_NAME', 'PTS', 'REB', 'AST', 'TS_PCT']].rename(columns={'PLAYER_NAME':'姓名','PTS':'得分','REB':'籃板','AST':'助攻','TS_PCT':'真實命中%'}).style.format({'得分':'{:.1f}','籃板':'{:.1f}','助攻':'{:.1f}','真實命中%':'{:.1%}'}), hide_index=True)
+                    # 1. 基礎模型預測
+                    h_recent = gf[gf['TEAM_ABBREVIATION'] == h_abbr].tail(1)
+                    if h_recent.empty: continue
+                    
+                    base_prob = clf.predict_proba(h_recent[feats])[0][1] * 100
+                    
+                    # 2. 計算傷病扣分
+                    h_inj = injury_report.get(h_abbr, [])
+                    a_inj = injury_report.get(a_abbr, [])
+                    
+                    h_impact, h_details = calculate_injury_impact(h_abbr, h_inj, player_stats)
+                    a_impact, a_details = calculate_injury_impact(a_abbr, a_inj, player_stats)
+                    
+                    # 3. 修正勝率 (主隊勝率 = 基礎 - 主隊傷病 + 客隊傷病)
+                    final_prob = base_prob - h_impact + a_impact
+                    final_prob = max(5, min(95, final_prob)) # 限制在 5%-95% 之間
+                    
+                    # 顯示卡片
+                    with st.container():
+                        st.markdown(f"#### 🏟️ {TEAM_NAME_CH.get(a_abbr)} @ {TEAM_NAME_CH.get(h_abbr)}")
+                        c1, c2, c3 = st.columns(3)
+                        
+                        # 顯示顏色：如果勝率修正幅度很大，顯示警示
+                        delta = final_prob - base_prob
+                        
+                        c1.metric(f"🏠 {TEAM_NAME_CH.get(h_abbr)}", f"{final_prob:.1f}%", f"修正: {(-h_impact):.1f}%")
+                        c2.metric(f"✈️ {TEAM_NAME_CH.get(a_abbr)}", f"{100-final_prob:.1f}%", f"修正: {(-a_impact):.1f}%")
+                        
+                        winner = TEAM_NAME_CH.get(h_abbr) if final_prob > 50 else TEAM_NAME_CH.get(a_abbr)
+                        c3.metric("AI 最終預測", winner, f"原始勝率: {base_prob:.1f}%")
+                        
+                        # --- 傷病名單顯示區 ---
+                        if h_details or a_details:
+                            with st.expander("🚑 傷病修正細節 (已計入勝率)", expanded=True):
+                                ec1, ec2 = st.columns(2)
+                                with ec1:
+                                    st.caption(f"**{TEAM_NAME_CH.get(h_abbr)} 缺陣影響**")
+                                    if h_details:
+                                        for d in h_details: st.error(d)
+                                    else: st.success("全員健康")
+                                with ec2:
+                                    st.caption(f"**{TEAM_NAME_CH.get(a_abbr)} 缺陣影響**")
+                                    if a_details:
+                                        for d in a_details: st.error(d)
+                                    else: st.success("全員健康")
+                        st.divider()
 
 st.sidebar.caption(f"🕒 更新時間：{last_update}")
+st.sidebar.info("ℹ️ 傷病權重規則：\n巨星(>25分): -12%\n核心(>18分): -7%\n主力(>12分): -3%")
