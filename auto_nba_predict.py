@@ -8,7 +8,6 @@ from nba_api.stats.static import teams
 import pandas as pd
 import xgboost as xgb
 import pytz, warnings, requests, unicodedata
-import numpy as np
 from datetime import datetime, timedelta
 from bs4 import BeautifulSoup
 
@@ -43,10 +42,10 @@ TEAM_NAME_EN_MAP = {
     'San Antonio Spurs': 'SAS', 'Toronto Raptors': 'TOR', 'Utah Jazz': 'UTA', 'Washington Wizards': 'WAS'
 }
 
-st.set_page_config(page_title="NBA 數據專家 v7.2", layout="wide")
-st.title("🏀 NBA 數據專家 v7.2 (傷病權重 & 完整數據融合版)")
+st.set_page_config(page_title="NBA 數據專家 v7.3", layout="wide")
+st.title("🏀 NBA 數據專家 v7.3 (全量傷病揭露版)")
 
-# --- 2. 穩定抓取與工具函數 ---
+# --- 2. 工具函數 ---
 def normalize_name(name):
     if not isinstance(name, str): return ""
     name = unicodedata.normalize('NFD', name).encode('ascii', 'ignore').decode("utf-8")
@@ -90,11 +89,11 @@ def fetch_live_injuries():
     except: return {}
 
 @st.cache_data(ttl=3600)
-def load_all_data_v72():
+def load_all_data_v73():
     nba_ids = [t['id'] for t in teams.get_teams()]
     S, ST = '2025-26', 'Regular Season'
     
-    # 抓取所有 v6.9 所需的 Maps 數據
+    # 抓取 Maps 數據
     df_base = fetch_safe_df(leaguedashteamstats.LeagueDashTeamStats, season=S, per_mode_detailed='PerGame')
     df_adv = fetch_safe_df(leaguedashteamstats.LeagueDashTeamStats, season=S, measure_type_detailed_defense='Advanced')
     df_hustle = fetch_safe_df(leaguehustlestatsteam.LeagueHustleStatsTeam, season=S, per_mode_time='PerGame')
@@ -116,7 +115,7 @@ def load_all_data_v72():
         'rim': to_map(df_rim, ['D_FG_PCT'])
     }
 
-    # 訓練模型 (加入 Rest Days)
+    # 模型訓練
     gf_raw = fetch_safe_df(leaguegamefinder.LeagueGameFinder, season_nullable=S)
     gf = gf_raw[gf_raw['TEAM_ID'].isin(nba_ids)].copy()
     gf['GAME_DATE'] = pd.to_datetime(gf['GAME_DATE'])
@@ -124,12 +123,12 @@ def load_all_data_v72():
     gf = gf.sort_values(['TEAM_ID', 'GAME_DATE'])
     gf['REST_DAYS'] = gf.groupby('TEAM_ID')['GAME_DATE'].diff().dt.days.fillna(3)
     
-    feats = ['REST_DAYS'] # 基礎特徵
+    feats = ['REST_DAYS']
     train_df = gf.fillna(0)
     clf = xgb.XGBClassifier().fit(train_df[feats], train_df['WIN_BIN'])
     reg = xgb.XGBRegressor().fit(train_df[feats], train_df['PLUS_MINUS'])
     
-    # 球員數據用於傷病權重
+    # 球員數據
     ps_raw = fetch_safe_df(leaguedashplayerstats.LeagueDashPlayerStats, season=S, per_mode_detailed='PerGame')
     ps_adv = fetch_safe_df(leaguedashplayerstats.LeagueDashPlayerStats, season=S, per_mode_detailed='PerGame', measure_type_detailed_defense='Advanced')
     ps_full = pd.merge(ps_raw[['PLAYER_ID', 'TEAM_ID', 'PLAYER_NAME', 'PTS', 'REB', 'AST']], ps_adv[['PLAYER_ID', 'TS_PCT']], on='PLAYER_ID')
@@ -138,25 +137,32 @@ def load_all_data_v72():
     
     return clf, reg, gf, ps_full, feats, maps, player_stats_db, datetime.now(tw_tz).strftime("%H:%M")
 
-clf, reg, gf, ps_full, feats, maps, player_stats_db, last_update = load_all_data_v72()
+clf, reg, gf, ps_full, feats, maps, player_stats_db, last_update = load_all_data_v73()
 injury_report = fetch_live_injuries()
 
-# --- 3. 傷病衝擊計算邏輯 ---
-def get_injury_impact(injuries, db):
+# --- 3. 傷病衝擊計算邏輯 (修正版：顯示所有人) ---
+def get_injury_impact_v73(injuries, db):
     score, details = 0, []
     for inj in injuries:
         ppg = db.get(normalize_name(inj['name']), 0)
         weight = 1.0 if inj['is_out'] else (0.5 if inj['is_dqs'] else 0)
         penalty = 0
+        
+        # 扣分權重
         if ppg >= 25: penalty = 12
         elif ppg >= 18: penalty = 7
         elif ppg >= 10: penalty = 3
         elif ppg >= 5: penalty = 1
+        else: penalty = 0 # 小兵不扣分
         
         final_p = penalty * weight
-        if final_p > 0:
-            score += final_p
-            details.append(f"{'❌' if inj['is_out'] else '⚠️'} {inj['name']} ({ppg:.1f}分) -{final_p:.1f}%")
+        score += final_p
+        
+        # 顯示標記
+        status_icon = "❌" if inj['is_out'] else "⚠️"
+        impact_text = f"-{final_p:.1f}%" if final_p > 0 else "(影響輕微)"
+        details.append(f"{status_icon} {inj['name']} (場均 {ppg:.1f}分) {impact_text}")
+        
     return score, details
 
 # --- 4. 介面顯示 ---
@@ -180,68 +186,61 @@ for i, tab in enumerate(tabs):
 
         if games_list:
             selected = st.selectbox("🎯 選擇分析場次", games_list, key=f"s_{i}")
-            # 解析選擇的球隊
             a_ch, h_ch = selected.split(" @ ")
             h_abbr = [k for k, v in TEAM_NAME_CH.items() if v == h_ch][0]
             a_abbr = [k for k, v in TEAM_NAME_CH.items() if v == a_ch][0]
             h_id = [t['id'] for t in teams.get_teams() if t['abbreviation'] == h_abbr][0]
             a_id = [t['id'] for t in teams.get_teams() if t['abbreviation'] == a_abbr][0]
 
-            # 1. 計算勝率與傷病修正
+            # 計算
             h_last = gf[gf['TEAM_ABBREVIATION'] == h_abbr].tail(1)
             base_prob = clf.predict_proba(h_last[feats])[0][1] * 100 if not h_last.empty else 50.0
             
-            h_impact, h_details = get_injury_impact(injury_report.get(h_abbr, []), player_stats_db)
-            a_impact, a_details = get_injury_impact(injury_report.get(a_abbr, []), player_stats_db)
+            h_impact, h_details = get_injury_impact_v73(injury_report.get(h_abbr, []), player_stats_db)
+            a_impact, a_details = get_injury_impact_v73(injury_report.get(a_abbr, []), player_stats_db)
             
             final_prob = max(5, min(95, base_prob - h_impact + a_impact))
-            diff_pred = round(abs(float(reg.predict(h_last[feats])[0])), 1) if not h_last.empty else 0
 
-            # 2. 預測大卡片
+            # 顯示
             st.markdown(f"### 🏟️ {selected}")
             c1, c2, c3 = st.columns(3)
-            c1.metric(h_ch, f"{final_prob:.1f}%", f"傷病修正: -{h_impact:.1f}%")
-            c2.metric(a_ch, f"{100-final_prob:.1f}%", f"傷病修正: -{a_impact:.1f}%")
+            c1.metric(h_ch, f"{final_prob:.1f}%", f"總修正: -{h_impact:.1f}%")
+            c2.metric(a_ch, f"{100-final_prob:.1f}%", f"總修正: -{a_impact:.1f}%")
             winner = h_ch if final_prob > 50 else a_ch
-            c3.metric("AI 最終預測贏家", winner, f"預估分差: {diff_pred}")
+            c3.metric("AI 最終預測贏家", winner)
 
-            # 3. 傷病名單標註區 (新加入)
-            st.subheader("🚑 確定未出戰 / 傷病名單")
+            # --- 🚑 傷病名單 (所有名單均顯示) ---
+            st.subheader("🚑 即時傷病名單 (包含角色球員)")
             ic1, ic2 = st.columns(2)
             with ic1:
                 st.write(f"**{h_ch}**")
                 if h_details:
-                    for d in h_details: st.error(d)
-                else: st.success("目前無重大傷病回報")
+                    for d in h_details: 
+                        if "影響輕微" in d: st.info(d) # 輕微影響用藍色
+                        else: st.error(d)             # 有感影響用紅色
+                else: st.success("目前無傷病回報")
             with ic2:
                 st.write(f"**{a_ch}**")
                 if a_details:
-                    for d in a_details: st.error(d)
-                else: st.success("目前無重大傷病回報")
+                    for d in a_details:
+                        if "影響輕微" in d: st.info(d)
+                        else: st.error(d)
+                else: st.success("目前無傷病回報")
 
-            # 4. 原始 v6.9 數據表格
+            # 4. 詳細數據表 (v6.9 格式)
             def get_m(m, tid, k): return maps[m].get(int(tid), {}).get(k, 0)
-            
             st.divider()
-            st.subheader("📊 1. 團隊場均基礎數據")
+            st.subheader("📊 團隊深度數據")
             st.table(pd.DataFrame({
-                "指標項目": ["場均得分", "場均籃板", "場均助攻", "團隊命中率", "進攻效率", "防守效率", "比賽節奏"],
-                h_ch: [f"{get_m('base', h_id, 'PTS'):.1f}", f"{get_m('base', h_id, 'REB'):.1f}", f"{get_m('base', h_id, 'AST'):.1f}", f"{get_m('base', h_id, 'FG_PCT'):.1%}", f"{get_m('adv', h_id, 'OFF_RATING')}", f"{get_m('adv', h_id, 'DEF_RATING')}", f"{get_m('adv', h_id, 'PACE')}"],
-                a_ch: [f"{get_m('base', a_id, 'PTS'):.1f}", f"{get_m('base', a_id, 'REB'):.1f}", f"{get_m('base', a_id, 'AST'):.1f}", f"{get_m('base', a_id, 'FG_PCT'):.1%}", f"{get_m('adv', a_id, 'OFF_RATING')}", f"{get_m('adv', a_id, 'DEF_RATING')}", f"{get_m('adv', a_id, 'PACE')}"]
+                "指標項目": ["場均得分", "場均籃板", "團隊命中率", "進攻效率", "防守效率"],
+                h_ch: [f"{get_m('base', h_id, 'PTS'):.1f}", f"{get_m('base', h_id, 'REB'):.1f}", f"{get_m('base', h_id, 'FG_PCT'):.1%}", f"{get_m('adv', h_id, 'OFF_RATING')}", f"{get_m('adv', h_id, 'DEF_RATING')}"],
+                a_ch: [f"{get_m('base', a_id, 'PTS'):.1f}", f"{get_m('base', a_id, 'REB'):.1f}", f"{get_m('base', a_id, 'FG_PCT'):.1%}", f"{get_m('adv', a_id, 'OFF_RATING')}", f"{get_m('adv', a_id, 'DEF_RATING')}"]
             }))
 
-            st.subheader("🏃‍♂️ 2. 體能與積極度 (場均)")
-            st.table(pd.DataFrame({
-                "指標": ["撥球破壞", "干擾投籃", "跑動里程", "移動速度", "傳球次數"],
-                h_ch: [f"{get_m('hustle', h_id, 'DEFLECTIONS'):.1f}", f"{get_m('hustle', h_id, 'CONTESTED_SHOTS'):.1f}", f"{get_m('spd', h_id, 'DIST_MILES'):.2f} mi", f"{get_m('spd', h_id, 'AVG_SPEED'):.2f} mph", f"{get_m('pass', h_id, 'PASSES_MADE'):.1f}"],
-                a_ch: [f"{get_m('hustle', a_id, 'DEFLECTIONS'):.1f}", f"{get_m('hustle', a_id, 'CONTESTED_SHOTS'):.1f}", f"{get_m('spd', a_id, 'DIST_MILES'):.2f} mi", f"{get_m('spd', a_id, 'AVG_SPEED'):.2f} mph", f"{get_m('pass', a_id, 'PASSES_MADE'):.1f}"]
-            }))
-
-            st.subheader("🚀 3. 核心球員數據 (Top 6)")
+            st.subheader("🚀 核心球員數據 (Top 6)")
             for tid, name in [(h_id, f"🏠 {h_ch}"), (a_id, f"✈️ {a_ch}")]:
                 st.write(f"**{name}**")
                 p_df = ps_full[ps_full['TEAM_ID'] == tid].sort_values('PTS', ascending=False).head(6)
                 st.dataframe(p_df[['PLAYER_NAME', 'PTS', 'REB', 'AST', 'TS_PCT']].rename(columns={'PLAYER_NAME':'姓名','PTS':'得分','REB':'籃板','AST':'助攻','TS_PCT':'真實命中%'}).style.format({'得分':'{:.1f}','籃板':'{:.1f}','助攻':'{:.1f}','真實命中%':'{:.1%}'}), hide_index=True)
 
-st.sidebar.caption(f"🕒 更新時間：{last_update}")
-st.sidebar.info("傷病來源: CBS Sports Live Feed")
+st.sidebar.caption(f"🕒 更新：{last_update}")
