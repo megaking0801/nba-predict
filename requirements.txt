@@ -1,19 +1,20 @@
-# 基礎網頁框架
+# 核心網頁框架
 streamlit>=1.30.0
 
-# NBA 數據抓取核心
+# NBA 官方數據源
 nba_api>=1.4.1
 
-# 數據處理與分析
+# 數據處理
 pandas>=2.0.0
 numpy>=1.24.0
 
-# AI 模型與機器學習
+# AI 模型 (XGBoost)
 xgboost>=2.0.0
 scikit-learn>=1.2.0
 
-# 時間與時區處理
-pytz
-
-# 網路請求穩定性
+# 網路爬蟲 (v7.1+ 新增功能: 抓取 CBS 傷病名單)
 requests>=2.31.0
+beautifulsoup4>=4.12.0
+
+# 時區處理
+pytz
