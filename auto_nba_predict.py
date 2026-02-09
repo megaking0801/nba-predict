@@ -6,6 +6,7 @@ from nba_api.stats.endpoints import (
 )
 from nba_api.stats.static import teams
 import pandas as pd
+import numpy as np
 import xgboost as xgb
 import pytz, warnings, requests, unicodedata
 from datetime import datetime, timedelta
@@ -40,7 +41,7 @@ TEAM_NAME_EN_MAP = {
     'Utah': 'UTA', 'Washington': 'WAS'
 }
 
-st.set_page_config(page_title="NBA 數據專家 v8.2", layout="wide")
+st.set_page_config(page_title="NBA 數據專家 v8.3", layout="wide")
 
 # --- 2. 工具函數 ---
 def normalize_name(name):
@@ -75,86 +76,105 @@ def fetch_live_injuries_espn():
                 cols = row.find_all('td')
                 if len(cols) >= 3:
                     name = cols[0].get_text(strip=True)
-                    status = cols[2].get_text(strip=True).lower()
-                    # 嚴格區分報銷與疑慮
-                    is_out = any(k in status for k in ['out', 'season', 'surgery', 'indefinitely', 'broken', 'torn', 'acl', 'mcl'])
-                    is_gtd = any(k in status for k in ['questionable', 'doubtful', 'decision', 'probable', 'gtd']) and not is_out
+                    status_text = cols[2].get_text(strip=True).lower()
                     
-                    team_inj.append({'name': name, 'status': status.upper(), 'is_out': is_out, 'is_gtd': is_gtd})
+                    # 超細緻分類
+                    is_season_out = any(k in status_text for k in ['season', 'surgery', 'torn', 'broken', 'acl', 'mcl', 'achilles', 'fracture'])
+                    is_out = 'out' in status_text and not is_season_out
+                    is_gtd = any(k in status_text for k in ['questionable', 'doubtful', 'decision', 'probable', 'gtd'])
+                    
+                    final_status = "SEASON_OUT" if is_season_out else ("OUT" if is_out else "GTD")
+                    team_inj.append({'name': name, 'status': final_status, 'raw_text': status_text.upper()})
             injury_data[abbr] = team_inj
         return injury_data
     except: return {}
 
-# --- 3. 數據載入 ---
+# --- 3. 數據核心 (修正 REST_DAYS Bug) ---
 @st.cache_data(ttl=3600)
-def load_all_data_v82():
+def load_all_data_v83():
     nba_ids = [t['id'] for t in teams.get_teams()]
-    S = '2025-26'
+    S, ST = '2025-26', 'Regular Season'
     
     ps_raw = fetch_safe_df(leaguedashplayerstats.LeagueDashPlayerStats, season=S, per_mode_detailed='PerGame')
     ps_adv = fetch_safe_df(leaguedashplayerstats.LeagueDashPlayerStats, season=S, per_mode_detailed='PerGame', measure_type_detailed_defense='Advanced')
     ps_full = pd.merge(ps_raw[['PLAYER_ID', 'TEAM_ID', 'PLAYER_NAME', 'PTS', 'REB', 'AST', 'MIN']], 
                         ps_adv[['PLAYER_ID', 'TS_PCT', 'PIE']], on='PLAYER_ID')
     
-    player_db = {normalize_name(row['PLAYER_NAME']): row.to_dict() for _, row in ps_full.iterrows()}
-    
-    # 團隊與模型數據 (簡略保留)
+    # 團隊指標
     df_adv = fetch_safe_df(leaguedashteamstats.LeagueDashTeamStats, season=S, measure_type_detailed_defense='Advanced')
     maps = {'adv': df_adv.set_index('TEAM_ID').to_dict('index') if not df_adv.empty else {}}
     
+    # 修正後的 REST_DAYS 計算
     gf_raw = fetch_safe_df(leaguegamefinder.LeagueGameFinder, season_nullable=S)
     gf = gf_raw[gf_raw['TEAM_ID'].isin(nba_ids)].copy()
+    gf['GAME_DATE'] = pd.to_datetime(gf['GAME_DATE'])
+    gf = gf.sort_values(['TEAM_ID', 'GAME_DATE'])
+    
+    # 使用 diff 並轉換為天數數值，避免 TypeError
+    gf['REST_DAYS'] = gf.groupby('TEAM_ID')['GAME_DATE'].diff().dt.days.fillna(3)
+    
     gf['WIN_BIN'] = gf['WL'].apply(lambda x: 1 if x == 'W' else 0)
-    gf['REST_DAYS'] = gf.groupby('TEAM_ID')['GAME_DATE'].diff().apply(lambda x: pd.to_timedelta(x).days).fillna(3)
     
     feats = ['REST_DAYS']
     clf = xgb.XGBClassifier().fit(gf[feats].fillna(0), gf['WIN_BIN'])
     reg = xgb.XGBRegressor().fit(gf[feats].fillna(0), gf['PLUS_MINUS'].fillna(0))
     
+    player_db = {normalize_name(row['PLAYER_NAME']): row.to_dict() for _, row in ps_full.iterrows()}
+    
     return clf, reg, gf, ps_full, feats, maps, player_db, datetime.now(tw_tz).strftime("%H:%M")
 
-clf, reg, gf, ps_full, feats, maps, player_db, last_update = load_all_data_v82()
+clf, reg, gf, ps_full, feats, maps, player_db, last_update = load_all_data_v83()
 injury_report = fetch_live_injuries_espn()
 
-# --- 4. 核心邏輯：區分「帶傷上陣」與「缺陣」 ---
-def get_detailed_roster(abbr, team_id):
-    team_ps = ps_full[ps_full['TEAM_ID'] == team_id].copy()
-    team_ps['norm_name'] = team_ps['PLAYER_NAME'].apply(normalize_name)
+# --- 4. 核心邏輯：深度名單分析 ---
+def get_detailed_roster_v83(abbr, team_id):
+    team_players = ps_full[ps_full['TEAM_ID'] == team_id].copy()
+    team_players['norm_name'] = team_players['PLAYER_NAME'].apply(normalize_name)
     
-    inj_list = injury_report.get(abbr, [])
-    out_names = [normalize_name(i['name']) for i in inj_list if i['is_out']]
-    gtd_names = [normalize_name(i['name']) for i in inj_list if i['is_gtd']]
+    inj_data = injury_report.get(abbr, [])
+    inj_map = {normalize_name(i['name']): i for i in inj_data}
     
-    roster_analysis = []
-    total_active_power = 0
+    roster_list = []
+    total_power = 0
     
-    for _, p in team_ps.iterrows():
+    for _, p in team_players.iterrows():
         name_norm = p['norm_name']
         status_label = "✅ 正常"
         weight = 1.0
+        detail = "健康"
         
-        if name_norm in out_names:
-            status_label = "❌ 缺陣"
-            weight = 0.0
-        elif name_norm in gtd_names:
-            status_label = "⚠️ 疑慮"
-            weight = 0.5  # 帶傷上陣戰力打折
-            
-        roster_analysis.append({
-            '姓名': p['PLAYER_NAME'],
+        if name_norm in inj_map:
+            inj = inj_map[name_norm]
+            if inj['status'] == "SEASON_OUT":
+                status_label = "💀 報銷"
+                weight = 0.0
+                detail = f"嚴重傷病: {inj['raw_text']}"
+            elif inj['status'] == "OUT":
+                status_label = "🚫 缺陣"
+                weight = 0.0
+                detail = "不確定回歸日期"
+            elif inj['status'] == "GTD":
+                status_label = "⚠️ 疑慮"
+                weight = 0.4 # 帶傷上陣，戰力保守估計
+                detail = f"賽前決定: {inj['raw_text']}"
+        
+        roster_list.append({
+            '球員': p['PLAYER_NAME'],
             '狀態': status_label,
             '場均PTS': p['PTS'],
-            '真實命中%': p['TS_PCT'],
-            'PIE': p['PIE'],
-            '戰力權重': weight
+            'TS%': p['TS_PCT'],
+            '戰力權重': weight,
+            '備註': detail
         })
-        total_active_power += (p['PTS'] * weight)
+        total_power += (p['PTS'] * weight)
         
-    return pd.DataFrame(roster_analysis).sort_values('場均PTS', ascending=False), total_active_power
+    df_res = pd.DataFrame(roster_list).sort_values('場均PTS', ascending=False)
+    return df_res, total_power
 
-# --- 5. 介面 ---
-st.title("🏀 NBA 數據專家 v8.2 (傷病細分版)")
+# --- 5. 介面設計 ---
+st.title("🏀 NBA 數據專家 v8.3 (精準修正版)")
 
+# 日期選擇
 nba_now = datetime.now(us_east_tz)
 dates_nba = [nba_now + timedelta(days=1), nba_now, nba_now - timedelta(days=1)]
 tabs = st.tabs([d.astimezone(tw_tz).strftime('%m/%d') for d in dates_nba])
@@ -173,22 +193,35 @@ for i, tab in enumerate(tabs):
             if h_abbr and a_abbr:
                 game_list.append({'label': f"{TEAM_NAME_CH.get(a_abbr)} @ {TEAM_NAME_CH.get(h_abbr)}", 'h_id': row['HOME_TEAM_ID'], 'a_id': row['VISITOR_TEAM_ID'], 'h_abbr': h_abbr, 'a_abbr': a_abbr})
 
-        sel_label = st.selectbox("🔍 選擇查看場次 (包含上場/帶傷/缺陣詳細清單)", [g['label'] for g in game_list], key=f"sel_{i}")
+        sel_label = st.selectbox("🔍 選擇分析場次", [g['label'] for g in game_list], key=f"sel_{i}")
         g = next(item for item in game_list if item['label'] == sel_label)
         
-        # 獲取細分名單
-        h_df, h_power = get_detailed_roster(g['h_abbr'], g['h_id'])
-        a_df, a_power = get_detailed_roster(g['a_abbr'], g['a_id'])
+        # 深度分析
+        h_roster, h_power = get_detailed_roster_v83(g['h_abbr'], g['h_id'])
+        a_roster, a_power = get_detailed_roster_v83(g['a_abbr'], g['a_id'])
         
-        # 顯示戰力卡片
-        c1, c2 = st.columns(2)
-        with c1:
-            st.metric(f"🏠 {TEAM_NAME_CH[g['h_abbr']]}", f"可用戰力: {h_power:.1f}")
-            st.dataframe(h_df, hide_index=True)
-        with c2:
-            st.metric(f"✈️ {TEAM_NAME_CH[g['a_abbr']]}", f"可用戰力: {a_power:.1f}")
-            st.dataframe(a_df, hide_index=True)
+        # 戰力對比卡片
+        col1, col2 = st.columns(2)
+        with col1:
+            st.subheader(f"🏠 {TEAM_NAME_CH[g['h_abbr']]}")
+            st.metric("預估可用火力 (PPG)", f"{h_power:.1f}")
+            st.dataframe(h_roster, hide_index=True, use_container_width=True)
+            
+        with col2:
+            st.subheader(f"✈️ {TEAM_NAME_CH[g['a_abbr']]}")
+            st.metric("預估可用火力 (PPG)", f"{a_power:.1f}")
+            st.dataframe(a_roster, hide_index=True, use_container_width=True)
 
-        st.info("💡 戰力權重計算：正常(1.0), 疑慮(0.5), 確定缺陣(0)")
+        st.divider()
+        st.write("📌 **狀態說明**：`💀 報銷` 與 `🚫 缺陣` 不計入戰力；`⚠️ 疑慮` 計入 40% 戰力；其餘為正常。")
 
-st.sidebar.info(f"🕒 系統更新：{last_update}")
+# 側邊欄資訊
+st.sidebar.info(f"🕒 數據最後更新：{last_update}")
+st.sidebar.markdown("""
+### v8.3 修正與強化
+- **Bug Fix**: 修復了計算休息天數時的類型錯誤。
+- **深度傷病分類**: 
+  - 自動識別 `Season Out` (ACL/手術/骨折)。
+  - 區分 `GTD` 與 `Out`。
+- **全體球員分析**: 不論健康與否，所有球員數據皆會列出並參與戰力權重計算。
+""")
