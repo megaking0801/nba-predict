@@ -47,9 +47,8 @@ NBA_HEADERS = {
     "Connection": "keep-alive",
 }
 
-
-st.set_page_config(page_title="NBA 數據專家 v9.0（官方傷病 Only）", layout="wide")
-st.title("🏀 NBA 數據專家 v9.0（NBA 官方 Injury Report + Inactive 交叉）")
+st.set_page_config(page_title="NBA 數據專家 v9.1（官方傷病 Only + Fallback）", layout="wide")
+st.title("🏀 NBA 數據專家 v9.1（NBA 官方 Injury Report + Inactive 交叉 + Fallback）")
 
 
 # =========================
@@ -67,16 +66,15 @@ def normalize_name(name: str) -> str:
         .strip()
     )
 
-
 def clamp(x, lo, hi):
     return max(lo, min(hi, x))
-
 
 def fetch_safe_df(endpoint_class, result_set_name=None, result_set_index=0,
                   max_retries=3, timeout=20, base_sleep=0.8, **kwargs) -> pd.DataFrame:
     """
-    nba_api endpoint 抓取：支援 ScoreboardV2 用 result_set_name 取特定表
-    遇到 403/429/timeout 會重試 + 指數退避（但不會像你之前那樣撐太久）
+    nba_api endpoint 抓取：
+    - 支援 ScoreboardV2 用 result_set_name 取特定表
+    - 遇到錯誤會重試，最後會在 sidebar 顯示錯誤（不再把錯誤吞掉）
     """
     last_err = None
     for attempt in range(max_retries):
@@ -93,41 +91,37 @@ def fetch_safe_df(endpoint_class, result_set_name=None, result_set_index=0,
                 else:
                     rs = rs_list[result_set_index]
             else:
-                rs = raw.get("resultSet", None)
-                if rs is None:
+                rs = raw.get("resultSet")
+                if not rs:
                     return pd.DataFrame()
 
             return pd.DataFrame(rs["rowSet"], columns=rs["headers"])
 
         except Exception as e:
-            last_err = str(e)
-            sleep_s = base_sleep * (2 ** attempt) + random.uniform(0, 0.5)
+            last_err = repr(e)
+            sleep_s = base_sleep * (2 ** attempt) + random.uniform(0, 0.4)
             time.sleep(sleep_s)
 
+    st.sidebar.error(f"❌ {endpoint_class.__name__} failed: {last_err}")
     return pd.DataFrame()
-
 
 def build_team_maps():
     tlist = teams.get_teams()
     id_to_abbr = {t["id"]: t["abbreviation"] for t in tlist}
     full_to_abbr = {t["full_name"]: t["abbreviation"] for t in tlist}
 
-    # 官方 Injury Report 有時用 "LA Clippers" / "LA Lakers"
+    # 常見變體
     full_to_abbr["LA Clippers"] = "LAC"
     full_to_abbr["LA Lakers"] = "LAL"
-
-    # 也補一些可能的變體
     full_to_abbr["Los Angeles Clippers"] = "LAC"
     full_to_abbr["Los Angeles Lakers"] = "LAL"
-
     return id_to_abbr, full_to_abbr
-
 
 ID_TO_ABBR, FULLNAME_TO_ABBR = build_team_maps()
 
 
 # =========================
-# 2) NBA 官方 Injury Report（PDF）抓取與解析
+# 2) NBA 官方 Injury Report（PDF）
 # =========================
 OFFICIAL_INJURY_PAGE = "https://official.nba.com/nba-injury-report-2025-26-season/"
 
@@ -136,36 +130,28 @@ PDF_PAT = re.compile(
 )
 
 def _parse_pdf_time(hh: str, mm: str, ap: str) -> int:
-    """把 07_30PM 轉成可排序數字（HHMM 24h）"""
-    h = int(hh)
-    m = int(mm)
+    h = int(hh); m = int(mm)
     if ap.upper() == "PM" and h != 12:
         h += 12
     if ap.upper() == "AM" and h == 12:
         h = 0
     return h * 100 + m
 
-
 @st.cache_data(ttl=1800, show_spinner=False)
 def find_latest_injury_pdf_url(date_yyyy_mm_dd: str) -> str | None:
-    """
-    從 official.nba.com 當季頁面找指定日期（YYYY-MM-DD）最新一份 Injury Report PDF URL
-    """
     try:
         html = requests.get(OFFICIAL_INJURY_PAGE, headers={"User-Agent": NBA_HEADERS["User-Agent"]}, timeout=15).text
         matches = PDF_PAT.findall(html)
         candidates = []
         for url, d, hh, mm, ap in matches:
             if d == date_yyyy_mm_dd:
-                rank = _parse_pdf_time(hh, mm, ap)
-                candidates.append((rank, url))
+                candidates.append((_parse_pdf_time(hh, mm, ap), url))
         if not candidates:
             return None
         candidates.sort(key=lambda x: x[0])
         return candidates[-1][1]
     except:
         return None
-
 
 @st.cache_data(ttl=1800, show_spinner=False)
 def download_pdf_bytes(url: str) -> bytes | None:
@@ -176,7 +162,6 @@ def download_pdf_bytes(url: str) -> bytes | None:
         return r.content
     except:
         return None
-
 
 def parse_official_injury_pdf(pdf_bytes: bytes) -> pd.DataFrame:
     """
@@ -195,13 +180,9 @@ def parse_official_injury_pdf(pdf_bytes: bytes) -> pd.DataFrame:
     except Exception:
         return pd.DataFrame(columns=["TEAM_ABBR", "PLAYER", "STATUS", "REASON"])
 
-    # 典型 row 會包含：
-    # 02/10/2026 7:30 PM (ET) BOS@NYK Boston Celtics Tatum, Jayson Questionable Injury/Illness - ...
     statuses = ["Available", "Probable", "Questionable", "Doubtful", "Out"]
     status_pat = "(" + "|".join(statuses) + ")"
 
-    # 寬鬆 regex：抓「TEAM(文字) + Player(Last, First) + Status + Reason」
-    # team 名稱用 greedy/非 greedy 混合，最後靠 player 的逗號格式定位
     row_pat = re.compile(
         r"\b\d{2}/\d{2}/\d{4}\b.*?\b[A-Z]{2,3}@[A-Z]{2,3}\b\s+"
         r"(?P<team>.+?)\s+"
@@ -215,6 +196,7 @@ def parse_official_injury_pdf(pdf_bytes: bytes) -> pd.DataFrame:
         m = row_pat.search(ln)
         if not m:
             continue
+
         team_name = m.group("team").strip()
         player = m.group("player").strip()
         status = m.group("status").strip()
@@ -222,48 +204,30 @@ def parse_official_injury_pdf(pdf_bytes: bytes) -> pd.DataFrame:
 
         abbr = FULLNAME_TO_ABBR.get(team_name)
         if not abbr:
-            # 有些 PDF team 欄位可能短名/變體，做一次鬆配
             abbr = next((a for k, a in FULLNAME_TO_ABBR.items() if k in team_name), None)
-
         if not abbr:
             continue
 
-        rows.append({
-            "TEAM_ABBR": abbr,
-            "PLAYER": player,
-            "STATUS": status,
-            "REASON": reason
-        })
+        rows.append({"TEAM_ABBR": abbr, "PLAYER": player, "STATUS": status, "REASON": reason})
 
     return pd.DataFrame(rows)
 
-
 @st.cache_data(ttl=900, show_spinner=False)
 def get_official_injury_report(date_yyyy_mm_dd: str) -> pd.DataFrame:
-    """
-    回傳指定日期的官方 injury report（最新 PDF）
-    """
     url = find_latest_injury_pdf_url(date_yyyy_mm_dd)
     if not url:
         return pd.DataFrame(columns=["TEAM_ABBR", "PLAYER", "STATUS", "REASON"])
-
     pdf_bytes = download_pdf_bytes(url)
     if not pdf_bytes:
         return pd.DataFrame(columns=["TEAM_ABBR", "PLAYER", "STATUS", "REASON"])
-
-    df = parse_official_injury_pdf(pdf_bytes)
-    return df
+    return parse_official_injury_pdf(pdf_bytes)
 
 
 # =========================
-# 3) NBA 官方 InactivePlayers（比賽當天確定不打）
+# 3) NBA 官方 InactivePlayers（ScoreboardV2）
 # =========================
 @st.cache_data(ttl=300, show_spinner=False)
 def get_official_inactives_mmddyyyy(game_date_mmddyyyy: str) -> dict:
-    """
-    ScoreboardV2 → InactivePlayers
-    回傳：abbr -> set(normalized player name)
-    """
     df = fetch_safe_df(
         scoreboardv2.ScoreboardV2,
         game_date=game_date_mmddyyyy,
@@ -271,31 +235,21 @@ def get_official_inactives_mmddyyyy(game_date_mmddyyyy: str) -> dict:
         max_retries=2,
         timeout=15
     )
-    if df.empty:
+    if df.empty or "TEAM_ID" not in df.columns or "PLAYER_NAME" not in df.columns:
         return {}
-
-    # 常見欄位：TEAM_ID / PLAYER_NAME
-    if "TEAM_ID" not in df.columns or "PLAYER_NAME" not in df.columns:
-        return {}
-
     out = {}
     for tid, g in df.groupby("TEAM_ID"):
         abbr = ID_TO_ABBR.get(int(tid))
         if not abbr:
             continue
-        names = set(normalize_name(x) for x in g["PLAYER_NAME"].dropna().astype(str).tolist())
-        out[abbr] = names
+        out[abbr] = set(normalize_name(x) for x in g["PLAYER_NAME"].dropna().astype(str).tolist())
     return out
 
 
 # =========================
-# 4) 核心資料與模型（只用必要 endpoints）
+# 4) 核心資料與模型（含 Fallback）
 # =========================
 def build_team_adv_map(season: str) -> dict:
-    """
-    Team Advanced：OFF_RATING, DEF_RATING, PACE
-    抓不到就用 default
-    """
     df_adv = fetch_safe_df(
         leaguedashteamstats.LeagueDashTeamStats,
         season=season,
@@ -306,18 +260,12 @@ def build_team_adv_map(season: str) -> dict:
     )
     if df_adv.empty or "TEAM_ID" not in df_adv.columns:
         return {}
-
     keep = [c for c in ["TEAM_ID", "OFF_RATING", "DEF_RATING", "PACE"] if c in df_adv.columns]
     df_adv = df_adv[keep].copy()
     df_adv["TEAM_ID"] = df_adv["TEAM_ID"].astype(int)
     return df_adv.set_index("TEAM_ID").to_dict("index")
 
-
 def build_player_ppg_db(season: str) -> tuple[dict, pd.DataFrame]:
-    """
-    Player PPG（用於傷病加權）
-    抓不到就回空
-    """
     ps = fetch_safe_df(
         leaguedashplayerstats.LeagueDashPlayerStats,
         season=season,
@@ -327,16 +275,10 @@ def build_player_ppg_db(season: str) -> tuple[dict, pd.DataFrame]:
     )
     if ps.empty or "PLAYER_NAME" not in ps.columns or "PTS" not in ps.columns:
         return {}, pd.DataFrame()
-
     db = {normalize_name(r["PLAYER_NAME"]): float(r["PTS"]) for _, r in ps.iterrows()}
     return db, ps
 
-
 def prepare_matchup_training_data(gf_raw: pd.DataFrame, team_adv_map: dict) -> pd.DataFrame:
-    """
-    LeagueGameFinder 會有每場兩列（每隊一列）
-    → 合併成「每場一列」：HOME vs AWAY
-    """
     df = gf_raw.copy()
     required = {"GAME_ID", "TEAM_ID", "TEAM_ABBREVIATION", "MATCHUP", "WL", "PLUS_MINUS", "GAME_DATE"}
     if not required.issubset(df.columns):
@@ -346,27 +288,17 @@ def prepare_matchup_training_data(gf_raw: pd.DataFrame, team_adv_map: dict) -> p
     df["IS_HOME"] = df["MATCHUP"].astype(str).str.contains("vs\.")
     df = df.sort_values(["TEAM_ID", "GAME_DATE"])
 
-    # REST_DAYS：每隊連續比賽間隔
     df["REST_DAYS"] = df.groupby("TEAM_ID")["GAME_DATE"].diff().dt.days.fillna(3)
     df["REST_DAYS"] = df["REST_DAYS"].clip(lower=0, upper=7)
 
     home = df[df["IS_HOME"]].copy()
     away = df[~df["IS_HOME"]].copy()
 
-    # 以 GAME_ID 合併（每場應有一主一客）
-    m = pd.merge(
-        home,
-        away,
-        on="GAME_ID",
-        suffixes=("_H", "_A"),
-        how="inner"
-    )
+    m = pd.merge(home, away, on="GAME_ID", suffixes=("_H", "_A"), how="inner")
 
-    # Label：主隊勝
     m["HOME_WIN"] = (m["WL_H"] == "W").astype(int)
     m["HOME_MARGIN"] = pd.to_numeric(m["PLUS_MINUS_H"], errors="coerce").fillna(0.0)
 
-    # Team stats（Advanced）
     def get_adv(team_id: int, key: str, default: float):
         return float(team_adv_map.get(int(team_id), {}).get(key, default))
 
@@ -378,42 +310,37 @@ def prepare_matchup_training_data(gf_raw: pd.DataFrame, team_adv_map: dict) -> p
     m["DRTG_A"] = m["TEAM_ID_A"].apply(lambda x: get_adv(x, "DEF_RATING", 112.0))
     m["PACE_A"] = m["TEAM_ID_A"].apply(lambda x: get_adv(x, "PACE", 99.0))
 
-    # 派生差值特徵（更適合對戰預測）
     m["REST_DIFF"] = m["REST_DAYS_H"] - m["REST_DAYS_A"]
     m["NET_H"] = m["ORTG_H"] - m["DRTG_H"]
     m["NET_A"] = m["ORTG_A"] - m["DRTG_A"]
     m["NET_DIFF"] = m["NET_H"] - m["NET_A"]
     m["ORTG_DIFF"] = m["ORTG_H"] - m["ORTG_A"]
-    m["DRTG_DIFF"] = m["DRTG_A"] - m["DRTG_H"]  # 主隊防守更好 → DRTG_H更低 → DRTG_DIFF更正
+    m["DRTG_DIFF"] = m["DRTG_A"] - m["DRTG_H"]
     m["PACE_DIFF"] = m["PACE_H"] - m["PACE_A"]
 
     return m
 
-
 @st.cache_data(ttl=3600, show_spinner=True)
-def load_core_data_v90(season: str):
-    """
-    只抓必要資料：
-    - Team advanced（可選）
-    - Player PPG（可選）
-    - LeagueGameFinder（必要）
-    並訓練 XGB 分類與回歸（主隊勝率 / 主隊分差）
-    """
+def load_core_data_v91(season: str):
     team_adv_map = build_team_adv_map(season)
     player_ppg_db, ps_df = build_player_ppg_db(season)
 
     gf_raw = fetch_safe_df(
         leaguegamefinder.LeagueGameFinder,
         season_nullable=season,
-        max_retries=3,      # GameFinder 慢一點，但不把整個 app 拖死
-        timeout=25
+        season_type_nullable="Regular Season",
+        league_id_nullable="00",
+        max_retries=3,
+        timeout=30
     )
+
+    # Fallback：抓不到就不訓練
     if gf_raw.empty:
-        return None, None, pd.DataFrame(), team_adv_map, player_ppg_db, ps_df
+        return None, None, pd.DataFrame(), team_adv_map, player_ppg_db, ps_df, True
 
     train = prepare_matchup_training_data(gf_raw, team_adv_map)
     if train.empty:
-        return None, None, pd.DataFrame(), team_adv_map, player_ppg_db, ps_df
+        return None, None, pd.DataFrame(), team_adv_map, player_ppg_db, ps_df, True
 
     feats = ["REST_DIFF", "NET_DIFF", "ORTG_DIFF", "DRTG_DIFF", "PACE_DIFF"]
     X = train[feats].fillna(0)
@@ -443,19 +370,11 @@ def load_core_data_v90(season: str):
     )
     reg.fit(X, y_margin)
 
-    return clf, reg, train, team_adv_map, player_ppg_db, ps_df
-
-
-SEASON = "2025-26"
-clf, reg, train_matchups, team_adv_map, player_ppg_db, ps_df = load_core_data_v90(SEASON)
-
-if clf is None or reg is None or train_matchups.empty:
-    st.error("NBA 官方 stats API 目前抓不到（LeagueGameFinder 或訓練資料不足）。請稍後重整。")
-    st.stop()
+    return clf, reg, train, team_adv_map, player_ppg_db, ps_df, False
 
 
 # =========================
-# 5) 傷病轉換成影響分數（官方 PDF + Inactive）
+# 5) 傷病影響（官方 PDF + Inactive 覆蓋）
 # =========================
 STATUS_WEIGHT = {
     "Out": 1.00,
@@ -466,10 +385,6 @@ STATUS_WEIGHT = {
 }
 
 def base_penalty_from_ppg(ppg: float) -> float:
-    """
-    你原先的分級概念保留，但改成「分數」更細：
-    讓 25+ 的缺陣明顯、但不會失控
-    """
     if ppg >= 28: return 7.0
     if ppg >= 24: return 6.0
     if ppg >= 18: return 4.0
@@ -477,14 +392,8 @@ def base_penalty_from_ppg(ppg: float) -> float:
     if ppg >= 7:  return 1.5
     return 0.8
 
-
-def build_injury_map_for_date(date_mmddyyyy: str, date_yyyy_mm_dd: str):
-    """
-    只用官方：
-    - Injury Report PDF（狀態 + 原因）
-    - Scoreboard Inactive（確定不打）覆蓋狀態為 Out
-    回傳：team_abbr -> list[dict]
-    """
+@st.cache_data(ttl=600, show_spinner=False)
+def build_injury_map_for_date(date_mmddyyyy: str, date_yyyy_mm_dd: str) -> dict:
     df_pdf = get_official_injury_report(date_yyyy_mm_dd)
     inactives = get_official_inactives_mmddyyyy(date_mmddyyyy)
 
@@ -498,30 +407,20 @@ def build_injury_map_for_date(date_mmddyyyy: str, date_yyyy_mm_dd: str):
                 reason = str(r["REASON"])
 
                 nm_norm = normalize_name(player)
-                # 如果在 InactivePlayers 裡，直接視為 Out（確定不打）
                 if abbr in inactives and nm_norm in inactives[abbr]:
                     status = "Out"
                     reason = f"{reason} | CONFIRMED INACTIVE"
 
-                plist.append({
-                    "player": player,
-                    "status": status,
-                    "reason": reason
-                })
+                plist.append({"player": player, "status": status, "reason": reason})
             out[abbr] = plist
     else:
-        # 如果 PDF 抓不到，至少還有 InactivePlayers（仍是官方）
+        # PDF 抓不到：至少用 InactivePlayers
         for abbr, nm_set in inactives.items():
             out[abbr] = [{"player": "(Confirmed Inactive)", "status": "Out", "reason": "Scoreboard InactivePlayers"}]
 
     return out
 
-
 def injury_impact(team_abbr: str, injury_map: dict, ppg_db: dict):
-    """
-    回傳 (impact_points, details)
-    impact_points 用於「勝率百分點」修正
-    """
     plist = injury_map.get(team_abbr, [])
     total = 0.0
     details = []
@@ -535,7 +434,6 @@ def injury_impact(team_abbr: str, injury_map: dict, ppg_db: dict):
         ppg = float(ppg_db.get(normalize_name(player), 0.0))
         base = base_penalty_from_ppg(ppg)
         pen = base * w
-
         if pen <= 0:
             continue
 
@@ -543,36 +441,41 @@ def injury_impact(team_abbr: str, injury_map: dict, ppg_db: dict):
         details.append(f"{icon} {player}（{ppg:.1f} PPG） {status} 影響 -{pen:.1f}｜{reason}")
         total += pen
 
-    # 上限，避免一隊傷一堆時把勝率修正到荒謬
     total = min(22.0, total)
     return total, details
 
 
 # =========================
-# 6) 預測：把「對戰特徵 + 傷病」算進去
+# 6) 對戰特徵（含 Fallback）
 # =========================
-def last_game_date_for_team(train_df: pd.DataFrame, team_abbr: str, side: str) -> pd.Timestamp | None:
-    # train_df 含 TEAM_ABBREVIATION_H / _A 與 GAME_DATE_H / _A
-    col_team = f"TEAM_ABBREVIATION_{side}"
-    col_date = f"GAME_DATE_{side}"
-    sub = train_df[train_df[col_team] == team_abbr]
-    if sub.empty:
-        return None
-    return pd.to_datetime(sub[col_date]).max()
-
-
-def get_team_adv(team_id: int):
+def get_team_adv(team_id: int, team_adv_map: dict):
     d = team_adv_map.get(int(team_id), {})
     ortg = float(d.get("OFF_RATING", 112.0))
     drtg = float(d.get("DEF_RATING", 112.0))
     pace = float(d.get("PACE", 99.0))
     return ortg, drtg, pace
 
+def last_game_date_for_team(train_df: pd.DataFrame, team_abbr: str) -> pd.Timestamp | None:
+    if train_df is None or train_df.empty:
+        return None
+    # 兩邊都找
+    sub_h = train_df[train_df["TEAM_ABBREVIATION_H"] == team_abbr]
+    sub_a = train_df[train_df["TEAM_ABBREVIATION_A"] == team_abbr]
+    mx = None
+    if not sub_h.empty:
+        mx = pd.to_datetime(sub_h["GAME_DATE_H"]).max()
+    if not sub_a.empty:
+        mx2 = pd.to_datetime(sub_a["GAME_DATE_A"]).max()
+        mx = mx2 if mx is None else max(mx, mx2)
+    return mx
 
-def build_feature_row(home_team_id: int, away_team_id: int, home_abbr: str, away_abbr: str, target_date_et: datetime):
-    # REST：用「target_date - last_game_date」估算（更合理）
-    last_h = last_game_date_for_team(train_matchups, home_abbr, "H") or last_game_date_for_team(train_matchups, home_abbr, "A")
-    last_a = last_game_date_for_team(train_matchups, away_abbr, "H") or last_game_date_for_team(train_matchups, away_abbr, "A")
+def build_feature_row(home_team_id: int, away_team_id: int,
+                      home_abbr: str, away_abbr: str,
+                      target_date_et: datetime,
+                      team_adv_map: dict,
+                      train_df: pd.DataFrame):
+    last_h = last_game_date_for_team(train_df, home_abbr)
+    last_a = last_game_date_for_team(train_df, away_abbr)
 
     rest_h = 3
     rest_a = 3
@@ -584,8 +487,8 @@ def build_feature_row(home_team_id: int, away_team_id: int, home_abbr: str, away
     rest_h = int(clamp(rest_h, 0, 7))
     rest_a = int(clamp(rest_a, 0, 7))
 
-    ortg_h, drtg_h, pace_h = get_team_adv(home_team_id)
-    ortg_a, drtg_a, pace_a = get_team_adv(away_team_id)
+    ortg_h, drtg_h, pace_h = get_team_adv(home_team_id, team_adv_map)
+    ortg_a, drtg_a, pace_a = get_team_adv(away_team_id, team_adv_map)
 
     net_h = ortg_h - drtg_h
     net_a = ortg_a - drtg_a
@@ -597,13 +500,26 @@ def build_feature_row(home_team_id: int, away_team_id: int, home_abbr: str, away
         "DRTG_DIFF": drtg_a - drtg_h,
         "PACE_DIFF": pace_h - pace_a
     }
-    return feat, {"rest_h": rest_h, "rest_a": rest_a, "net_h": net_h, "net_a": net_a,
-                  "ortg_h": ortg_h, "drtg_h": drtg_h, "pace_h": pace_h,
-                  "ortg_a": ortg_a, "drtg_a": drtg_a, "pace_a": pace_a}
+    ctx = {
+        "rest_h": rest_h, "rest_a": rest_a,
+        "ortg_h": ortg_h, "drtg_h": drtg_h, "pace_h": pace_h, "net_h": net_h,
+        "ortg_a": ortg_a, "drtg_a": drtg_a, "pace_a": pace_a, "net_a": net_a
+    }
+    return feat, ctx
 
 
 # =========================
-# 7) UI：三天（明日/今日/昨日）
+# 7) 讀取核心資料
+# =========================
+SEASON = "2025-26"
+clf, reg, train_matchups, team_adv_map, player_ppg_db, ps_df, is_fallback = load_core_data_v91(SEASON)
+
+if is_fallback:
+    st.warning("⚠️ LeagueGameFinder 抓不到或訓練資料不足：已啟用「Fallback 模式」：勝率以 50% 為基底，僅用官方傷病做修正。")
+
+
+# =========================
+# 8) UI：三天（明日/今日/昨日）
 # =========================
 nba_now = datetime.now(us_east_tz)
 dates_nba = [nba_now + timedelta(days=1), nba_now, nba_now - timedelta(days=1)]
@@ -611,11 +527,9 @@ tabs = st.tabs([d.astimezone(tw_tz).strftime("%m/%d") for d in dates_nba])
 
 for i, tab in enumerate(tabs):
     with tab:
-        # NBA 日期字串
         game_date_mmddyyyy = dates_nba[i].strftime("%m/%d/%Y")
         game_date_yyyy_mm_dd = dates_nba[i].strftime("%Y-%m-%d")
 
-        # Scoreboard：GameHeader 拿對戰組合
         gh = fetch_safe_df(
             scoreboardv2.ScoreboardV2,
             game_date=game_date_mmddyyyy,
@@ -623,6 +537,7 @@ for i, tab in enumerate(tabs):
             max_retries=2,
             timeout=15
         )
+
         if gh.empty or "HOME_TEAM_ID" not in gh.columns or "VISITOR_TEAM_ID" not in gh.columns:
             st.info("📅 目前無比賽資訊 / 或官方 scoreboard 暫時抓不到。")
             continue
@@ -637,9 +552,8 @@ for i, tab in enumerate(tabs):
             a_abbr = ID_TO_ABBR.get(a_id)
             if not h_abbr or not a_abbr:
                 continue
-            label = f"{TEAM_NAME_CH.get(a_abbr, a_abbr)} @ {TEAM_NAME_CH.get(h_abbr, h_abbr)}"
             games.append({
-                "label": label,
+                "label": f"{TEAM_NAME_CH.get(a_abbr, a_abbr)} @ {TEAM_NAME_CH.get(h_abbr, h_abbr)}",
                 "h_id": h_id, "a_id": a_id,
                 "h_abbr": h_abbr, "a_abbr": a_abbr
             })
@@ -664,15 +578,21 @@ for i, tab in enumerate(tabs):
         analysis = []
         for idx, g in enumerate(games):
             feat, ctx = build_feature_row(
-                g["h_id"], g["a_id"], g["h_abbr"], g["a_abbr"],
-                target_date_et=dates_nba[i]
+                g["h_id"], g["a_id"],
+                g["h_abbr"], g["a_abbr"],
+                target_date_et=dates_nba[i],
+                team_adv_map=team_adv_map,
+                train_df=train_matchups
             )
             X = pd.DataFrame([feat]).fillna(0)
 
-            base_p_home = float(clf.predict_proba(X)[0][1] * 100)
-            base_margin = float(reg.predict(X)[0])
+            if clf is None or reg is None:
+                base_p_home = 50.0
+                base_margin = 0.0
+            else:
+                base_p_home = float(clf.predict_proba(X)[0][1] * 100)
+                base_margin = float(reg.predict(X)[0])
 
-            # 傷病影響（官方 PDF + Inactive）
             h_imp, h_det = injury_impact(g["h_abbr"], injury_map, player_ppg_db)
             a_imp, a_det = injury_impact(g["a_abbr"], injury_map, player_ppg_db)
 
@@ -682,7 +602,6 @@ for i, tab in enumerate(tabs):
             oh, oa = input_odds[idx]
             imp_h = (1/oh) / ((1/oh) + (1/oa)) * 100
             imp_a = (1/oa) / ((1/oh) + (1/oa)) * 100
-
             edge_h = final_p_home - imp_h
             edge_a = (100 - final_p_home) - imp_a
 
@@ -731,8 +650,7 @@ for i, tab in enumerate(tabs):
         m2.metric(curr["a_ch"], f"{100-curr['final_p_home']:.1f}%", f"預測分差: {-curr['final_margin']:+.1f}")
         m3.metric("AI 建議贏家", curr["h_ch"] if curr["final_p_home"] >= 50 else curr["a_ch"])
 
-        # 對戰基礎特徵（讓你知道模型在看什麼）
-        st.subheader("🧠 模型對戰特徵（主 - 客）")
+        st.subheader("🧠 對戰特徵（主 - 客）")
         st.table(pd.DataFrame({
             "特徵": ["REST_DIFF", "NET_DIFF", "ORTG_DIFF", "DRTG_DIFF", "PACE_DIFF"],
             "值": [
@@ -763,7 +681,6 @@ for i, tab in enumerate(tabs):
             ]
         }))
 
-        # 傷病（官方）
         st.subheader("🚑 官方傷病（Injury Report + InactivePlayers）")
         ic1, ic2 = st.columns(2)
         with ic1:
@@ -782,38 +699,24 @@ for i, tab in enumerate(tabs):
             else:
                 st.success("無顯著傷病影響（或官方未列入）")
 
-        # Top scorers（可選；排除官方列 Out / Confirmed Inactive 的球員）
+        # Top scorers（可選：抓得到 ps_df 才顯示）
         if ps_df is not None and not ps_df.empty:
-            st.subheader("🚀 核心球員（依 PTS；排除官方 Out/Inactive）")
-
-            # 建立該隊本日 Out/Inactive 名單（normalize）
-            def build_out_set(team_abbr: str):
-                out_set = set()
-                for p in (build_injury_map_for_date(game_date_mmddyyyy, game_date_yyyy_mm_dd).get(team_abbr, [])):
-                    if p.get("status") == "Out":
-                        out_set.add(normalize_name(p.get("player", "")))
-                return out_set
-
-            out_h = build_out_set(curr["h_abbr"])
-            out_a = build_out_set(curr["a_abbr"])
-
+            st.subheader("🚀 核心球員（依 PTS；不會自動排除 Q/D/P，只用於參考）")
             p1, p2 = st.columns(2)
-            for tid, abbr, name, outset, col in [
-                (curr["h_id"], curr["h_abbr"], curr["h_ch"], out_h, p1),
-                (curr["a_id"], curr["a_abbr"], curr["a_ch"], out_a, p2)
-            ]:
+            for tid, name, col in [(curr["h_id"], curr["h_ch"], p1), (curr["a_id"], curr["a_ch"], p2)]:
                 with col:
                     st.write(f"**{name}**")
                     sub = ps_df[ps_df["TEAM_ID"] == tid].copy()
-                    if not sub.empty:
-                        sub["__nm"] = sub["PLAYER_NAME"].apply(normalize_name)
-                        sub = sub[~sub["__nm"].isin(outset)].drop(columns=["__nm"])
+                    if sub.empty:
+                        st.info("無球員資料")
+                    else:
                         sub = sub.sort_values("PTS", ascending=False).head(8)
-                        st.dataframe(sub[["PLAYER_NAME", "PTS", "REB", "AST"]]
-                                     .rename(columns={"PLAYER_NAME": "姓名", "PTS": "得分", "REB": "籃板", "AST": "助攻"}),
-                                     hide_index=True)
-        else:
-            st.info("球員 PPG/名單資料目前抓不到（LeagueDashPlayerStats empty），不影響勝率計算。")
+                        st.dataframe(
+                            sub[["PLAYER_NAME", "PTS", "REB", "AST"]].rename(
+                                columns={"PLAYER_NAME": "姓名", "PTS": "得分", "REB": "籃板", "AST": "助攻"}
+                            ),
+                            hide_index=True
+                        )
 
 st.sidebar.caption(f"Season：{SEASON}")
 st.sidebar.caption(f"🕒 更新時間：{datetime.now(tw_tz).strftime('%Y-%m-%d %H:%M:%S')}")
