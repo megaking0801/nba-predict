@@ -1,7 +1,6 @@
 import streamlit as st
 from nba_api.stats.endpoints import (
-    leaguegamefinder, scoreboardv2, leaguedashplayerstats, 
-    leaguedashteamstats
+    leaguegamefinder, scoreboardv2, leaguedashplayerstats
 )
 from nba_api.stats.static import teams
 import pandas as pd
@@ -22,7 +21,7 @@ TEAM_NAME_CH = {
     'POR': '拓荒者', 'SAC': '國王', 'SAS': '馬刺', 'TOR': '暴龍', 'UTA': '爵士', 'WAS': '巫師'
 }
 
-# 傷病狀態翻譯對照表
+# 狀態翻譯對照表 (擴充匹配度)
 STATUS_MAP = {
     'Out': '❌ 缺陣',
     'Day-To-Day': '📋 每日觀察',
@@ -34,12 +33,12 @@ STATUS_MAP = {
 
 def translate_status(stat_text):
     for eng, chi in STATUS_MAP.items():
-        if eng in stat_text: return chi
+        if eng.lower() in stat_text.lower(): return chi
     return stat_text
 
-st.set_page_config(page_title="NBA 數據專家 v12.8", layout="wide")
+st.set_page_config(page_title="NBA 數據專家 v12.9", layout="wide")
 
-# --- 2. ESPN 傷病解析引擎 (v12.8 精準定位+中文翻譯版) ---
+# --- 2. ESPN 傷病解析引擎 (v12.9 欄位自動校準版) ---
 @st.cache_data(ttl=600)
 def get_espn_injuries_v2():
     url = "https://www.espn.com/nba/injuries"
@@ -49,45 +48,51 @@ def get_espn_injuries_v2():
         resp = requests.get(url, headers=headers, timeout=10)
         soup = BeautifulSoup(resp.text, 'html.parser')
         
-        # 尋找所有球隊區塊
-        # ESPN 的結構通常是 div.Table__Title (含隊名) 後面接 div.Table__Scroller (含表格)
-        containers = soup.select('.ResponsiveTable')
+        # 抓取所有包含表格的容器
+        tables = soup.select('.ResponsiveTable')
         
-        for container in containers:
-            title_div = container.select_one('.Table__Title')
-            if not title_div: continue
+        for table in tables:
+            # 1. 識別球隊
+            title_text = table.select_one('.Table__Title')
+            if not title_text: continue
             
-            full_team_name = title_div.get_text(strip=True)
             t_abbr = "UNKNOWN"
+            full_name = title_text.get_text(strip=True)
             for abbr, chi in TEAM_NAME_CH.items():
-                if chi in full_team_name or abbr in full_team_name.upper():
-                    t_abbr = abbr
-                    break
+                if chi in full_name or abbr in full_name.upper():
+                    t_abbr = abbr; break
             
-            # 精準定位表格行
-            rows = container.select('tbody tr')
+            # 2. 自動校準欄位索引 (防止抓到位置或日期)
+            headers_list = [th.get_text(strip=True).upper() for th in table.select('th')]
+            try:
+                p_idx = next(i for i, h in enumerate(headers_list) if 'NAME' in h or 'PLAYER' in h)
+                s_idx = next(i for i, h in enumerate(headers_list) if 'STATUS' in h)
+                d_idx = next(i for i, h in enumerate(headers_list) if 'COMMENT' in h or 'DESC' in h)
+            except:
+                # 若標題抓不到，使用預設值 (0:球員, 1:位置, 2:狀態, 3:日期)
+                p_idx, s_idx, d_idx = 0, 2, 3
+
+            # 3. 提取數據
+            rows = table.select('tbody tr')
             for r in rows:
                 cols = r.select('td')
-                if len(cols) >= 3:
-                    # ESPN 表格通常是：0:球員(含位置), 1:狀態, 2:說明
-                    raw_player = cols[0].get_text(strip=True)
-                    # 移除球員名稱後面的位置標記 (例如 "Ja MorantPG")
-                    player_name = raw_player.replace('PG','').replace('SG','').replace('SF','').replace('PF','').replace('C','')
+                if len(cols) > max(p_idx, s_idx, d_idx):
+                    raw_p = cols[p_idx].get_text(strip=True)
+                    # 清洗掉名字後面的位置符號
+                    p_name = raw_p.replace('PG','').replace('SG','').replace('SF','').replace('PF','').replace('C','')
                     
-                    status_eng = cols[1].get_text(strip=True)
+                    raw_s = cols[s_idx].get_text(strip=True)
                     all_inj.append({
-                        '球員': player_name,
-                        '狀態': translate_status(status_eng),
-                        '說明': cols[2].get_text(strip=True),
+                        '球員': p_name,
+                        '狀態': translate_status(raw_s),
+                        '說明': cols[d_idx].get_text(strip=True),
                         '球隊': t_abbr,
-                        'RAW_STATUS': status_eng # 供過濾使用
+                        'RAW_STATUS': raw_s # 核心過濾用
                     })
     except Exception as e:
-        st.error(f"傷病數據抓取失敗: {e}")
-    
+        st.error(f"傷病抓取異常: {e}")
+        
     df = pd.DataFrame(all_inj)
-    for col in ['球員', '狀態', '說明', '球隊', 'RAW_STATUS']:
-        if col not in df.columns: df[col] = ""
     return df
 
 @st.cache_data(ttl=3600)
@@ -99,9 +104,9 @@ def load_all_nba_stats():
     if p_base.empty: return pd.DataFrame(), {}, "N/A"
     
     p_full = pd.merge(p_base, p_adv[['PLAYER_ID', 'TS_PCT', 'PIE']], on='PLAYER_ID', how='left')
-    # IMPACT = 得分 + 籃板*1.1 + 助攻*1.5 + (抄截+火鍋)*2 - 失誤*2
     p_full['IMPACT'] = p_full['PTS'] + p_full['REB']*1.1 + p_full['AST']*1.5 + (p_full['STL']+p_full['BLK'])*2 - p_full['TOV']*2
     
+    from nba_api.stats.endpoints import leaguegamefinder
     gf = fetch_safe_df(leaguegamefinder.LeagueGameFinder, season_nullable=S)
     l10 = {}
     if not gf.empty:
@@ -121,7 +126,7 @@ ps_db, l10_db, update_time = load_all_nba_stats()
 injury_df = get_espn_injuries_v2()
 
 # --- 3. UI 顯示邏輯 ---
-st.title("🏀 NBA 數據專家 v12.8 (傷病翻譯+精準修復)")
+st.title("🏀 NBA 數據專家 v12.9 (翻譯校正版)")
 st.sidebar.write(f"📊 最後同步: {update_time}")
 
 nba_now = datetime.now(us_east_tz)
@@ -145,11 +150,11 @@ for i, tab in enumerate(tabs):
             
             def build_team_package(tid, abbr):
                 t_inj = injury_df[injury_df['球隊'] == abbr]
-                # 過濾不上的球員 (依據原始英文狀態判斷)
+                # 過濾不上的球員 (依據原始狀態過濾)
                 out_names = t_inj[t_inj['RAW_STATUS'].str.contains('Out|Doubtful|Day-To-Day|GTD', case=False, na=False)]['球員'].tolist()
                 
                 all_ps = ps_db[ps_db['TEAM_ID'] == tid].sort_values('IMPACT', ascending=False)
-                # 排除傷病名單球員，選取最強 8 人
+                # 排除傷病名單，選取會上場的最強 8 人
                 active_core = all_ps[~all_ps['PLAYER_NAME'].apply(lambda x: any(name in x for name in out_names))].head(8)
                 
                 return {'pts': active_core['PTS'].sum(), 'ts': active_core['TS_PCT'].mean(), 
@@ -158,11 +163,12 @@ for i, tab in enumerate(tabs):
             h_res = build_team_package(h_id, h_abbr)
             a_res = build_team_package(a_id, a_abbr)
 
+            # 勝率模型計算
             final_margin = (h_res['pts']-a_res['pts'])*0.12 + (h_res['ts']-a_res['ts'])*15 + (h_res['pie']-a_res['pie'])*45 + (l10_db.get(h_id,0)-l10_db.get(a_id,0))*0.4 + 2.5
             prob_h = 1 / (1 + 10**(-final_margin/15)) * 100
             
             h_cn, a_cn = TEAM_NAME_CH.get(h_abbr, h_abbr), TEAM_NAME_CH.get(a_abbr, a_abbr)
-            g_key = f"v128_{dates[i].strftime('%Y%m%d')}_{a_abbr}_{h_abbr}"
+            g_key = f"v129_{dates[i].strftime('%Y%m%d')}_{a_abbr}_{h_abbr}"
 
             with cols[idx % 3]:
                 with st.container(border=True):
@@ -187,12 +193,12 @@ for i, tab in enumerate(tabs):
 
             st.markdown("#### 📊 1. 預計上場核心數據 (排除缺陣球員)")
             c1, c2 = st.columns(2)
-            c1.write(f"**[主隊] {curr['h_cn']} 可用球員**")
+            c1.write(f"**[主隊] {curr['h_cn']} 可用核心**")
             c1.dataframe(curr['h_res']['df'][['PLAYER_NAME', 'PTS', 'TS_PCT', 'PIE', 'IMPACT']].rename(columns={'PLAYER_NAME':'球員'}), hide_index=True)
-            c2.write(f"**[客隊] {curr['a_cn']} 可用球員**")
+            c2.write(f"**[客隊] {curr['a_cn']} 可用核心**")
             c2.dataframe(curr['a_res']['df'][['PLAYER_NAME', 'PTS', 'TS_PCT', 'PIE', 'IMPACT']].rename(columns={'PLAYER_NAME':'球員'}), hide_index=True)
 
-            st.markdown("#### 🚑 2. ESPN 即時傷病詳情 (已翻譯)")
+            st.markdown("#### 🚑 2. ESPN 即時傷病詳情 (已自動校準翻譯)")
             ic1, ic2 = st.columns(2)
             with ic1:
                 st.write(f"**{curr['h_cn']} 傷情**")
