@@ -1,8 +1,12 @@
 import streamlit as st
 from nba_api.stats.endpoints import (
-    leaguegamefinder, scoreboardv2, leaguedashplayerstats, 
-    leaguedashteamstats, leaguehustlestatsteam, leaguedashptstats,
-    synergyplaytypes
+    leaguegamefinder,
+    scoreboardv2,
+    leaguedashplayerstats,
+    leaguedashteamstats,
+    leaguehustlestatsteam,
+    leaguedashptstats,
+    synergyplaytypes
 )
 from nba_api.stats.static import teams
 import pandas as pd
@@ -255,4 +259,5 @@ for i, tab in enumerate(tabs):
                 st.dataframe(p_df[['PLAYER_NAME', 'PTS', 'REB', 'AST', 'TS_PCT']].rename(columns={'PLAYER_NAME':'姓名','PTS':'得分','TS_PCT':'真實命中%'}), hide_index=True)
 
 st.sidebar.info(f"🕒 系統更新：{last_update}")
+
 
