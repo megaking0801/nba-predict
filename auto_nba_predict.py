@@ -6,7 +6,6 @@ from datetime import datetime, timedelta
 
 from nba_api.stats.static import teams
 from nba_api.live.nba.endpoints import scoreboard as live_scoreboard
-from nba_api.live.nba.endpoints import standings as live_standings
 
 warnings.filterwarnings("ignore")
 tw_tz = pytz.timezone("Asia/Taipei")
@@ -25,11 +24,11 @@ TEAM_NAME_CH = {
     'TOR': '多倫多暴龍', 'UTA': '猶他爵士', 'WAS': '華盛頓巫師'
 }
 
-st.set_page_config(page_title="NBA 數據專家 v9.3（全官方、無 stats 依賴）", layout="wide")
-st.title("🏀 NBA 數據專家 v9.3（Live 賽程 + Live Standings + 官方 Injury Report）")
+st.set_page_config(page_title="NBA 數據專家 v9.4（無 stats/無 standings）", layout="wide")
+st.title("🏀 NBA 數據專家 v9.4（Live 賽程 + 近況回溯 + 官方 Injury Report）")
 
 # -------------------------
-# 小工具
+# utils
 # -------------------------
 def normalize_name(name: str) -> str:
     if not isinstance(name, str):
@@ -54,7 +53,6 @@ def build_team_maps():
     id_to_abbr = {t["id"]: t["abbreviation"] for t in tlist}
     abbr_to_id = {t["abbreviation"]: t["id"] for t in tlist}
     fullname_to_abbr = {t["full_name"]: t["abbreviation"] for t in tlist}
-    # 常見變體
     fullname_to_abbr["LA Clippers"] = "LAC"
     fullname_to_abbr["LA Lakers"] = "LAL"
     fullname_to_abbr["Los Angeles Clippers"] = "LAC"
@@ -64,10 +62,13 @@ def build_team_maps():
 ID_TO_ABBR, ABBR_TO_ID, FULLNAME_TO_ABBR = build_team_maps()
 
 # -------------------------
-# 1) Live 賽程（不走 stats）
+# 1) live scoreboard (today)
 # -------------------------
 @st.cache_data(ttl=120, show_spinner=False)
-def get_live_scoreboard(date_yyyy_mm_dd: str) -> list[dict]:
+def get_live_scoreboard_games(date_yyyy_mm_dd: str) -> list[dict]:
+    """
+    games list: {home_abbr, away_abbr, label, statusText, home_score, away_score}
+    """
     try:
         sb = live_scoreboard.ScoreBoard(game_date=date_yyyy_mm_dd)
         data = sb.get_dict()
@@ -87,89 +88,84 @@ def get_live_scoreboard(date_yyyy_mm_dd: str) -> list[dict]:
         out.append({
             "home_abbr": h_abbr,
             "away_abbr": a_abbr,
-            "home_id": ABBR_TO_ID.get(h_abbr),
-            "away_id": ABBR_TO_ID.get(a_abbr),
-            "label": f"{TEAM_NAME_CH.get(a_abbr, a_abbr)} @ {TEAM_NAME_CH.get(h_abbr, h_abbr)}"
+            "label": f"{TEAM_NAME_CH.get(a_abbr, a_abbr)} @ {TEAM_NAME_CH.get(h_abbr, h_abbr)}",
+            "statusText": g.get("gameStatusText", ""),
+            "home_score": float(h.get("score") or 0),
+            "away_score": float(a.get("score") or 0),
+            "gameStatus": int(g.get("gameStatus") or 0),  # 1 scheduled, 2 live, 3 final (常見)
         })
     return out
 
 # -------------------------
-# 2) Live Standings（用勝率/分差估 baseline 強弱）
+# 2) build "recent form" team strength from last X days finals
 # -------------------------
-@st.cache_data(ttl=600, show_spinner=False)
-def get_live_team_strength_map() -> dict:
+@st.cache_data(ttl=600, show_spinner=True)
+def build_recent_form(days_back: int = 21) -> dict:
     """
-    回傳 dict[TEAM_ABBR] = {"win_pct":..., "pt_diff":..., "games":...}
-    來源：nba_api.live standings
+    回溯近 days_back 天的 live scoreboard，把 final 比賽抓下來
+    給每隊：
+      - win_pct_recent
+      - avg_margin_recent（平均分差，贏為正、輸為負）
+      - games
     """
-    try:
-        s = live_standings.Standings()
-        d = s.get_dict()
-        # 結構可能因版本不同，做最大化相容解析
-        league = d.get("league", {})
-        standard = league.get("standard", {})
-        teams_list = standard.get("teams", [])
-        if not teams_list:
-            # 有些版本直接 d["standings"] 或其它鍵
-            teams_list = d.get("standings", {}).get("teams", []) or d.get("teams", [])
-    except Exception as e:
-        st.sidebar.error(f"❌ Live Standings 取得失敗：{repr(e)}")
-        return {}
+    today = datetime.now(us_east_tz).date()
+    rows = []
 
-    strength = {}
-    for t in teams_list:
-        abbr = t.get("teamSitesOnly", {}).get("teamTricode") or t.get("teamTricode") or t.get("teamAbbreviation")
-        if not abbr:
+    for d in range(1, days_back + 1):
+        dt = (today - timedelta(days=d)).strftime("%Y-%m-%d")
+        try:
+            sb = live_scoreboard.ScoreBoard(game_date=dt).get_dict()
+            games = sb.get("scoreboard", {}).get("games", [])
+        except Exception:
             continue
 
-        wins = float(t.get("win", t.get("wins", 0)) or 0)
-        losses = float(t.get("loss", t.get("losses", 0)) or 0)
-        gp = wins + losses if (wins + losses) > 0 else float(t.get("gamesPlayed", 0) or 0)
+        for g in games:
+            if int(g.get("gameStatus") or 0) != 3:
+                continue  # only finals
 
-        win_pct = float(t.get("winPct", t.get("winPctV2", 0)) or 0)
-        if win_pct == 0 and gp > 0:
-            win_pct = wins / gp
+            h = g.get("homeTeam", {})
+            a = g.get("awayTeam", {})
+            h_abbr = h.get("teamTricode")
+            a_abbr = a.get("teamTricode")
+            if not h_abbr or not a_abbr:
+                continue
 
-        # point differential 欄位可能叫做 "ptDiff" / "pointDiff" / "pointsDifferential"
-        pt_diff = t.get("ptDiff", t.get("pointDiff", t.get("pointsDifferential", None)))
-        if pt_diff is None:
-            # 退一步：用 pointsFor - pointsAgainst（欄位名也可能不同）
-            pf = t.get("pointsFor", t.get("ppg", None))
-            pa = t.get("pointsAgainst", t.get("oppPpg", None))
-            if pf is not None and pa is not None:
-                pt_diff = float(pf) - float(pa)
-            else:
-                pt_diff = 0.0
-        pt_diff = float(pt_diff)
+            hs = float(h.get("score") or 0)
+            as_ = float(a.get("score") or 0)
+            if hs == 0 and as_ == 0:
+                continue
 
-        strength[abbr] = {"win_pct": float(win_pct), "pt_diff": pt_diff, "games": float(gp)}
-    return strength
+            # home record
+            rows.append({"team": h_abbr, "win": 1 if hs > as_ else 0, "margin": hs - as_})
+            # away record
+            rows.append({"team": a_abbr, "win": 1 if as_ > hs else 0, "margin": as_ - hs})
+
+    if not rows:
+        return {}
+
+    df = pd.DataFrame(rows)
+    agg = df.groupby("team").agg(
+        games=("win", "count"),
+        win_pct=("win", "mean"),
+        avg_margin=("margin", "mean")
+    ).reset_index()
+
+    out = {}
+    for _, r in agg.iterrows():
+        out[r["team"]] = {
+            "games": int(r["games"]),
+            "win_pct": float(r["win_pct"]),
+            "avg_margin": float(r["avg_margin"])
+        }
+    return out
 
 # -------------------------
-# 3) 官方 Injury Report（PDF）
+# 3) official injury report pdf
 # -------------------------
 OFFICIAL_INJURY_PAGE = "https://official.nba.com/nba-injury-report-2025-26-season/"
 PDF_PAT = re.compile(
     r"(https?://[^\s\"']*Injury-Report_(\d{4}-\d{2}-\d{2})_(\d{2})_(\d{2})(AM|PM)\.pdf)"
 )
-
-STATUS_WEIGHT = {
-    "Out": 1.00,
-    "Doubtful": 0.75,
-    "Questionable": 0.45,
-    "Probable": 0.20,
-    "Available": 0.00
-}
-
-def base_penalty_from_ppg(ppg: float) -> float:
-    # 這版不抓球員 stats（避免 stats.nba.com），所以 ppg 通常是 0
-    # 但你仍可用 status 本身給固定權重（見 injury_impact）
-    if ppg >= 28: return 7.0
-    if ppg >= 24: return 6.0
-    if ppg >= 18: return 4.0
-    if ppg >= 12: return 2.5
-    if ppg >= 7:  return 1.5
-    return 0.8
 
 def _parse_pdf_time(hh: str, mm: str, ap: str) -> int:
     h = int(hh); m = int(mm)
@@ -258,8 +254,7 @@ def get_official_injury_report(date_yyyy_mm_dd: str) -> pd.DataFrame:
 
 def injury_impact(team_abbr: str, injury_df: pd.DataFrame):
     """
-    這版不抓球員 PPG（避免 stats），所以改成「狀態固定權重」
-    讓官方分類（Out/Doubtful/Questionable/Probable）仍然能影響勝率。
+    不抓球員 PPG，使用狀態固定扣分（百分點）
     """
     if injury_df.empty:
         return 0.0, []
@@ -268,10 +263,6 @@ def injury_impact(team_abbr: str, injury_df: pd.DataFrame):
     if sub.empty:
         return 0.0, []
 
-    total = 0.0
-    details = []
-
-    # 固定影響（百分點）— 你可在這裡微調
     status_points = {
         "Out": 3.0,
         "Doubtful": 2.0,
@@ -280,6 +271,8 @@ def injury_impact(team_abbr: str, injury_df: pd.DataFrame):
         "Available": 0.0
     }
 
+    total = 0.0
+    details = []
     for _, r in sub.iterrows():
         player = str(r["PLAYER"])
         status = str(r["STATUS"])
@@ -295,41 +288,45 @@ def injury_impact(team_abbr: str, injury_df: pd.DataFrame):
     return total, details
 
 # -------------------------
-# 4) 勝率 baseline：Win% + 分差 + 主場 + 傷病
+# 4) win prob (recent form + home adv + injury)
 # -------------------------
 def predict_home_win_prob(home_abbr: str, away_abbr: str,
-                          strength_map: dict,
-                          home_inj_pen: float, away_inj_pen: float):
+                          recent_map: dict,
+                          home_inj: float, away_inj: float):
     """
-    用 standings 的 win% 與 pt_diff 做 baseline：
-    - win% 差：主隊 win_pct - 客隊 win_pct（範圍約 -1~+1）
-    - pt_diff 差：主隊 pt_diff - 客隊 pt_diff（通常 -15~+15）
-    轉成 z 值，再 sigmoid 得出勝率
+    recent form baseline:
+      - win_pct_recent diff
+      - avg_margin_recent diff
+    轉 z -> sigmoid
+    若 recent_map 沒資料：回 50%
     """
-    h = strength_map.get(home_abbr, {"win_pct": 0.5, "pt_diff": 0.0, "games": 0})
-    a = strength_map.get(away_abbr, {"win_pct": 0.5, "pt_diff": 0.0, "games": 0})
+    h = recent_map.get(home_abbr)
+    a = recent_map.get(away_abbr)
+
+    if not h or not a:
+        base_p = 50.0
+        final_p = clamp(50.0 - home_inj + away_inj, 5, 95)
+        margin = 0.0 - (home_inj - away_inj) * 0.35
+        return base_p, final_p, margin, None
 
     win_diff = float(h["win_pct"]) - float(a["win_pct"])
-    pt_diff = float(h["pt_diff"]) - float(a["pt_diff"])
+    mar_diff = float(h["avg_margin"]) - float(a["avg_margin"])
 
-    home_adv = 0.15  # z 尺度的主場加成（可調）
-
-    # 轉 z：win_diff 權重較大、pt_diff 次之（可調）
-    z = (win_diff * 2.4) + (pt_diff * 0.06) + home_adv
+    home_adv_z = 0.12
+    z = (win_diff * 2.2) + (mar_diff * 0.08) + home_adv_z
 
     base_p = sigmoid(z) * 100
-    final_p = clamp(base_p - home_inj_pen + away_inj_pen, 5, 95)
+    final_p = clamp(base_p - home_inj + away_inj, 5, 95)
 
-    # 分差 proxy：pt_diff 差 + 傷病微調
-    margin = (pt_diff * 0.55) - (home_inj_pen - away_inj_pen) * 0.35
-    return base_p, final_p, margin, win_diff, pt_diff
+    margin = (mar_diff * 0.65) - (home_inj - away_inj) * 0.35
+    return base_p, final_p, margin, {"win_diff": win_diff, "mar_diff": mar_diff, "h_games": h["games"], "a_games": a["games"]}
 
 # =========================
-# 主 UI（三天）
+# UI
 # =========================
-strength_map = get_live_team_strength_map()
-if not strength_map:
-    st.warning("⚠️ Live Standings 暫時取不到：勝率將以 50% 為基底（仍可顯示賽程與傷病）。")
+recent_map = build_recent_form(days_back=21)
+if not recent_map:
+    st.warning("⚠️ 近況回溯資料抓不到（可能 live endpoint 暫時限流/維護）。勝率將回退到 50% + 傷病修正。")
 
 nba_now = datetime.now(us_east_tz)
 dates = [nba_now + timedelta(days=1), nba_now, nba_now - timedelta(days=1)]
@@ -340,7 +337,7 @@ for i, tab in enumerate(tabs):
         date_et = dates[i]
         date_yyyy_mm_dd = date_et.strftime("%Y-%m-%d")
 
-        games = get_live_scoreboard(date_yyyy_mm_dd)
+        games = get_live_scoreboard_games(date_yyyy_mm_dd)
         if not games:
             st.info("📅 目前抓不到賽程（Live Scoreboard 暫時無資料/維護/該日無賽程）。")
             continue
@@ -354,6 +351,7 @@ for i, tab in enumerate(tabs):
             for idx, g in enumerate(games):
                 with cols[idx % 3]:
                     st.write(f"**{g['label']}**")
+                    st.caption(g.get("statusText",""))
                     oh = st.number_input(f"🏠 {TEAM_NAME_CH.get(g['home_abbr'], g['home_abbr'])}", value=1.75, step=0.01, key=f"oh_{i}_{idx}")
                     oa = st.number_input(f"✈️ {TEAM_NAME_CH.get(g['away_abbr'], g['away_abbr'])}", value=1.75, step=0.01, key=f"oa_{i}_{idx}")
                     input_odds[idx] = (oh, oa)
@@ -365,12 +363,7 @@ for i, tab in enumerate(tabs):
             h_inj, h_det = injury_impact(h_abbr, injury_df)
             a_inj, a_det = injury_impact(a_abbr, injury_df)
 
-            if strength_map:
-                base_p, final_p, margin, win_diff, pt_diff = predict_home_win_prob(
-                    h_abbr, a_abbr, strength_map, h_inj, a_inj
-                )
-            else:
-                base_p, final_p, margin, win_diff, pt_diff = 50.0, clamp(50.0 - h_inj + a_inj, 5, 95), 0.0, 0.0, 0.0
+            base_p, final_p, margin, feat = predict_home_win_prob(h_abbr, a_abbr, recent_map, h_inj, a_inj)
 
             oh, oa = input_odds[idx]
             imp_h = (1/oh) / ((1/oh) + (1/oa)) * 100
@@ -386,20 +379,15 @@ for i, tab in enumerate(tabs):
                 "base_p": base_p,
                 "final_p": final_p,
                 "margin": margin,
-                "win_diff": win_diff,
-                "pt_diff": pt_diff,
+                "feat": feat,
                 "h_inj": h_inj, "a_inj": a_inj,
                 "h_det": h_det, "a_det": a_det,
                 "odds_h": oh, "odds_a": oa,
                 "edge_h": edge_h, "edge_a": edge_a
             })
 
-        if not analysis:
-            st.info("📅 今日沒有可分析的場次（資料不足）")
-            continue
-
         st.divider()
-        st.subheader("🔥 推薦串關最優三場（Standings + 主場 + 官方傷病修正）")
+        st.subheader("🔥 推薦串關最優三場（近況回溯 + 主場 + 官方傷病）")
 
         picks = []
         for d in analysis:
@@ -424,18 +412,22 @@ for i, tab in enumerate(tabs):
         m2.metric(curr["a_ch"], f"{100-curr['final_p']:.1f}%", f"預測分差: {-curr['margin']:+.1f}")
         m3.metric("AI 建議贏家", curr["h_ch"] if curr["final_p"] >= 50 else curr["a_ch"])
 
-        st.subheader("📌 Baseline vs 修正（Standings 特徵）")
-        st.table(pd.DataFrame({
-            "項目": ["Baseline 主隊勝率", "修正後主隊勝率", "Win% 差（主-客）", "PtDiff 差（主-客）", "主隊傷病影響", "客隊傷病影響"],
-            "數值": [
-                f"{curr['base_p']:.1f}%",
-                f"{curr['final_p']:.1f}%",
-                f"{curr['win_diff']:+.3f}",
-                f"{curr['pt_diff']:+.1f}",
-                f"-{curr['h_inj']:.1f}",
-                f"-{curr['a_inj']:.1f}"
-            ]
-        }))
+        st.subheader("📌 Baseline vs 修正（近況特徵）")
+        if curr["feat"] is None:
+            st.info("近況資料不足：baseline 以 50% 為基底（只做傷病修正）。")
+        else:
+            st.table(pd.DataFrame({
+                "項目": ["Baseline 主隊勝率", "修正後主隊勝率", "Win% 差（主-客）", "AvgMargin 差（主-客）", "樣本場數（主/客）", "主隊傷病影響", "客隊傷病影響"],
+                "數值": [
+                    f"{curr['base_p']:.1f}%",
+                    f"{curr['final_p']:.1f}%",
+                    f"{curr['feat']['win_diff']:+.3f}",
+                    f"{curr['feat']['mar_diff']:+.2f}",
+                    f"{curr['feat']['h_games']}/{curr['feat']['a_games']}",
+                    f"-{curr['h_inj']:.1f}",
+                    f"-{curr['a_inj']:.1f}",
+                ]
+            }))
 
         st.subheader("🚑 官方傷病（NBA Injury Report PDF）")
         ic1, ic2 = st.columns(2)
@@ -455,6 +447,6 @@ for i, tab in enumerate(tabs):
                 st.success("官方 injury report 未列出或無顯著影響")
 
 st.sidebar.caption(f"🕒 更新時間：{datetime.now(tw_tz).strftime('%Y-%m-%d %H:%M:%S')}")
-st.sidebar.info("📌 賽程來源：nba_api.live ScoreBoard（不走 stats.nba.com）")
-st.sidebar.info("📌 強弱來源：nba_api.live Standings（Win% + PtDiff）")
+st.sidebar.info("📌 賽程來源：nba_api.live ScoreBoard")
+st.sidebar.info("📌 強弱來源：回溯近 21 天 finals（live scoreboard）")
 st.sidebar.info("📌 傷病來源：NBA 官方 Injury Report PDF（official.nba.com）")
