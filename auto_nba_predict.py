@@ -256,5 +256,3 @@ for i, tab in enumerate(tabs):
 
 st.sidebar.info(f"🕒 系統更新：{last_update}")
 
-
-這個8.0的傷病名單只有抓官方espn的資料 幫我加上nba官方的一起進去交叉比對然後計算勝率
