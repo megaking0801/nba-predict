@@ -1,14 +1,14 @@
 import streamlit as st
 from nba_api.stats.endpoints import (
     leaguegamefinder, scoreboardv2, leaguedashplayerstats, 
-    leaguedashteamstats, commonplayerinfo
+    leaguedashteamstats
 )
 from nba_api.stats.static import teams
 import pandas as pd
 import pytz, warnings, requests
 from datetime import datetime, timedelta
 
-# --- 1. 配置 ---
+# --- 1. 核心配置 ---
 warnings.filterwarnings('ignore')
 tw_tz = pytz.timezone('Asia/Taipei')
 us_east_tz = pytz.timezone('US/Eastern')
@@ -18,12 +18,12 @@ TEAM_NAME_CH = {
     'DAL': '獨行俠', 'DEN': '金塊', 'DET': '活塞', 'GSW': '勇士', 'HOU': '火箭', 'IND': '溜馬',
     'LAC': '快艇', 'LAL': '湖人', 'MEM': '灰熊', 'MIA': '熱火', 'MIL': '公鹿', 'MIN': '灰狼',
     'NOP': '鵜鶘', 'NYK': '尼克', 'OKC': '雷霆', 'ORL': '魔術', 'PHI': '76人', 'PHX': '太陽',
-    'POR': '拓荒者', 'SAC': '國王', 'SAS': '馬刺', 'TOR': '暴龍', 'UTA': '爵士', 'WAS': '巫師'
+    'POR': '拓荒者', 'SAC': '國王', 'SAS': '馬刺', 'TOR': '暴龍', 'UTA': 'Jazz', 'WAS': 'Wizards'
 }
 
-st.set_page_config(page_title="NBA 專家 v11.0 - 官方數據版", layout="wide")
+st.set_page_config(page_title="NBA 專家 v11.1", layout="wide")
 
-# --- 2. 官方數據引擎 ---
+# --- 2. 數據抓取引擎 ---
 def fetch_safe_df(endpoint_class, **kwargs):
     try:
         raw = endpoint_class(**kwargs).get_dict()
@@ -31,23 +31,15 @@ def fetch_safe_df(endpoint_class, **kwargs):
         return pd.DataFrame(res['rowSet'], columns=res['headers'])
     except: return pd.DataFrame()
 
-@st.cache_data(ttl=1800) # 官方傷病建議半小時更新一次
+@st.cache_data(ttl=1800)
 def get_official_injuries():
-    """
-    模擬抓取 NBA 官方 Injury Report 邏輯
-    註：官方 API 有時會限制存取，此處使用常用的官方同步接口
-    """
+    """從 NBA 官方 Widget 接口獲取傷病數據"""
     url = "https://stats.nba.com/js/data/widgets/injury_report.json"
-    # 若官方 Json 接口失效，會自動回退到穩定的備用源
     try:
         headers = {'User-Agent': 'Mozilla/5.0', 'Referer': 'https://www.nba.com/'}
         resp = requests.get(url, headers=headers, timeout=10)
-        data = resp.json()
-        # 解析官方數據格式
-        return data['results'] 
-    except:
-        # 備援：若官方 API 暫時阻擋，使用自定義解析或提醒
-        return []
+        return resp.json().get('results', [])
+    except: return []
 
 @st.cache_data(ttl=3600)
 def load_master_data():
@@ -67,12 +59,11 @@ def load_master_data():
     return p_full, t_adv, l10, datetime.now(tw_tz).strftime("%H:%M")
 
 ps_db, tm_db, l10_db, update_time = load_master_data()
-# 這裡拿到的是官方格式的傷病列表
-official_inj_list = get_official_injuries() 
+official_injuries = get_official_injuries()
 
 # --- 3. UI 邏輯 ---
-st.title("🏀 NBA 數據專家 v11.0 (NBA 官方傷病數據整合版)")
-st.sidebar.info(f"官方數據同步時間: {update_time}")
+st.title("🏀 NBA 數據專家 v11.1 (官方源穩定整合版)")
+st.sidebar.markdown(f"**數據更新: {update_time}**")
 
 nba_now = datetime.now(us_east_tz)
 dates = [nba_now + timedelta(days=1), nba_now, nba_now - timedelta(days=1)]
@@ -82,7 +73,7 @@ for i, tab in enumerate(tabs):
     with tab:
         sb = fetch_safe_df(scoreboardv2.ScoreboardV2, game_date=dates[i].strftime('%m/%d/%Y'))
         if sb.empty:
-            st.info("📅 官方今日暫無排程資訊"); continue
+            st.info("📅 官方今日暫無排程"); continue
 
         id_map = {t['id']: t['abbreviation'] for t in teams.get_teams()}
         results = []
@@ -93,47 +84,44 @@ for i, tab in enumerate(tabs):
             h_abbr, a_abbr = id_map.get(h_id), id_map.get(a_id)
             if not h_abbr or not a_abbr: continue
             
-            def get_official_team_metrics(tid, abbr):
-                # 從官方列表篩選該隊球員
-                # 官方格式通常包含 Team, Player, Status, Description
-                team_injuries = [p for p in official_inj_list if abbr in str(p.get('Team', ''))]
-                out_names = [p.get('Player') for p in team_injuries if 'Out' in str(p.get('Status', ''))]
+            # --- 數據計算邏輯：加入預計上場球員全數據 ---
+            def get_team_bundle(tid, abbr):
+                # 官方傷病篩選
+                team_inj = [p for p in official_injuries if abbr in str(p.get('Team', ''))]
+                out_names = [p.get('Player') for p in team_inj if 'Out' in str(p.get('Status', ''))]
                 
-                # 會上場球員數據 (前8名核心)
-                active = ps_db[ps_db['TEAM_ID'] == tid].sort_values('IMPACT', ascending=False)
-                active_core = active[~active['PLAYER_NAME'].isin(out_names)].head(8)
+                # 篩選預計上場的前 8 名核心球員
+                all_ps = ps_db[ps_db['TEAM_ID'] == tid].sort_values('IMPACT', ascending=False)
+                active_core = all_ps[~all_ps['PLAYER_NAME'].isin(out_names)].head(8)
                 
                 return {
-                    'pts_total': active_core['PTS'].sum(),
-                    'avg_ts': active_core['TS_PCT'].mean(),
-                    'avg_pie': active_core['PIE'].mean(),
-                    'total_impact': active_core['IMPACT'].sum(),
+                    'pts_sum': active_core['PTS'].sum(),
+                    'ts_avg': active_core['TS_PCT'].mean(),
+                    'pie_avg': active_core['PIE'].mean(),
+                    'imp_sum': active_core['IMPACT'].sum(),
                     'df': active_core,
-                    'inj': team_injuries,
+                    'inj_df': pd.DataFrame(team_inj) if team_inj else pd.DataFrame(columns=['Player','Status','Description']),
                     'adv': tm_db[tm_db['TEAM_ID'] == tid].iloc[0].to_dict() if not tm_db[tm_db['TEAM_ID'] == tid].empty else {}
                 }
 
-            h_m = get_official_team_metrics(h_id, h_abbr)
-            a_m = get_official_team_metrics(a_id, a_abbr)
+            h_m = get_team_bundle(h_id, h_abbr)
+            a_m = get_team_bundle(a_id, a_abbr)
 
-            # --- 全數據計算模型 ---
-            pts_diff = (h_m['pts_total'] - a_m['pts_total']) * 0.15
-            eff_diff = (h_m['avg_ts'] - a_m['avg_ts']) * 12 + (h_m['avg_pie'] - a_m['avg_pie']) * 45
-            trend_diff = (l10_db.get(h_id, 0) - l10_db.get(a_id, 0)) * 0.5
+            # 勝率複合模型：上場球員數據 (PTS, TS%, PIE) + 戰力 (Impact) + L10
+            pts_factor = (h_m['pts_sum'] - a_m['pts_sum']) * 0.12
+            eff_factor = (h_m['ts_avg'] - a_m['ts_avg']) * 15 + (h_m['pie_avg'] - a_m['pie_avg']) * 40
+            trend_factor = (l10_db.get(h_id, 0) - l10_db.get(a_id, 0)) * 0.4
             
-            final_margin = pts_diff + eff_diff + trend_diff + 2.5
+            final_margin = pts_factor + eff_factor + trend_factor + 2.5
             prob_h = 1 / (1 + 10**(-final_margin/15)) * 100
             
             g_key = f"{dates[i].strftime('%Y%m%d')}_{a_abbr}_{h_abbr}"
             with cols[idx % 3]:
                 with st.container(border=True):
-                    st.markdown(f"### {TEAM_NAME_CH[a_abbr]} @ {TEAM_NAME_CH[h_abbr]}")
+                    st.markdown(f"#### {TEAM_NAME_CH.get(a_abbr, a_abbr)} @ {TEAM_NAME_CH.get(h_abbr, h_abbr)}")
+                    st.metric("🏠 主隊勝率", f"{prob_h:.1f}%", f"{final_margin:+.1f} 分差")
                     
-                    c1, c2 = st.columns(2)
-                    c1.metric("🏠 主隊勝率", f"{prob_h:.1f}%")
-                    c2.metric("✈️ 客隊勝率", f"{100-prob_h:.1f}%")
-                    
-                    show_odds = st.toggle("開啟盤口輸入", key=f"tog_{g_key}")
+                    show_odds = st.toggle("盤口模式", key=f"tog_{g_key}")
                     if show_odds:
                         oh = st.number_input(f"🏠 賠率", value=1.85, key=f"h_{g_key}")
                         oa = st.number_input(f"✈️ 賠率", value=1.85, key=f"a_{g_key}")
@@ -141,21 +129,28 @@ for i, tab in enumerate(tabs):
                         edge = (prob_h - (1/oh*100)) if prob_h > 50 else ((100-prob_h) - (1/oa*100))
                         st.success(f"價值優勢: {edge:+.1f}%")
 
-                    results.append({'label': f"{TEAM_NAME_CH[a_abbr]} @ {TEAM_NAME_CH[h_abbr]}", 'h_m': h_m, 'a_m': a_m, 'h_abbr': h_abbr, 'a_abbr': a_abbr})
+                    results.append({'label': f"{a_abbr} @ {h_abbr}", 'h_m': h_m, 'a_m': a_m, 'h_abbr': h_abbr, 'a_abbr': a_abbr})
 
+        # --- 底部數據大表 ---
         if results:
             st.divider()
-            sel = st.selectbox("🔍 選擇對戰組合查看官方明細數據", [x['label'] for x in results], key=f"sel_{i}")
+            sel = st.selectbox("🔍 選擇對戰組合查看詳細官方數據", [x['label'] for x in results], key=f"sel_{i}")
             curr = next(x for x in results if x['label'] == sel)
 
-            st.markdown("#### 1️⃣ 官方預計上場核心數據 (參與勝率計算)")
-            p1, p2 = st.columns(2)
-            p1.dataframe(curr['h_m']['df'][['PLAYER_NAME', 'PTS', 'TS_PCT', 'PIE', 'IMPACT']], hide_index=True)
-            p2.dataframe(curr['a_m']['df'][['PLAYER_NAME', 'PTS', 'TS_PCT', 'PIE', 'IMPACT']], hide_index=True)
+            st.markdown("### 📊 1. 會上場核心數據 (參與勝率計算)")
+            pc1, pc2 = st.columns(2)
+            pc1.write(f"**{curr['h_abbr']} 預計主力**")
+            pc1.dataframe(curr['h_m']['df'][['PLAYER_NAME', 'PTS', 'TS_PCT', 'PIE', 'IMPACT']], hide_index=True)
+            pc2.write(f"**{curr['a_abbr']} 預計主力**")
+            pc2.dataframe(curr['a_m']['df'][['PLAYER_NAME', 'PTS', 'TS_PCT', 'PIE', 'IMPACT']], hide_index=True)
 
-            st.markdown("#### 2️⃣ 官方傷病名單原文")
-            i1, i2 = st.columns(2)
-            i1.write(f"**{curr['h_abbr']} 官方狀態**")
-            i1.table(pd.DataFrame(curr['h_m']['inj']) if curr['h_m']['inj'] else "無傷病紀錄")
-            i2.write(f"**{curr['a_abbr']} 官方狀態**")
-            i2.table(pd.DataFrame(curr['a_m']['inj']) if curr['a_m']['inj'] else "無傷病紀錄")
+            st.markdown("### 🚑 2. 官方傷病狀態原文")
+            ic1, ic2 = st.columns(2)
+            with ic1:
+                st.write(f"**{curr['h_abbr']} 官方通報**")
+                if not curr['h_m']['inj_df'].empty: st.table(curr['h_m']['inj_df'])
+                else: st.info("✅ 官方目前無傷病通報")
+            with ic2:
+                st.write(f"**{curr['a_abbr']} 官方通報**")
+                if not curr['a_m']['inj_df'].empty: st.table(curr['a_m']['inj_df'])
+                else: st.info("✅ 官方目前無傷病通報")
