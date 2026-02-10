@@ -21,70 +21,80 @@ TEAM_NAME_CH = {
     'POR': '拓荒者', 'SAC': '國王', 'SAS': '馬刺', 'TOR': '暴龍', 'UTA': '爵士', 'WAS': '巫師'
 }
 
-# 狀態與說明的翻譯字典
+# 深度翻譯字典
 TRANS_DICT = {
-    # 狀態
-    'Out': '❌ 缺陣',
-    'Day-To-Day': '📋 每日觀察',
-    'GTD': '📋 賽前決定',
-    'Questionable': '🤔 出戰成疑',
-    'Doubtful': '😰 極大機率缺陣',
-    # 常見部位與內容
+    # 狀態翻譯
+    r'\bOut\b': '❌ 缺陣',
+    r'\bDay-To-Day\b': '📋 每日觀察',
+    r'\bGTD\b': '📋 賽前決定',
+    r'\bQuestionable\b': '🤔 出戰成疑',
+    r'\bDoubtful\b': '😰 極大機率缺陣',
+    r'\bProbable\b': '✅ 可能出戰',
+    # 部位翻譯
     'Achilles': '阿基里斯腱', 'Calf': '小腿', 'Knee': '膝蓋', 'Ankle': '腳踝', 'Foot': '腳部',
     'Hamstring': '大腿後肌', 'Back': '背部', 'Shoulder': '肩膀', 'Wrist': '手腕', 'Thumb': '拇指',
-    'Surgery': '手術', 'Rest': '輪休', 'Probable': '很大機率上場', 'Health and Safety Protocols': '健康安全協議',
-    'out for the season': '賽季報銷', 'indefinitely': '無限期缺陣', 'expected to': '預計將',
-    'participated in': '已參加', 'practice': '訓練', 'game-time decision': '賽前決定'
+    'Groin': '鼠蹊部', 'Hip': '臀部', 'Hand': '手部', 'Neck': '頸部', 'Elbow': '手肘',
+    # 行為翻譯
+    'Surgery': '手術', 'Rest': '輪休', 'Health and Safety Protocols': '健康安全協議',
+    'expected to': '預計將', 'out for the season': '賽季報銷', 'indefinitely': '無限期缺陣',
+    'participated in': '已參加', 'practice': '訓練', 'game-time decision': '賽前決定',
+    'return': '回歸', 'left': '左', 'right': '右', 'sprain': '扭傷', 'strain': '拉傷',
+    'soreness': '痠痛', 'fracture': '骨折', 'recovering': '恢復中'
 }
 
 def translate_text(text):
-    if not text: return ""
+    if not text or pd.isna(text): return ""
+    res = str(text)
     for eng, chi in TRANS_DICT.items():
-        # 使用正則表達式進行不區分大小寫的替換
-        text = re.sub(eng, chi, text, flags=re.IGNORECASE)
-    return text
+        res = re.sub(eng, chi, res, flags=re.IGNORECASE)
+    return res
 
-st.set_page_config(page_title="NBA 數據專家 v13.0", layout="wide")
+st.set_page_config(page_title="NBA 數據專家 v13.1", layout="wide")
 
-# --- 2. ESPN 傷病解析引擎 (v13.0 深度翻譯+內容辨識版) ---
+# --- 2. 終極傷病解析引擎 (v13.1 內容辨識+全翻譯) ---
 @st.cache_data(ttl=600)
 def get_espn_injuries_v2():
     url = "https://www.espn.com/nba/injuries"
-    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36'}
     all_inj = []
     try:
         resp = requests.get(url, headers=headers, timeout=10)
         soup = BeautifulSoup(resp.text, 'html.parser')
+        
+        # ESPN 結構：每個球隊一個 ResponsiveTable
         tables = soup.select('.ResponsiveTable')
         
         for table in tables:
-            title_text = table.select_one('.Table__Title')
-            if not title_text: continue
+            title_node = table.select_one('.Table__Title')
+            if not title_node: continue
             
+            # 辨識球隊
+            t_name_text = title_node.get_text(strip=True)
             t_abbr = "UNKNOWN"
-            full_name = title_text.get_text(strip=True)
             for abbr, chi in TEAM_NAME_CH.items():
-                if chi in full_name or abbr in full_name.upper():
+                if chi in t_name_text or abbr in t_name_text.upper():
                     t_abbr = abbr; break
             
             rows = table.select('tbody tr')
             for r in rows:
                 cols = r.select('td')
                 if len(cols) >= 3:
-                    # 邏輯優化：內容特徵辨識
-                    # 通常最後一欄最長的是「說明」，有 Out/GTD 字眼的是「狀態」
-                    row_data = [c.get_text(strip=True) for c in cols]
+                    texts = [c.get_text(strip=True) for c in cols]
                     
-                    p_name = row_data[0].replace('PG','').replace('SG','').replace('SF','').replace('PF','').replace('C','')
+                    # 1. 球員名 (第一欄)
+                    p_name = re.sub(r'(PG|SG|SF|PF|C)$', '', texts[0])
                     
-                    # 尋找狀態欄 (通常包含特定關鍵字)
-                    status_raw = "Unknown"
-                    desc_raw = row_data[-1]
-                    for cell in row_data:
-                        if any(k in cell for k in ['Out', 'Day-To-Day', 'GTD', 'Questionable', 'Doubtful']):
-                            status_raw = cell
-                            break
+                    # 2. 內容特徵辨識狀態與說明
+                    status_raw = ""
+                    desc_raw = texts[-1] # 說明通常在最後一欄
                     
+                    for txt in texts:
+                        if any(k in txt for k in ['Out', 'Day-To-Day', 'GTD', 'Questionable', 'Doubtful', 'Probable']):
+                            status_raw = txt; break
+                    
+                    # 如果沒抓到狀態，嘗試給予預設
+                    if not status_raw and len(texts) > 2: status_raw = texts[1]
+
                     all_inj.append({
                         '球員': p_name,
                         '狀態': translate_text(status_raw),
@@ -93,7 +103,8 @@ def get_espn_injuries_v2():
                         'RAW_STATUS': status_raw
                     })
     except Exception as e:
-        st.error(f"數據抓取失敗: {e}")
+        st.error(f"傷病抓取失敗: {e}")
+    
     return pd.DataFrame(all_inj)
 
 @st.cache_data(ttl=3600)
@@ -104,7 +115,6 @@ def load_all_nba_stats():
     if p_base.empty: return pd.DataFrame(), {}, "N/A"
     p_full = pd.merge(p_base, p_adv[['PLAYER_ID', 'TS_PCT', 'PIE']], on='PLAYER_ID', how='left')
     p_full['IMPACT'] = p_full['PTS'] + p_full['REB']*1.1 + p_full['AST']*1.5 + (p_full['STL']+p_full['BLK'])*2 - p_full['TOV']*2
-    from nba_api.stats.endpoints import leaguegamefinder
     gf = fetch_safe_df(leaguegamefinder.LeagueGameFinder, season_nullable=S)
     l10 = gf.groupby('TEAM_ID')['PLUS_MINUS'].transform(lambda x: x.shift(1).rolling(10, min_periods=3).mean()).groupby(gf['TEAM_ID']).last().to_dict() if not gf.empty else {}
     return p_full, l10, datetime.now(tw_tz).strftime("%H:%M")
@@ -121,7 +131,7 @@ ps_db, l10_db, update_time = load_all_nba_stats()
 injury_df = get_espn_injuries_v2()
 
 # --- 3. UI 顯示邏輯 ---
-st.title("🏀 NBA 數據專家 v13.0 (深度翻譯+精準校準)")
+st.title("🏀 NBA 數據專家 v13.1 (翻譯與校準優化版)")
 st.sidebar.write(f"📊 最後同步: {update_time}")
 
 nba_now = datetime.now(us_east_tz)
@@ -140,17 +150,20 @@ for i, tab in enumerate(tabs):
             h_id, a_id = row['HOME_TEAM_ID'], row['VISITOR_TEAM_ID']
             h_abbr, a_abbr = id_map.get(h_id), id_map.get(a_id)
             if not h_abbr or not a_abbr: continue
+            
             def build_team_package(tid, abbr):
                 t_inj = injury_df[injury_df['球隊'] == abbr]
+                # 排除受傷核心球員
                 out_names = t_inj[t_inj['RAW_STATUS'].str.contains('Out|Doubtful|Day-To-Day|GTD', case=False, na=False)]['球員'].tolist()
                 all_ps = ps_db[ps_db['TEAM_ID'] == tid].sort_values('IMPACT', ascending=False)
                 active_core = all_ps[~all_ps['PLAYER_NAME'].apply(lambda x: any(name in x for name in out_names))].head(8)
                 return {'pts': active_core['PTS'].sum(), 'ts': active_core['TS_PCT'].mean(), 'pie': active_core['PIE'].mean(), 'df': active_core, 'inj_df': t_inj}
+
             h_res, a_res = build_team_package(h_id, h_abbr), build_team_package(a_id, a_abbr)
             final_margin = (h_res['pts']-a_res['pts'])*0.12 + (h_res['ts']-a_res['ts'])*15 + (h_res['pie']-a_res['pie'])*45 + (l10_db.get(h_id,0)-l10_db.get(a_id,0))*0.4 + 2.5
             prob_h = 1 / (1 + 10**(-final_margin/15)) * 100
             h_cn, a_cn = TEAM_NAME_CH.get(h_abbr, h_abbr), TEAM_NAME_CH.get(a_abbr, a_abbr)
-            g_key = f"v130_{dates[i].strftime('%Y%m%d')}_{a_abbr}_{h_abbr}"
+            g_key = f"v131_{dates[i].strftime('%Y%m%d')}_{a_abbr}_{h_abbr}"
             with cols[idx % 3]:
                 with st.container(border=True):
                     st.markdown(f"### [客] {a_cn} vs [主] {h_cn}")
@@ -159,15 +172,15 @@ for i, tab in enumerate(tabs):
                     show_odds = st.toggle("顯示盤口分析", key=f"tog_{g_key}")
                     if show_odds:
                         c1, c2 = st.columns(2)
-                        oh = c1.number_input(f"[主隊] 賠率", value=1.85, key=f"h_{g_key}")
-                        oa = c2.number_input(f"[客隊] 賠率", value=1.85, key=f"a_{g_key}")
+                        oh = c1.number_input(f"[主隊] 賠率", value=1.85, key=f"h_{g_key}", format="%.2f")
+                        oa = c2.number_input(f"[客隊] 賠率", value=1.85, key=f"a_{g_key}", format="%.2f")
                         edge = (prob_h - (1/oh*100)) if prob_h > 50 else ((100-prob_h) - (1/oa*100))
                         st.info(f"💡 價值優勢: {edge:+.1f}%")
                     results.append({'label': f"[客] {a_cn} vs [主] {h_cn}", 'h_res': h_res, 'a_res': a_res, 'h_cn': h_cn, 'a_cn': a_cn})
 
         if results:
             st.divider()
-            sel = st.selectbox("🔍 選擇對戰查看傷病詳情", [x['label'] for x in results], key=f"sel_{i}")
+            sel = st.selectbox("🔍 選擇對戰查看傷病詳情 (包含完整說明翻譯)", [x['label'] for x in results], key=f"sel_detail")
             curr = next(x for x in results if x['label'] == sel)
             st.markdown("#### 🚑 ESPN 即時傷病詳情 (已翻譯說明)")
             ic1, ic2 = st.columns(2)
