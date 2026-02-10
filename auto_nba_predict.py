@@ -22,7 +22,7 @@ TEAM_MAP = {
     'MIA': ['Miami Heat', '熱火'], 'MIL': ['Milwaukee Bucks', '公鹿'], 'MIN': ['Minnesota Timberwolves', '灰狼'],
     'NOP': ['New Orleans Pelicans', '鵜鶘'], 'NYK': ['New York Knicks', '尼克'], 'OKC': ['Oklahoma City Thunder', '雷霆'],
     'ORL': ['Orlando Magic', '魔術'], 'PHI': ['Philadelphia 76ers', '76人'], 'PHX': ['Phoenix Suns', '太陽'],
-    'POR': ['Portland Trail Blazers', '拓荒者'], 'SAC': ['Sacramento Kings', '國王'], 'SAS': ['San Antonio Spurs', '馬刺'],
+    'POR': ['Portland Trail Blazers', '拓換者'], 'SAC': ['Sacramento Kings', '國王'], 'SAS': ['San Antonio Spurs', '馬刺'],
     'TOR': ['Toronto Raptors', '暴龍'], 'UTA': ['Utah Jazz', '爵士'], 'WAS': ['Washington Wizards', '巫師']
 }
 
@@ -45,18 +45,17 @@ def translate_text(text):
     res = str(text)
     trans = {
         r'\bOut\b': '❌ 缺陣', r'\bDay-To-Day\b': '📋 每日觀察', r'\bGTD\b': '📋 賽前決定',
-        r'\bQuestionable\b': '🤔 出戰成疑', r'\bDoubtful\b': '😰 極大機率缺陣', r'\bProbable\b': '✅ 可能出戰',
-        r'\bG\b': '後衛', r'\bF\b': '前鋒', r'\bC\b': '中鋒'
+        r'\bQuestionable\b': '🤔 出戰成疑', r'\bDoubtful\b': '😰 極大機率缺陣', r'\bProbable\b': '✅ 可能出戰'
     }
     for eng, chi in trans.items():
         res = re.sub(eng, chi, res, flags=re.IGNORECASE)
     return res
 
-st.set_page_config(page_title="NBA 數據專家 v13.12", layout="wide")
+st.set_page_config(page_title="NBA 數據專家 v13.13", layout="wide")
 
-# --- 2. 數據抓取引擎 ---
+# --- 2. 數據抓取 (強化過濾機制) ---
 @st.cache_data(ttl=600)
-def get_espn_injuries_v9():
+def get_espn_injuries_v10():
     url = "https://www.espn.com/nba/injuries"
     headers = {'User-Agent': 'Mozilla/5.0'}
     all_inj = []
@@ -71,7 +70,7 @@ def get_espn_injuries_v9():
                 if len(cols) >= 3:
                     p_name = re.sub(r'(PG|SG|SF|PF|C|G|F)$', '', cols[0].get_text(strip=True))
                     col2, col3 = cols[2].get_text(strip=True), cols[3].get_text(strip=True) if len(cols)>3 else ""
-                    # 解決欄位錯位判定，掃描全文字
+                    # 徹底解決 Zubac 衝突：掃描所有文字
                     full_check = (col2 + " " + col3).lower()
                     is_out = any(word in full_check for word in ['out', 'doubtful', 'injured', '缺陣', '❌'])
                     all_inj.append({
@@ -101,11 +100,10 @@ def fetch_safe_df(endpoint, **kwargs):
 
 # --- 數據準備 ---
 ps_db = load_nba_stats()
-injury_df = get_espn_injuries_v9()
+injury_df = get_espn_injuries_v10()
 
 # --- 3. UI 顯示 ---
-st.title("🏀 NBA 數據專家 v13.12")
-st.sidebar.info("📌 v13.12: 數據與賠率深度融合 + 傷病詳細比較區下移")
+st.title("🏀 NBA 數據專家 v13.13 (主客標記強化版)")
 
 nba_now = datetime.now(us_east_tz)
 sb = fetch_safe_df(scoreboardv2.ScoreboardV2, game_date=nba_now.strftime('%m/%d/%Y'))
@@ -114,9 +112,9 @@ if sb.empty:
     st.info("📅 今日暫無比賽排程")
 else:
     id_map = {t['id']: t['abbreviation'] for t in teams.get_teams()}
-    all_game_data = [] # 用於存儲每場比賽，最後在底部顯示
+    all_game_data = [] 
     
-    st.markdown("### 🏟️ 今日賽程預測與盤口分析")
+    st.markdown("### 🏟️ 今日賽程預測")
     grid = st.columns(3)
     
     for idx, row in sb.iterrows():
@@ -124,7 +122,6 @@ else:
         h_abbr, a_abbr = id_map.get(h_id), id_map.get(a_id)
         if not h_abbr or not a_abbr: continue
         
-        # 建立數據包
         def get_pkg(tid, abbr):
             t_inj = injury_df[injury_df['球隊'] == abbr]
             out_list = t_inj[t_inj['IS_OUT']]['NORMALIZED_NAME'].tolist()
@@ -135,57 +132,55 @@ else:
         h_pkg, a_pkg = get_pkg(h_id, h_abbr), get_pkg(a_id, a_abbr)
         h_cn, a_cn = TEAM_NAME_CH.get(h_abbr, h_abbr), TEAM_NAME_CH.get(a_abbr, a_abbr)
         
-        # 1. 基礎數據勝率 (v13.10 邏輯)
+        # 1. 基礎數據勝率 (v13.10)
         raw_diff = (h_pkg['pts'] - a_pkg['pts']) * 0.12 + (h_pkg['pie'] - a_pkg['pie']) * 45 + 2.5
         model_prob_h = 1 / (1 + 10**(-raw_diff/15)) * 100
         
-        g_key = f"v1312_{idx}"
+        g_key = f"v1313_{idx}"
         
         with grid[idx % 3]:
             with st.container(border=True):
-                st.markdown(f"#### {a_cn} @ {h_cn}")
+                # 標題加入 [客] [主]
+                st.markdown(f"#### [客] {a_cn} @ [主] {h_cn}")
                 
-                # 盤口輸入區
+                # 賠率與受讓輸入框標籤加入 [主] [客]
                 c_sp, c_h, c_a = st.columns([2, 1, 1])
-                u_spread = c_sp.number_input("主隊讓分", value=0.0, step=0.5, key=f"sp_{g_key}", help="主讓請輸負數(-5.5)，主受讓請輸正數(+3.5)")
-                u_oh = c_h.number_input("主賠", value=1.75, key=f"oh_{g_key}")
-                u_oa = c_a.number_input("客賠", value=1.75, key=f"oa_{g_key}")
+                u_spread = c_sp.number_input(f"[主] {h_cn} 讓分", value=0.0, step=0.5, key=f"sp_{g_key}")
+                u_oh = c_h.number_input(f"[主] 賠", value=1.75, key=f"oh_{g_key}")
+                u_oa = c_a.number_input(f"[客] 賠", value=1.75, key=f"oa_{g_key}")
                 
-                # 2. 賠率融合 (v13.10 邏輯)
+                # 2. 賠率融合 (60/40)
                 imp_prob_h = (1/u_oh) / (1/u_oh + 1/u_oa) * 100
                 final_prob_h = (model_prob_h * 0.6) + (imp_prob_h * 0.4)
                 
-                # 3. 過盤價值分析
-                edge = raw_diff + u_spread # 分差優勢
+                edge = raw_diff + u_spread 
                 
                 st.divider()
-                st.metric(f"{h_cn} 綜合勝率", f"{final_prob_h:.1f}%", delta=f"{final_prob_h-model_prob_h:.1f}% (賠率修正)")
-                st.caption(f"📊 模型預估分差: {h_cn} {raw_diff:+.1f}")
+                st.metric(f"[主] {h_cn} 綜合勝率", f"{final_prob_h:.1f}%", delta=f"{final_prob_h-model_prob_h:.1f}% (賠率修正)")
+                st.caption(f"📊 模型預估分差: [主] {h_cn} {raw_diff:+.1f}")
                 
                 if edge > 2.0:
-                    st.success(f"🔥 價值推薦: {h_cn} 過盤 (優勢 {abs(edge):.1f}分)")
+                    st.success(f"🔥 價值推薦: [主] {h_cn} 過盤")
                 elif edge < -2.0:
-                    st.error(f"🔥 價值推薦: {a_cn} 過盤 (優勢 {abs(edge):.1f}分)")
+                    st.error(f"🔥 價值推薦: [客] {a_cn} 過盤")
                 else:
-                    st.info("⚖️ 盤口符合實力差距")
+                    st.info("⚖️ 盤口精準")
         
-        # 存入列表供底部顯示
         all_game_data.append({
-            'label': f"{a_cn} (客) vs {h_cn} (主)",
+            'label': f"[客] {a_cn} vs [主] {h_cn}",
             'h_cn': h_cn, 'a_cn': a_cn,
             'h_pkg': h_pkg, 'a_pkg': a_pkg
         })
 
-    # --- 4. 底部額外數據比較區 ---
+    # --- 4. 底部詳細數據比較區 (全面標記主客) ---
     st.divider()
-    st.markdown("### 🔍 對戰詳細數據比較 (傷病名單與核心名單)")
+    st.markdown("### 🔍 對戰詳細數據比較 (主客場深入分析)")
     
     if all_game_data:
-        # 使用 Selectbox 選擇想看的詳細對戰
-        sel_game = st.selectbox("選擇對戰組合以查看詳細對比", [g['label'] for g in all_game_data])
+        sel_game = st.selectbox("選擇對戰組合", [g['label'] for g in all_game_data])
         curr = next(g for g in all_game_data if g['label'] == sel_game)
         
-        # 顯示傷病對比
+        # 傷病對比標頭加入 [主] [客]
         st.markdown(f"#### 🚑 {sel_game} - 傷病報告")
         i_col1, i_col2 = st.columns(2)
         with i_col1:
@@ -201,14 +196,14 @@ else:
             
         st.divider()
         
-        # 顯示核心 8 人對比
-        st.markdown(f"#### 🛡️ {sel_game} - 核心 8 人戰力 (已自動過濾傷兵)")
+        # 核心名單標頭加入 [主] [客]
+        st.markdown(f"#### 🛡️ {sel_game} - 核心 8 人戰力")
         p_col1, p_col2 = st.columns(2)
         with p_col1:
-            st.write(f"**{curr['h_cn']} 核心**")
-            if curr['h_pkg']['ex']: st.error(f"🚫 已排除: {', '.join(curr['h_pkg']['ex'])}")
+            st.write(f"**[主] {curr['h_cn']} 核心數據**")
+            if curr['h_pkg']['ex']: st.error(f"🚫 已排除缺陣: {', '.join(curr['h_pkg']['ex'])}")
             st.dataframe(curr['h_pkg']['df'][['PLAYER_NAME', 'PTS', 'REB', 'AST', 'PIE']], hide_index=True, use_container_width=True)
         with p_col2:
-            st.write(f"**{curr['a_cn']} 核心**")
-            if curr['a_pkg']['ex']: st.error(f"🚫 已排除: {', '.join(curr['a_pkg']['ex'])}")
+            st.write(f"**[客] {curr['a_cn']} 核心數據**")
+            if curr['a_pkg']['ex']: st.error(f"🚫 已排除缺陣: {', '.join(curr['a_pkg']['ex'])}")
             st.dataframe(curr['a_pkg']['df'][['PLAYER_NAME', 'PTS', 'REB', 'AST', 'PIE']], hide_index=True, use_container_width=True)
