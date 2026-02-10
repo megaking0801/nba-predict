@@ -28,7 +28,6 @@ TEAM_MAP = {
 
 TEAM_NAME_CH = {k: v[1] for k, v in TEAM_MAP.items()}
 
-# 翻譯字典
 TRANS_DICT = {
     r'\bOut\b': '❌ 缺陣',
     r'\bDay-To-Day\b': '📋 每日觀察',
@@ -68,11 +67,11 @@ def translate_text(text):
         res = re.sub(eng, chi, res, flags=re.IGNORECASE)
     return res
 
-st.set_page_config(page_title="NBA 數據專家 v13.9", layout="wide")
+st.set_page_config(page_title="NBA 數據專家 v13.10", layout="wide")
 
-# --- 2. 數據抓取引擎 (修正判定邏輯) ---
+# --- 2. 數據抓取引擎 ---
 @st.cache_data(ttl=600)
-def get_espn_injuries_v6():
+def get_espn_injuries_v7():
     url = "https://www.espn.com/nba/injuries"
     headers = {'User-Agent': 'Mozilla/5.0'}
     all_inj = []
@@ -92,28 +91,21 @@ def get_espn_injuries_v6():
                 if len(cols) >= 3:
                     p_name = re.sub(r'(PG|SG|SF|PF|C|G|F)$', '', cols[0].get_text(strip=True))
                     pos_raw = cols[1].get_text(strip=True)
-                    col2_text = cols[2].get_text(strip=True) # 可能是狀態，也可能是日期
-                    col3_text = cols[3].get_text(strip=True) if len(cols) > 3 else "" # 可能是說明，也可能是狀態
+                    col2_text = cols[2].get_text(strip=True)
+                    col3_text = cols[3].get_text(strip=True) if len(cols) > 3 else ""
                     
-                    # 建立一個全文字串來判斷是否缺陣，解決欄位錯位問題
+                    # 全文掃描判定缺陣
                     full_text_check = (col2_text + " " + col3_text).lower()
+                    is_out = 'out' in full_text_check or 'doubtful' in full_text_check or 'injured' in full_text_check
                     
-                    # 判斷是否為 Out (缺陣)
-                    is_out = 'out' in full_text_check or 'doubtful' in full_text_check
-                    
-                    # 視覺顯示用的處理
-                    status_display = translate_text(col2_text)
-                    desc_display = clean_description(col3_text)
-
                     all_inj.append({
                         '球員': p_name,
                         'NORMALIZED_NAME': normalize_name(p_name),
                         '位置': translate_text(pos_raw),
-                        '狀態': status_display,
-                        '說明': desc_display,
+                        '狀態': translate_text(col2_text),
+                        '說明': clean_description(col3_text),
                         '球隊': t_abbr,
-                        'IS_OUT': is_out, # 強制標記
-                        'RAW_CHECK': full_text_check
+                        'IS_OUT': is_out
                     })
     except: pass
     return pd.DataFrame(all_inj)
@@ -141,12 +133,11 @@ def fetch_safe_df(endpoint, **kwargs):
 
 # --- 數據準備 ---
 ps_db, l10_db, update_time = load_all_nba_stats()
-injury_df = get_espn_injuries_v6()
+injury_df = get_espn_injuries_v7()
 
 # --- 3. UI 顯示 ---
-st.title("🏀 NBA 數據專家 v13.9 (強力過濾版)")
+st.title("🏀 NBA 數據專家 v13.10 (賠率連動版)")
 st.sidebar.write(f"📊 數據最後更新: {update_time}")
-st.sidebar.warning("⚠️ v13.9 更新：已修復 Zubac 等球員因欄位錯位未被排除的 Bug。現在系統會掃描整行文字來判定缺陣。")
 
 nba_now = datetime.now(us_east_tz)
 dates = [nba_now + timedelta(days=1), nba_now, nba_now - timedelta(days=1)]
@@ -167,9 +158,6 @@ for i, tab in enumerate(tabs):
             
             def build_team_package(tid, abbr):
                 t_inj = injury_df[injury_df['球隊'] == abbr]
-                
-                # --- 修正後的過濾邏輯 ---
-                # 直接檢查 IS_OUT 標記，不再只看特定欄位
                 out_players_norm = t_inj[t_inj['IS_OUT'] == True]['NORMALIZED_NAME'].tolist()
                 
                 all_ps = ps_db[ps_db['TEAM_ID'] == tid].sort_values('IMPACT', ascending=False)
@@ -182,59 +170,76 @@ for i, tab in enumerate(tabs):
                 }
 
             h_res, a_res = build_team_package(h_id, h_abbr), build_team_package(a_id, a_abbr)
+            
+            # --- 1. 純數據模型勝率 (Base Model) ---
             diff = (h_res['pts']-a_res['pts'])*0.12 + (h_res['ts']-a_res['ts'])*15 + (h_res['pie']-a_res['pie'])*45 + (l10_db.get(h_id,0)-l10_db.get(a_id,0))*0.4 + 2.5
-            prob_h = 1 / (1 + 10**(-diff/15)) * 100
+            model_prob_h = 1 / (1 + 10**(-diff/15)) * 100
             
             h_cn, a_cn = TEAM_NAME_CH.get(h_abbr, h_abbr), TEAM_NAME_CH.get(a_abbr, a_abbr)
-            g_key = f"v139_{dates[i].strftime('%Y%m%d')}_{a_abbr}_{h_abbr}"
+            g_key = f"v1310_{dates[i].strftime('%Y%m%d')}_{a_abbr}_{h_abbr}"
             
             with cols[idx % 3]:
                 with st.container(border=True):
                     st.markdown(f"### [客] {a_cn} vs [主] {h_cn}")
-                    st.metric(f"{h_cn} [主] 勝率", f"{prob_h:.1f}%")
-                    st.metric(f"{a_cn} [客] 勝率", f"{100-prob_h:.1f}%")
                     
-                    if st.toggle("分析實際盤口價值", key=f"tog_{g_key}"):
-                        st.divider()
-                        c_spread, c_h, c_a = st.columns([2, 1, 1])
-                        real_spread = c_spread.number_input("輸入台運彩讓分 (主隊)", value=0.0, step=0.5, key=f"sp_{g_key}")
-                        oh = c_h.number_input("主賠", value=1.75, key=f"h_{g_key}")
-                        oa = c_a.number_input("客賠", value=1.75, key=f"a_{g_key}")
+                    # 預設顯示模型勝率
+                    final_prob_h = model_prob_h
+                    final_spread = -diff
+                    
+                    # --- 賠率輸入區 (移到上方，直接影響結果) ---
+                    use_odds = st.checkbox("輸入賠率修正勝率", key=f"chk_{g_key}")
+                    
+                    if use_odds:
+                        c_h, c_a = st.columns(2)
+                        oh = c_h.number_input("主賠", value=1.90, step=0.01, key=f"h_{g_key}")
+                        oa = c_a.number_input("客賠", value=1.90, step=0.01, key=f"a_{g_key}")
                         
-                        edge_val = (-diff) - real_spread
-                        if edge_val < -2.0: st.success(f"🔥 {h_cn} 讓分優勢 ({abs(edge_val):.1f}分)")
-                        elif edge_val > 2.0: st.success(f"🔥 {a_cn} 受讓優勢 ({edge_val:.1f}分)")
-                        else: st.info("⚖️ 盤口無明顯偏差")
-                    
+                        # --- 2. 莊家隱含勝率 ---
+                        # 移除抽水 (Vig) 後的真實機率
+                        imp_h = 1/oh
+                        imp_a = 1/oa
+                        total_imp = imp_h + imp_a
+                        real_prob_h_odds = (imp_h / total_imp) * 100
+                        
+                        # --- 3. 融合計算 (60% 模型 + 40% 莊家) ---
+                        final_prob_h = (model_prob_h * 0.6) + (real_prob_h_odds * 0.4)
+                        
+                        # 反推修正後的讓分
+                        # 簡單公式：每 3% 勝率差約等於 1 分差距
+                        spread_adj = (final_prob_h - 50) / 3.0 * 2 # 係數調整
+                        final_spread = spread_adj 
+
+                        st.caption(f"📉 純數據勝率: {model_prob_h:.1f}% | 🏦 莊家暗示: {real_prob_h_odds:.1f}%")
+
+                    # --- 顯示最終結果 (會隨賠率變動) ---
+                    st.divider()
+                    st.metric(f"🏆 {h_cn} 最終勝率", f"{final_prob_h:.1f}%", delta=f"{final_prob_h-model_prob_h:.1f}%" if use_odds else None)
+                    st.metric(f"🛡️ {h_cn} 預估讓分", f"{final_spread:+.1f}")
+                    st.metric(f"⚔️ {a_cn} 最終勝率", f"{100-final_prob_h:.1f}%")
+
                     results.append({'label': f"[客] {a_cn} vs [主] {h_cn}", 'h_res': h_res, 'a_res': a_res, 'h_cn': h_cn, 'a_cn': a_cn})
 
         if results:
             st.divider()
-            sel = st.selectbox("🔍 選擇對戰查看詳細傷情與過濾結果", [x['label'] for x in results], key=f"sel_detail_{i}")
+            sel = st.selectbox("🔍 查看詳細數據", [x['label'] for x in results], key=f"sel_detail_{i}")
             curr = next(x for x in results if x['label'] == sel)
             
-            st.markdown("#### 🚑 即時傷病報告 (已強制過濾缺陣球員)")
+            st.markdown("#### 🚑 傷病報告 (已嚴格過濾)")
             ic1, ic2 = st.columns(2)
             with ic1:
                 st.write(f"**[主] {curr['h_cn']}**")
-                if not curr['h_res']['inj_df'].empty:
-                    # 顯示 IS_OUT 欄位供檢查
-                    st.dataframe(curr['h_res']['inj_df'][['球員', '位置', '狀態', '說明', 'IS_OUT']], hide_index=True)
+                if not curr['h_res']['inj_df'].empty: st.dataframe(curr['h_res']['inj_df'][['球員', '位置', '狀態', 'IS_OUT']], hide_index=True)
                 else: st.success("✅ 全員健康")
             with ic2:
                 st.write(f"**[客] {curr['a_cn']}**")
-                if not curr['a_res']['inj_df'].empty:
-                    st.dataframe(curr['a_res']['inj_df'][['球員', '位置', '狀態', '說明', 'IS_OUT']], hide_index=True)
+                if not curr['a_res']['inj_df'].empty: st.dataframe(curr['a_res']['inj_df'][['球員', '位置', '狀態', 'IS_OUT']], hide_index=True)
                 else: st.success("✅ 全員健康")
 
-            st.divider()
-            st.markdown("#### 🛡️ 模型上場核心 (8人輪替)")
+            st.markdown("#### 🛡️ 核心 8 人數據")
             pc1, pc2 = st.columns(2)
             with pc1:
-                st.subheader(f"{curr['h_cn']}")
                 if curr['h_res']['excluded_names']: st.error(f"🚫 已排除: {', '.join(curr['h_res']['excluded_names'])}")
                 st.dataframe(curr['h_res']['df'][['PLAYER_NAME', 'PTS', 'IMPACT', 'PIE']].style.format(precision=1), use_container_width=True)
             with pc2:
-                st.subheader(f"{curr['a_cn']}")
                 if curr['a_res']['excluded_names']: st.error(f"🚫 已排除: {', '.join(curr['a_res']['excluded_names'])}")
                 st.dataframe(curr['a_res']['df'][['PLAYER_NAME', 'PTS', 'IMPACT', 'PIE']].style.format(precision=1), use_container_width=True)
