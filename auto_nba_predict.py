@@ -57,7 +57,7 @@ def fetch_safe_df(endpoint, **kwargs):
 
 # --- 2. 數據抓取引擎 ---
 @st.cache_data(ttl=600)
-def get_espn_injuries_v16():
+def get_espn_injuries_v17():
     url = "https://www.espn.com/nba/injuries"
     headers = {'User-Agent': 'Mozilla/5.0'}
     all_inj = []
@@ -83,33 +83,28 @@ def get_espn_injuries_v16():
     return pd.DataFrame(all_inj)
 
 @st.cache_data(ttl=3600)
-def load_nba_stats_v16():
+def load_nba_stats_v17():
     S = '2025-26'
-    # 基礎數據 (PTS, FG%, 3P%, FT%, REB, AST...)
     p_base = fetch_safe_df(leaguedashplayerstats.LeagueDashPlayerStats, season=S, per_mode_detailed='PerGame')
-    # 進階數據 (TS%, PIE)
     p_adv = fetch_safe_df(leaguedashplayerstats.LeagueDashPlayerStats, season=S, per_mode_detailed='PerGame', measure_type_detailed_defense='Advanced')
     
-    # [修正點] 只從 p_adv 合併 TS_PCT 和 PIE，其他命中率數據在 p_base 裡已經有了
     cols_to_add = ['PLAYER_ID', 'TS_PCT', 'PIE']
-    
     if not p_adv.empty:
         p_full = pd.merge(p_base, p_adv[cols_to_add], on='PLAYER_ID', how='left')
     else:
         p_full = p_base
-        p_full['TS_PCT'] = 0
-        p_full['PIE'] = 0
+        p_full['TS_PCT'] = 0; p_full['PIE'] = 0
 
     p_full['IMPACT'] = p_full['PTS'] + p_full['REB']*1.1 + p_full['AST']*1.5 + (p_full['STL']+p_full['BLK'])*2 - p_full['TOV']*2
     p_full['NORMALIZED_NAME'] = p_full['PLAYER_NAME'].apply(normalize_name)
     return p_full
 
 # --- 3. UI 顯示邏輯 ---
-st.set_page_config(page_title="NBA 數據專家 v13.16", layout="wide")
-st.title("🏀 NBA 數據專家 v13.16 (全能情報版)")
+st.set_page_config(page_title="NBA 數據專家 v13.17", layout="wide")
+st.title("🏀 NBA 數據專家 v13.17 (Top 4 精選版)")
 
-ps_db = load_nba_stats_v16()
-injury_df = get_espn_injuries_v16()
+ps_db = load_nba_stats_v17()
+injury_df = get_espn_injuries_v17()
 
 nba_now = datetime.now(us_east_tz)
 sb = fetch_safe_df(scoreboardv2.ScoreboardV2, game_date=nba_now.strftime('%m/%d/%Y'))
@@ -119,18 +114,26 @@ if sb.empty:
     st.info("📅 今日暫無比賽排程")
 else:
     all_game_data = [] 
-    st.markdown("### 🏟️ 今日賽程預測")
+    
+    # --- 建立 Top 4 推薦區塊 (稍後填入) ---
+    st.markdown("### 🔥 今日精選 Top 4 (過盤率最高)")
+    top_container = st.container()
+    st.divider()
+
+    st.markdown("### 🏟️ 所有賽程與盤口輸入")
     grid = st.columns(3)
+    
+    # 用來收集所有比賽的過盤率數據
+    rankings = []
     
     for idx, row in sb.iterrows():
         h_id, a_id = row['HOME_TEAM_ID'], row['VISITOR_TEAM_ID']
         h_abbr, a_abbr = id_map.get(h_id), id_map.get(a_id)
         if not h_abbr or not a_abbr: continue
         
-        # 檢查背靠背 (B2B)
+        # B2B 檢查
         yesterday = (nba_now - timedelta(days=1)).strftime('%Y-%m-%d')
         all_games = fetch_safe_df(leaguegamefinder.LeagueGameFinder, season_nullable='2025-26')
-        
         h_b2b, a_b2b = False, False
         if not all_games.empty:
             h_b2b = not all_games[(all_games['TEAM_ID'] == h_id) & (all_games['GAME_DATE'] == yesterday)].empty
@@ -146,13 +149,13 @@ else:
         h_pkg, a_pkg = get_pkg(h_id, h_abbr, h_b2b), get_pkg(a_id, a_abbr, a_b2b)
         h_cn, a_cn = TEAM_NAME_CH.get(h_abbr, h_abbr), TEAM_NAME_CH.get(a_abbr, a_abbr)
         
-        # 勝率模型與 B2B 修正
+        # 勝率模型
         raw_diff = (h_pkg['pts'] - a_pkg['pts']) * 0.12 + (h_pkg['pie'] - a_pkg['pie']) * 45 + 2.5
         if h_pkg['b2b']: raw_diff -= 1.5
         if a_pkg['b2b']: raw_diff += 1.5
         
         model_prob_h = 1 / (1 + 10**(-raw_diff/15)) * 100
-        g_key = f"v1316_{idx}"
+        g_key = f"v1317_{idx}"
         
         with grid[idx % 3]:
             with st.container(border=True):
@@ -166,16 +169,37 @@ else:
                 
                 final_prob_h = (model_prob_h * 0.6) + (((1/u_oh)/(1/u_oh+1/u_oa)*100) * 0.4)
                 edge = raw_diff + u_spread 
+                cover_prob = 1 / (1 + 10**(-edge/8)) * 100 # 主隊過盤率
                 
+                # 如果 edge 為負 (代表客隊有利)，過盤率應顯示客隊的
+                if edge < 0:
+                    display_cover_prob = (100 - cover_prob)
+                    rec_team = f"[客] {a_cn}"
+                    rec_type = "受讓" if u_spread < 0 else "讓分" # 簡單邏輯判斷
+                else:
+                    display_cover_prob = cover_prob
+                    rec_team = f"[主] {h_cn}"
+                    rec_type = "讓分" if u_spread < 0 else "受讓"
+
                 st.divider()
                 st.metric(f"[主] {h_cn} 綜合勝率", f"{final_prob_h:.1f}%")
+                
                 if edge > 2.0:
-                    st.success(f"🔥 價值推薦: [主] {h_cn} 過盤\n🎯 過盤率: {1/(1+10**(-edge/8))*100:.1f}%")
+                    st.success(f"🔥 推薦: [主] {h_cn} 過盤\n🎯 過盤率: {cover_prob:.1f}%")
                 elif edge < -2.0:
-                    st.error(f"🔥 價值推薦: [客] {a_cn} 過盤\n🎯 過盤率: {(1-(1/(1+10**(-edge/8))))*100:.1f}%")
+                    st.error(f"🔥 推薦: [客] {a_cn} 過盤\n🎯 過盤率: {(100-cover_prob):.1f}%")
                 else: st.info("⚖️ 盤口精準")
+                
+                # 收集數據用於排序
+                rankings.append({
+                    'matchup': f"{a_cn} vs {h_cn}",
+                    'rec_team': rec_team,
+                    'cover_prob': display_cover_prob,
+                    'spread_val': u_spread,
+                    'edge': edge
+                })
         
-        # 抓取 H2H 歷史對戰
+        # H2H 歷史
         h2h_records = []
         if not all_games.empty:
             h2h_df = all_games[((all_games['TEAM_ID'] == h_id) & (all_games['MATCHUP'].str.contains(a_abbr)))].head(3)
@@ -186,21 +210,42 @@ else:
             'h_pkg': h_pkg, 'a_pkg': a_pkg, 'h2h': h2h_records
         })
 
+    # --- 填充 Top 4 推薦區塊 ---
+    # 根據過盤率排序 (由高到低)
+    rankings.sort(key=lambda x: x['cover_prob'], reverse=True)
+    top_picks = rankings[:4] if len(rankings) >= 4 else rankings
+    
+    with top_container:
+        if not top_picks:
+            st.info("尚無足夠數據進行推薦")
+        else:
+            cols = st.columns(len(top_picks))
+            for i, pick in enumerate(top_picks):
+                with cols[i]:
+                    with st.container(border=True):
+                        st.markdown(f"**#{i+1} {pick['matchup']}**")
+                        st.metric("推薦", pick['rec_team'])
+                        st.markdown(f"🎯 過盤率: **{pick['cover_prob']:.1f}%**")
+                        if pick['spread_val'] == 0:
+                            st.caption("(未輸入讓分)")
+                        else:
+                            st.caption(f"輸入盤口: {pick['spread_val']}")
+
     # --- 4. 底部詳細數據比較區 ---
     st.divider()
-    st.markdown("### 🔍 對戰詳細數據比較 (含傷病、歷史與進階命中率)")
+    st.markdown("### 🔍 對戰詳細數據比較")
     
     if all_game_data:
         sel_game = st.selectbox("選擇對戰組合", [g['label'] for g in all_game_data])
         curr = next(g for g in all_game_data if g['label'] == sel_game)
         
-        # A. 歷史對戰 (H2H)
+        # A. H2H
         st.write("⚔️ **本季對戰紀錄 (H2H)**")
         if curr['h2h']:
             st.dataframe(pd.DataFrame(curr['h2h']), hide_index=True, use_container_width=True)
         else: st.write("本季尚未交手")
 
-        # B. 傷病報告 (你原本要求的程式碼)
+        # B. 傷病
         st.divider()
         st.markdown(f"#### 🚑 {sel_game} - 傷病報告")
         i_col1, i_col2 = st.columns(2)
@@ -215,19 +260,15 @@ else:
                 st.dataframe(curr['a_pkg']['inj'][['球員', '位置', '狀態', 'IS_OUT']], hide_index=True, use_container_width=True)
             else: st.success("✅ 全員健康")
 
-        # C. 核心 8 人戰力 (整合進階命中率)
+        # C. 核心 8 人
         st.divider()
-        st.markdown(f"#### 🛡️ {sel_game} - 核心 8 人戰力 (已自動過濾傷兵)")
+        st.markdown(f"#### 🛡️ {sel_game} - 核心 8 人戰力")
         p_col1, p_col2 = st.columns(2)
         
         def format_stats(df):
-            # 確保需要的欄位都存在
             cols = ['PLAYER_NAME', 'PTS', 'FG_PCT', 'FG3_PCT', 'FT_PCT', 'REB', 'AST', 'PIE']
-            # 防止萬一 p_base 欄位名稱不同
             avail_cols = [c for c in cols if c in df.columns]
             display_df = df[avail_cols].copy()
-            
-            # 將小數轉換為百分比顯示
             for col in ['FG_PCT', 'FG3_PCT', 'FT_PCT']:
                 if col in display_df.columns:
                     display_df[col] = (display_df[col] * 100).round(1).astype(str) + '%'
