@@ -48,6 +48,13 @@ def translate_text(text):
         res = re.sub(eng, chi, res, flags=re.IGNORECASE)
     return res
 
+def fetch_safe_df(endpoint, **kwargs):
+    try:
+        r = endpoint(**kwargs).get_dict()
+        res = r['resultSets'][0]
+        return pd.DataFrame(res['rowSet'], columns=res['headers'])
+    except: return pd.DataFrame()
+
 # --- 2. 數據抓取引擎 ---
 @st.cache_data(ttl=600)
 def get_espn_injuries_v16():
@@ -78,20 +85,24 @@ def get_espn_injuries_v16():
 @st.cache_data(ttl=3600)
 def load_nba_stats_v16():
     S = '2025-26'
+    # 基礎數據 (PTS, FG%, 3P%, FT%, REB, AST...)
     p_base = fetch_safe_df(leaguedashplayerstats.LeagueDashPlayerStats, season=S, per_mode_detailed='PerGame')
+    # 進階數據 (TS%, PIE)
     p_adv = fetch_safe_df(leaguedashplayerstats.LeagueDashPlayerStats, season=S, per_mode_detailed='PerGame', measure_type_detailed_defense='Advanced')
-    cols_to_add = ['PLAYER_ID', 'TS_PCT', 'PIE', 'FG_PCT', 'FG3_PCT', 'FT_PCT']
-    p_full = pd.merge(p_base, p_adv[cols_to_add], on='PLAYER_ID', how='left')
+    
+    # [修正點] 只從 p_adv 合併 TS_PCT 和 PIE，其他命中率數據在 p_base 裡已經有了
+    cols_to_add = ['PLAYER_ID', 'TS_PCT', 'PIE']
+    
+    if not p_adv.empty:
+        p_full = pd.merge(p_base, p_adv[cols_to_add], on='PLAYER_ID', how='left')
+    else:
+        p_full = p_base
+        p_full['TS_PCT'] = 0
+        p_full['PIE'] = 0
+
     p_full['IMPACT'] = p_full['PTS'] + p_full['REB']*1.1 + p_full['AST']*1.5 + (p_full['STL']+p_full['BLK'])*2 - p_full['TOV']*2
     p_full['NORMALIZED_NAME'] = p_full['PLAYER_NAME'].apply(normalize_name)
     return p_full
-
-def fetch_safe_df(endpoint, **kwargs):
-    try:
-        r = endpoint(**kwargs).get_dict()
-        res = r['resultSets'][0]
-        return pd.DataFrame(res['rowSet'], columns=res['headers'])
-    except: return pd.DataFrame()
 
 # --- 3. UI 顯示邏輯 ---
 st.set_page_config(page_title="NBA 數據專家 v13.16", layout="wide")
@@ -119,8 +130,11 @@ else:
         # 檢查背靠背 (B2B)
         yesterday = (nba_now - timedelta(days=1)).strftime('%Y-%m-%d')
         all_games = fetch_safe_df(leaguegamefinder.LeagueGameFinder, season_nullable='2025-26')
-        h_b2b = not all_games[(all_games['TEAM_ID'] == h_id) & (all_games['GAME_DATE'] == yesterday)].empty
-        a_b2b = not all_games[(all_games['TEAM_ID'] == a_id) & (all_games['GAME_DATE'] == yesterday)].empty
+        
+        h_b2b, a_b2b = False, False
+        if not all_games.empty:
+            h_b2b = not all_games[(all_games['TEAM_ID'] == h_id) & (all_games['GAME_DATE'] == yesterday)].empty
+            a_b2b = not all_games[(all_games['TEAM_ID'] == a_id) & (all_games['GAME_DATE'] == yesterday)].empty
 
         def get_pkg(tid, abbr, is_b2b):
             t_inj = injury_df[injury_df['球隊'] == abbr]
@@ -162,15 +176,17 @@ else:
                 else: st.info("⚖️ 盤口精準")
         
         # 抓取 H2H 歷史對戰
-        h2h_df = all_games[((all_games['TEAM_ID'] == h_id) & (all_games['MATCHUP'].str.contains(a_abbr)))].head(3)
-        h2h_records = h2h_df[['GAME_DATE', 'MATCHUP', 'WL', 'PLUS_MINUS']].to_dict('records')
+        h2h_records = []
+        if not all_games.empty:
+            h2h_df = all_games[((all_games['TEAM_ID'] == h_id) & (all_games['MATCHUP'].str.contains(a_abbr)))].head(3)
+            h2h_records = h2h_df[['GAME_DATE', 'MATCHUP', 'WL', 'PLUS_MINUS']].to_dict('records')
 
         all_game_data.append({
             'label': f"[客]{a_cn} vs [主]{h_cn}", 'h_cn': h_cn, 'a_cn': a_cn,
             'h_pkg': h_pkg, 'a_pkg': a_pkg, 'h2h': h2h_records
         })
 
-    # --- 4. 底部詳細數據比較區 (整合你要求的程式碼) ---
+    # --- 4. 底部詳細數據比較區 ---
     st.divider()
     st.markdown("### 🔍 對戰詳細數據比較 (含傷病、歷史與進階命中率)")
     
@@ -205,10 +221,16 @@ else:
         p_col1, p_col2 = st.columns(2)
         
         def format_stats(df):
-            display_df = df[['PLAYER_NAME', 'PTS', 'FG_PCT', 'FG3_PCT', 'FT_PCT', 'REB', 'AST', 'PIE']]
+            # 確保需要的欄位都存在
+            cols = ['PLAYER_NAME', 'PTS', 'FG_PCT', 'FG3_PCT', 'FT_PCT', 'REB', 'AST', 'PIE']
+            # 防止萬一 p_base 欄位名稱不同
+            avail_cols = [c for c in cols if c in df.columns]
+            display_df = df[avail_cols].copy()
+            
             # 將小數轉換為百分比顯示
             for col in ['FG_PCT', 'FG3_PCT', 'FT_PCT']:
-                display_df[col] = (display_df[col] * 100).round(1).astype(str) + '%'
+                if col in display_df.columns:
+                    display_df[col] = (display_df[col] * 100).round(1).astype(str) + '%'
             return display_df
 
         with p_col1:
