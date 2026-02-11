@@ -5,7 +5,7 @@ from nba_api.stats.endpoints import (
 from nba_api.stats.static import teams
 import pandas as pd
 import pytz, warnings, requests, re, unicodedata
-from datetime import datetime
+from datetime import datetime, timedelta
 from bs4 import BeautifulSoup
 
 # --- 1. 核心配置 ---
@@ -28,6 +28,7 @@ TEAM_MAP = {
 
 TEAM_NAME_CH = {k: v[1] for k, v in TEAM_MAP.items()}
 
+# --- 工具函數 ---
 def normalize_name(name):
     if not isinstance(name, str): return ""
     name = ''.join(c for c in unicodedata.normalize('NFD', name) if unicodedata.category(c) != 'Mn')
@@ -47,11 +48,9 @@ def translate_text(text):
         res = re.sub(eng, chi, res, flags=re.IGNORECASE)
     return res
 
-st.set_page_config(page_title="NBA 數據專家 v13.14", layout="wide")
-
-# --- 2. 數據抓取 ---
+# --- 2. 數據抓取引擎 ---
 @st.cache_data(ttl=600)
-def get_espn_injuries_v11():
+def get_espn_injuries_v16():
     url = "https://www.espn.com/nba/injuries"
     headers = {'User-Agent': 'Mozilla/5.0'}
     all_inj = []
@@ -77,11 +76,12 @@ def get_espn_injuries_v11():
     return pd.DataFrame(all_inj)
 
 @st.cache_data(ttl=3600)
-def load_nba_stats():
+def load_nba_stats_v16():
     S = '2025-26'
     p_base = fetch_safe_df(leaguedashplayerstats.LeagueDashPlayerStats, season=S, per_mode_detailed='PerGame')
     p_adv = fetch_safe_df(leaguedashplayerstats.LeagueDashPlayerStats, season=S, per_mode_detailed='PerGame', measure_type_detailed_defense='Advanced')
-    p_full = pd.merge(p_base, p_adv[['PLAYER_ID', 'TS_PCT', 'PIE']], on='PLAYER_ID', how='left')
+    cols_to_add = ['PLAYER_ID', 'TS_PCT', 'PIE', 'FG_PCT', 'FG3_PCT', 'FT_PCT']
+    p_full = pd.merge(p_base, p_adv[cols_to_add], on='PLAYER_ID', how='left')
     p_full['IMPACT'] = p_full['PTS'] + p_full['REB']*1.1 + p_full['AST']*1.5 + (p_full['STL']+p_full['BLK'])*2 - p_full['TOV']*2
     p_full['NORMALIZED_NAME'] = p_full['PLAYER_NAME'].apply(normalize_name)
     return p_full
@@ -93,21 +93,21 @@ def fetch_safe_df(endpoint, **kwargs):
         return pd.DataFrame(res['rowSet'], columns=res['headers'])
     except: return pd.DataFrame()
 
-ps_db = load_nba_stats()
-injury_df = get_espn_injuries_v11()
+# --- 3. UI 顯示邏輯 ---
+st.set_page_config(page_title="NBA 數據專家 v13.16", layout="wide")
+st.title("🏀 NBA 數據專家 v13.16 (全能情報版)")
 
-# --- 3. UI 顯示 ---
-st.title("🏀 NBA 數據專家 v13.14 (過盤勝率強化版)")
+ps_db = load_nba_stats_v16()
+injury_df = get_espn_injuries_v16()
 
 nba_now = datetime.now(us_east_tz)
 sb = fetch_safe_df(scoreboardv2.ScoreboardV2, game_date=nba_now.strftime('%m/%d/%Y'))
+id_map = {t['id']: t['abbreviation'] for t in teams.get_teams()}
 
 if sb.empty:
     st.info("📅 今日暫無比賽排程")
 else:
-    id_map = {t['id']: t['abbreviation'] for t in teams.get_teams()}
     all_game_data = [] 
-    
     st.markdown("### 🏟️ 今日賽程預測")
     grid = st.columns(3)
     
@@ -116,59 +116,76 @@ else:
         h_abbr, a_abbr = id_map.get(h_id), id_map.get(a_id)
         if not h_abbr or not a_abbr: continue
         
-        def get_pkg(tid, abbr):
+        # 檢查背靠背 (B2B)
+        yesterday = (nba_now - timedelta(days=1)).strftime('%Y-%m-%d')
+        all_games = fetch_safe_df(leaguegamefinder.LeagueGameFinder, season_nullable='2025-26')
+        h_b2b = not all_games[(all_games['TEAM_ID'] == h_id) & (all_games['GAME_DATE'] == yesterday)].empty
+        a_b2b = not all_games[(all_games['TEAM_ID'] == a_id) & (all_games['GAME_DATE'] == yesterday)].empty
+
+        def get_pkg(tid, abbr, is_b2b):
             t_inj = injury_df[injury_df['球隊'] == abbr]
             out_list = t_inj[t_inj['IS_OUT']]['NORMALIZED_NAME'].tolist()
             all_ps = ps_db[ps_db['TEAM_ID'] == tid].sort_values('IMPACT', ascending=False)
             active = all_ps[~all_ps['NORMALIZED_NAME'].isin(out_list)].head(8)
-            return {'pts': active['PTS'].sum(), 'pie': active['PIE'].mean(), 'df': active, 'inj': t_inj, 'ex': all_ps[all_ps['NORMALIZED_NAME'].isin(out_list)]['PLAYER_NAME'].tolist()}
+            return {'pts': active['PTS'].sum(), 'pie': active['PIE'].mean(), 'df': active, 'inj': t_inj, 'ex': all_ps[all_ps['NORMALIZED_NAME'].isin(out_list)]['PLAYER_NAME'].tolist(), 'b2b': is_b2b}
 
-        h_pkg, a_pkg = get_pkg(h_id, h_abbr), get_pkg(a_id, a_abbr)
+        h_pkg, a_pkg = get_pkg(h_id, h_abbr, h_b2b), get_pkg(a_id, a_abbr, a_b2b)
         h_cn, a_cn = TEAM_NAME_CH.get(h_abbr, h_abbr), TEAM_NAME_CH.get(a_abbr, a_abbr)
         
-        # 模型計算
+        # 勝率模型與 B2B 修正
         raw_diff = (h_pkg['pts'] - a_pkg['pts']) * 0.12 + (h_pkg['pie'] - a_pkg['pie']) * 45 + 2.5
-        model_prob_h = 1 / (1 + 10**(-raw_diff/15)) * 100
+        if h_pkg['b2b']: raw_diff -= 1.5
+        if a_pkg['b2b']: raw_diff += 1.5
         
-        g_key = f"v1314_{idx}"
+        model_prob_h = 1 / (1 + 10**(-raw_diff/15)) * 100
+        g_key = f"v1316_{idx}"
+        
         with grid[idx % 3]:
             with st.container(border=True):
-                st.markdown(f"#### [客] {a_cn} @ [主] {h_cn}")
+                h_b_lbl = "⚡(B2B)" if h_pkg['b2b'] else ""
+                a_b_lbl = "⚡(B2B)" if a_pkg['b2b'] else ""
+                st.markdown(f"#### [客] {a_cn}{a_b_lbl} @ [主] {h_cn}{h_b_lbl}")
+                
                 c_sp, c_h, c_a = st.columns([2, 1, 1])
-                u_spread = c_sp.number_input(f"[主] {h_cn} 讓分", value=0.0, step=0.5, key=f"sp_{g_key}")
-                u_oh = c_h.number_input(f"[主] 賠", value=1.75, key=f"oh_{g_key}")
-                u_oa = c_a.number_input(f"[客] 賠", value=1.75, key=f"oa_{g_key}")
+                u_spread = c_sp.number_input(f"[主]{h_cn} 讓分", value=0.0, step=0.5, key=f"sp_{g_key}")
+                u_oh, u_oa = c_h.number_input(f"[主]賠", 1.75, key=f"oh_{g_key}"), c_a.number_input(f"[客]賠", 1.75, key=f"oa_{g_key}")
                 
-                # 賠率修正
-                imp_prob_h = (1/u_oh) / (1/u_oh + 1/u_oa) * 100
-                final_prob_h = (model_prob_h * 0.6) + (imp_prob_h * 0.4)
-                
-                # 過盤計算
+                final_prob_h = (model_prob_h * 0.6) + (((1/u_oh)/(1/u_oh+1/u_oa)*100) * 0.4)
                 edge = raw_diff + u_spread 
-                cover_prob_h = 1 / (1 + 10**(-edge/8)) * 100 # 讓分盤過盤率
                 
                 st.divider()
-                st.metric(f"[主] {h_cn} 綜合勝率", f"{final_prob_h:.1f}%", delta=f"{final_prob_h-model_prob_h:.1f}% (賠率修正)")
-                st.caption(f"📊 模型預估分差: [主] {h_cn} {raw_diff:+.1f}")
-                
+                st.metric(f"[主] {h_cn} 綜合勝率", f"{final_prob_h:.1f}%")
                 if edge > 2.0:
-                    st.success(f"🔥 價值推薦: [主] {h_cn} 過盤\n\n🎯 預估過盤率: **{cover_prob_h:.1f}%**")
+                    st.success(f"🔥 價值推薦: [主] {h_cn} 過盤\n🎯 過盤率: {1/(1+10**(-edge/8))*100:.1f}%")
                 elif edge < -2.0:
-                    st.error(f"🔥 價值推薦: [客] {a_cn} 過盤\n\n🎯 預估過盤率: **{(100-cover_prob_h):.1f}%**")
-                else:
-                    st.info(f"⚖️ 盤口精準 (過盤率約 50%)")
+                    st.error(f"🔥 價值推薦: [客] {a_cn} 過盤\n🎯 過盤率: {(1-(1/(1+10**(-edge/8))))*100:.1f}%")
+                else: st.info("⚖️ 盤口精準")
         
+        # 抓取 H2H 歷史對戰
+        h2h_df = all_games[((all_games['TEAM_ID'] == h_id) & (all_games['MATCHUP'].str.contains(a_abbr)))].head(3)
+        h2h_records = h2h_df[['GAME_DATE', 'MATCHUP', 'WL', 'PLUS_MINUS']].to_dict('records')
+
         all_game_data.append({
-            'label': f"[客] {a_cn} vs [主] {h_cn}",
-            'h_cn': h_cn, 'a_cn': a_cn, 'h_pkg': h_pkg, 'a_pkg': a_pkg
+            'label': f"[客]{a_cn} vs [主]{h_cn}", 'h_cn': h_cn, 'a_cn': a_cn,
+            'h_pkg': h_pkg, 'a_pkg': a_pkg, 'h2h': h2h_records
         })
 
-    # --- 4. 底部詳細數據比較區 ---
+    # --- 4. 底部詳細數據比較區 (整合你要求的程式碼) ---
     st.divider()
-    st.markdown("### 🔍 對戰詳細數據比較")
+    st.markdown("### 🔍 對戰詳細數據比較 (含傷病、歷史與進階命中率)")
+    
     if all_game_data:
         sel_game = st.selectbox("選擇對戰組合", [g['label'] for g in all_game_data])
         curr = next(g for g in all_game_data if g['label'] == sel_game)
+        
+        # A. 歷史對戰 (H2H)
+        st.write("⚔️ **本季對戰紀錄 (H2H)**")
+        if curr['h2h']:
+            st.dataframe(pd.DataFrame(curr['h2h']), hide_index=True, use_container_width=True)
+        else: st.write("本季尚未交手")
+
+        # B. 傷病報告 (你原本要求的程式碼)
+        st.divider()
         st.markdown(f"#### 🚑 {sel_game} - 傷病報告")
         i_col1, i_col2 = st.columns(2)
         with i_col1:
@@ -181,14 +198,24 @@ else:
             if not curr['a_pkg']['inj'].empty:
                 st.dataframe(curr['a_pkg']['inj'][['球員', '位置', '狀態', 'IS_OUT']], hide_index=True, use_container_width=True)
             else: st.success("✅ 全員健康")
+
+        # C. 核心 8 人戰力 (整合進階命中率)
         st.divider()
-        st.markdown(f"#### 🛡️ {sel_game} - 核心 8 人戰力")
+        st.markdown(f"#### 🛡️ {sel_game} - 核心 8 人戰力 (已自動過濾傷兵)")
         p_col1, p_col2 = st.columns(2)
+        
+        def format_stats(df):
+            display_df = df[['PLAYER_NAME', 'PTS', 'FG_PCT', 'FG3_PCT', 'FT_PCT', 'REB', 'AST', 'PIE']]
+            # 將小數轉換為百分比顯示
+            for col in ['FG_PCT', 'FG3_PCT', 'FT_PCT']:
+                display_df[col] = (display_df[col] * 100).round(1).astype(str) + '%'
+            return display_df
+
         with p_col1:
             st.write(f"**[主] {curr['h_cn']} 核心數據**")
             if curr['h_pkg']['ex']: st.error(f"🚫 已排除缺陣: {', '.join(curr['h_pkg']['ex'])}")
-            st.dataframe(curr['h_pkg']['df'][['PLAYER_NAME', 'PTS', 'REB', 'AST', 'PIE']], hide_index=True, use_container_width=True)
+            st.dataframe(format_stats(curr['h_pkg']['df']), hide_index=True, use_container_width=True)
         with p_col2:
             st.write(f"**[客] {curr['a_cn']} 核心數據**")
             if curr['a_pkg']['ex']: st.error(f"🚫 已排除缺陣: {', '.join(curr['a_pkg']['ex'])}")
-            st.dataframe(curr['a_pkg']['df'][['PLAYER_NAME', 'PTS', 'REB', 'AST', 'PIE']], hide_index=True, use_container_width=True)
+            st.dataframe(format_stats(curr['a_pkg']['df']), hide_index=True, use_container_width=True)
