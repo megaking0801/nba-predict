@@ -27,6 +27,7 @@ TEAM_MAP = {
 }
 
 TEAM_NAME_CH = {k: v[1] for k, v in TEAM_MAP.items()}
+VALID_TEAM_IDS = [t['id'] for t in teams.get_teams()] # 取得所有正規球隊ID
 
 # --- 工具函數 ---
 def normalize_name(name):
@@ -73,7 +74,7 @@ def get_edge_stars(edge, ev, stability_score):
 
 # --- 2. 數據抓取引擎 ---
 @st.cache_data(ttl=600)
-def get_espn_injuries_v28():
+def get_espn_injuries_v29():
     url = "https://www.espn.com/nba/injuries"
     headers = {'User-Agent': 'Mozilla/5.0'}
     all_inj = []
@@ -100,7 +101,7 @@ def get_espn_injuries_v28():
     return pd.DataFrame(all_inj)
 
 @st.cache_data(ttl=3600)
-def load_nba_stats_v28():
+def load_nba_stats_v29():
     S = '2025-26'
     p_base = fetch_safe_df(leaguedashplayerstats.LeagueDashPlayerStats, season=S, per_mode_detailed='PerGame')
     p_adv = fetch_safe_df(leaguedashplayerstats.LeagueDashPlayerStats, season=S, per_mode_detailed='PerGame', measure_type_detailed_defense='Advanced')
@@ -115,37 +116,48 @@ def get_all_season_games():
     return fetch_safe_df(leaguegamefinder.LeagueGameFinder, season_nullable='2025-26')
 
 # --- 3. UI 主架構 ---
-st.set_page_config(page_title="NBA Edge 專家 v13.28", layout="wide")
-st.title("🏀 NBA 數據預測 v13.28 (未來賽程偵測版)")
+st.set_page_config(page_title="NBA Edge 專家 v13.29", layout="wide")
+st.title("🏀 NBA 數據預測 v13.29 (正規賽智慧搜尋版)")
 
-ps_db = load_nba_stats_v28()
-injury_df = get_espn_injuries_v28()
+ps_db = load_nba_stats_v29()
+injury_df = get_espn_injuries_v29()
 all_season_games = get_all_season_games()
 
-# --- 動態日期搜尋邏輯 ---
+# --- 智慧日期搜尋邏輯 (Smart Skip) ---
 nba_today = datetime.now(us_east_tz)
 target_date = nba_today
 sb = pd.DataFrame()
+found_regular_games = False
 
-# 最多往後找 7 天
-for i in range(7):
+# 擴大搜尋到 14 天 (跨越明星賽週)
+for i in range(14):
     current_search_date = nba_today + timedelta(days=i)
     formatted_date = current_search_date.strftime('%m/%d/%Y')
     temp_sb = fetch_safe_df(scoreboardv2.ScoreboardV2, game_date=formatted_date)
+    
     if not temp_sb.empty:
-        sb = temp_sb
-        target_date = current_search_date
-        break
+        # 關鍵修正：檢查這裡面有沒有「正規球隊」
+        # 我們檢查 HOME_TEAM_ID 是否在我們已知的 VALID_TEAM_IDS 裡面
+        regular_season_games = temp_sb[temp_sb['HOME_TEAM_ID'].isin(VALID_TEAM_IDS)]
+        
+        if not regular_season_games.empty:
+            sb = regular_season_games # 只保留正規賽
+            target_date = current_search_date
+            found_regular_games = True
+            break # 找到正規賽就停止
 
 id_map = {t['id']: t['abbreviation'] for t in teams.get_teams()}
 
-if sb.empty:
-    st.error("📅 未來 7 天內暫無比賽排程資料，請確認賽季是否進行中。")
+if not found_regular_games:
+    st.warning("⚠️ 未來 14 天內未偵測到正規季賽 (可能正處於明星賽週或休賽期)。")
+    if not sb.empty:
+        st.info("偵測到表演賽/明星賽資料，但因數據不具分析價值已自動過濾。")
 else:
     target_date_str = target_date.strftime('%Y-%m-%d')
     st.subheader(f"📅 目前分析日期：{target_date_str} (美東時間)")
     if target_date.date() > nba_today.date():
-        st.warning(f"💡 今日無比賽，自動抓取最近的比賽日：{target_date_str}")
+        days_diff = (target_date.date() - nba_today.date()).days
+        st.info(f"💡 跳過無正規賽事日期，自動鎖定 {days_diff} 天後的比賽。")
 
     all_game_data, rankings = [], []
     st.sidebar.header("🎯 隔夜串關建議")
@@ -180,7 +192,7 @@ else:
         if h_pkg['b2b']: raw_diff -= 1.5
         if a_pkg['b2b']: raw_diff += 1.5
         
-        g_key = f"v28_{idx}"
+        g_key = f"v29_{idx}"
         with grid[idx % 3]:
             with st.container(border=True):
                 st.markdown(f"#### {a_cn} @ {h_cn}")
@@ -230,7 +242,6 @@ else:
             st.code(f"{safe_picks[0]['rec_team']} + {safe_picks[1]['rec_team']}")
         else: st.warning("未來賽程名單變數仍多")
 
-    # 底部詳細數據比較區 (保持完整功能)
     st.divider()
     st.markdown("### 🔍 對戰詳細數據比較")
     if all_game_data:
