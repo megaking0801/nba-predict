@@ -38,6 +38,7 @@ def fetch_safe_df(endpoint, **kwargs):
 
 @st.cache_data(ttl=3600)
 def get_global_data():
+    # 1. 抓取球員數據
     ps = fetch_safe_df(leaguedashplayerstats.LeagueDashPlayerStats, season='2025-26', per_mode_detailed='PerGame')
     if not ps.empty and 'TEAM_ID' in ps.columns:
         ps['IMPACT'] = ps['PTS'] + ps['REB']*1.1 + ps['AST']*1.5 + (ps['STL']+ps['BLK'])*2 - ps['TOV']*2
@@ -45,6 +46,7 @@ def get_global_data():
     else:
         ps = pd.DataFrame(columns=['PLAYER_NAME', 'TEAM_ID', 'PTS', 'IMPACT', 'NORM'])
 
+    # 2. 抓取所有隊伍 Context (B2B)
     ctx = {}
     now_us = datetime.now(us_east_tz)
     yesterday_us = (now_us - timedelta(days=1)).strftime('%Y-%m-%d')
@@ -57,26 +59,55 @@ def get_global_data():
             recent_w = (log.head(5)['WL'] == 'W').mean()
         ctx[tid] = {'b2b': is_b2b, 'recent_w': recent_w}
 
+    # 3. [修正重點] 強化傷病報告解析
     inj_list = []
     try:
         url = "https://www.espn.com/nba/injuries"
-        resp = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=10)
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        resp = requests.get(url, headers=headers, timeout=10)
         soup = BeautifulSoup(resp.text, 'html.parser')
+        
+        # 定義缺陣與觀察的關鍵字庫
+        OUT_KEYS = ['out', 'surgery', 'suspended', '报销', 'season', 'left knee', 'right knee'] # 增加常見缺陣描述
+        QUES_KEYS = ['questionable', 'gtd', 'day-to-day', 'doubtful', 'observation']
+
         for table in soup.select('.ResponsiveTable'):
-            t_abbr = next((a for a, info in TEAM_MAP.items() if any(n.lower() in table.select_one('.Table__Title').get_text().lower() for n in info)), "UNK")
+            t_name_raw = table.select_one('.Table__Title').get_text(strip=True)
+            t_abbr = next((a for a, info in TEAM_MAP.items() if any(n.lower() in t_name_raw.lower() for n in info)), "UNK")
+            
             for r in table.select('tbody tr'):
                 cols = r.select('td')
                 if len(cols) >= 3:
                     p_name = re.sub(r'(PG|SG|SF|PF|C|G|F)$', '', cols[0].get_text(strip=True))
-                    raw_st, raw_re = cols[2].get_text(strip=True).lower(), cols[3].get_text(strip=True) if len(cols)>3 else ""
-                    is_out = any(w in (raw_st + raw_re) for w in ['out', 'surgery', 'suspended', '报销', 'season'])
-                    status_cn = "❌ [確定缺陣]" if is_out else "📋 [觀察名單]" if any(w in (raw_st + raw_re) for w in ['questionable', 'gtd', 'day-to-day', 'doubtful']) else "✅ [預計出賽]"
-                    inj_list.append({'NORM': p_name.lower().strip(), '球員': p_name, '狀態': status_cn, '原因': raw_re if raw_re else "無", '球隊': t_abbr, 'IS_OUT': is_out})
+                    raw_st = cols[2].get_text(strip=True).lower() # 狀態欄
+                    raw_re = cols[3].get_text(strip=True).lower() if len(cols)>3 else "" # 原因欄
+                    
+                    full_text = raw_st + " " + raw_re
+                    
+                    # 邏輯判斷：原因寫 Out 或狀態寫 Out 都算缺陣
+                    is_out = any(w in full_text for w in OUT_KEYS)
+                    is_ques = any(w in full_text for w in QUES_KEYS)
+                    
+                    if is_out:
+                        status_cn = "❌ [確定缺陣]"
+                    elif is_ques:
+                        status_cn = "📋 [觀察名單]"
+                    else:
+                        status_cn = "✅ [預計出賽]"
+                        
+                    inj_list.append({
+                        'NORM': p_name.lower().strip(), 
+                        '球員': p_name, 
+                        '狀態': status_cn, 
+                        '原因': raw_re.upper() if raw_re else "無", 
+                        '球隊': t_abbr, 
+                        'IS_OUT': is_out
+                    })
     except: pass
     return ps, ctx, pd.DataFrame(inj_list)
 
 # --- 3. UI 初始化 ---
-st.set_page_config(page_title="NBA Edge v16.3", layout="wide")
+st.set_page_config(page_title="NBA Edge v16.4", layout="wide")
 
 h_top1, h_top2 = st.columns([0.8, 0.2])
 with h_top1: 
@@ -84,11 +115,7 @@ with h_top1:
     st.caption(f"台灣時間：{datetime.now(tw_tz).strftime('%m/%d %H:%M')}")
 with h_top2:
     with st.popover("💡 挑場規則"):
-        st.markdown("""
-        1. **Edge > 5.0**: 模型領先盤口 5 分以上。
-        2. **機率排序**: 從 Edge > 5 中選機率最高的前 2~3 場。
-        3. **寧缺勿濫**: 若不達標，不強行推薦。
-        """)
+        st.markdown("1. **Edge > 5.0**\\n2. 從中選 **過盤率** 前 3 高\\n3. 不達標不硬湊")
 
 with st.spinner("⚡ 數據同步中..."):
     ps_db, ctx_db, inj_db = get_global_data()
@@ -114,35 +141,25 @@ if not sb.empty:
         def build_pkg(tid, abbr):
             ctx = ctx_db.get(tid, {'b2b': False, 'recent_w': 0.5})
             t_inj = inj_db[inj_db['球隊'] == abbr] if not inj_db.empty else pd.DataFrame()
-            out_list = t_inj[t_inj['IS_OUT']]['NORM'].tolist() if not t_inj.empty else []
+            out_list = t_inj[t_inj['IS_OUT']]['NORM'].tolist()
             active = ps_db[(ps_db['TEAM_ID'] == tid) & (~ps_db['NORM'].isin(out_list))].sort_values('IMPACT', ascending=False) if 'TEAM_ID' in ps_db.columns else pd.DataFrame()
-            return {'pts': active['PTS'].sum() if not active.empty else 0, 'impact': active['IMPACT'].mean() if not active.empty else 0, 'df': active, 'inj': t_inj, 'b2b': ctx['b2b'], 'recent_w': ctx['recent_w']}
+            return {'pts': active['PTS'].sum(), 'impact': active['IMPACT'].mean(), 'df': active, 'inj': t_inj, 'b2b': ctx['b2b'], 'recent_w': ctx['recent_w']}
         
         h_p, a_p = build_pkg(h_id, h_abbr), build_pkg(a_id, a_abbr)
         b2b_v = (-2.5 if h_p['b2b'] else 0) - (-2.5 if a_p['b2b'] else 0)
         recent_v = (h_p['recent_w'] - a_p['recent_w']) * 5
         base_diff = (h_p['pts'] - a_p['pts']) * 0.09 + (h_p['impact'] - a_p['impact']) * 3.8 + 2.5 + b2b_v + recent_v
-        
-        # 預計算不含讓分前的機率
         raw_prob = 1 / (1 + 10**(-abs(base_diff)/11)) * 100
         
-        all_games_data.append({
-            'label': f"{TEAM_NAME_CH.get(a_abbr)}(客) @ {TEAM_NAME_CH.get(h_abbr)}(主)", 
-            'base_diff': base_diff, 
-            'raw_prob': raw_prob,
-            'h_pkg': h_p, 'a_pkg': a_p, 
-            'h_cn': TEAM_NAME_CH.get(h_abbr), 'a_cn': TEAM_NAME_CH.get(a_abbr)
-        })
+        all_games_data.append({'label': f"{TEAM_NAME_CH.get(a_abbr)}(客) @ {TEAM_NAME_CH.get(h_abbr)}(主)", 'base_diff': base_diff, 'raw_prob': raw_prob, 'h_pkg': h_p, 'a_pkg': a_p, 'h_cn': TEAM_NAME_CH.get(h_abbr), 'a_cn': TEAM_NAME_CH.get(a_abbr)})
 
-    # --- [關鍵更新] 區域一：專業選場機制 ---
+    # --- 區域一：專業選場 (Edge > 5.0) ---
     st.header("🎯 專業串關挑場 (Edge > 5.0)")
-    
-    # 挑選規則：Edge > 5.0 且按勝率排序
-    qualified_games = [g for g in all_games_data if abs(g['base_diff']) > 5.0]
-    final_picks = sorted(qualified_games, key=lambda x: x['raw_prob'], reverse=True)[:3] # 最多選三場
+    qualified = [g for g in all_games_data if abs(g['base_diff']) > 5.0]
+    final_picks = sorted(qualified, key=lambda x: x['raw_prob'], reverse=True)[:3]
     
     if not final_picks:
-        st.warning("⚠️ 今日數據模型分析：無任何場次 Edge > 5.0。建議今日觀望，不要硬湊串關。")
+        st.warning("⚠️ 今日 Edge 皆未達 5.0，建議觀望。")
     else:
         t_cols = st.columns(len(final_picks))
         for idx, g in enumerate(final_picks):
@@ -154,12 +171,10 @@ if not sb.empty:
                     st.metric("基礎 Edge", f"{abs(g['base_diff']):.1f}")
                     st.write(f"預估過盤率: **{g['raw_prob']:.1f}%**")
                     st.success(f"推薦：{rec_side}")
-                    if len(final_picks) == 1:
-                        st.info("💡 今日僅 1 場達標，建議買單場或搭配 2 串 1。")
 
     st.divider()
 
-    # --- [區域二] 全部場次 ---
+    # --- 區域二：全部場次 ---
     st.header("🎯 全部場次與實時預測")
     for i in range(0, len(all_games_data), 3):
         cols = st.columns(3)
@@ -170,25 +185,23 @@ if not sb.empty:
                     u_sp = st.number_input("讓分值 (主讓負數)", value=0.0, step=0.5, key=f"sp_{g['label']}")
                     u_oh = st.number_input("主賠", 1.01, 5.0, 1.90, key=f"oh_{g['label']}")
                     u_oa = st.number_input("客賠", 1.01, 5.0, 1.90, key=f"oa_{g['label']}")
-                    
                     f_edge = g['base_diff'] + u_sp
                     prob = 1 / (1 + 10**(-abs(f_edge)/11)) * 100
                     rec = g['h_cn'] if f_edge > 0 else g['a_cn']
                     odds = u_oh if f_edge > 0 else u_oa
                     ev = (prob/100 * odds) - 1
-                    
                     st.write(f"勝率: **{prob:.1f}%** | Edge: **{abs(f_edge):.1f}**")
                     st.write(f"EV: **{ev*100:+.1f}%**")
                     if ev > 0.05: st.success(f"🔥 推薦：{rec}")
                     else: st.info(f"建議：{rec}")
 
-    # --- [區域三] 深度查詢 ---
+    # --- 區域三：深度查詢 ---
     st.divider()
     st.header("🔍 深度數據分析")
     sel = st.selectbox("選擇場次細看數據", [g['label'] for g in all_games_data])
     if sel:
         curr = next(g for g in all_games_data if g['label'] == sel)
-        st.write(f"📊 **戰前速報**：{'🚨 客隊背靠背' if curr['a_pkg']['b2b'] else '✅ 客隊體能正常'} | {'🚨 主隊背靠背' if curr['h_pkg']['b2b'] else '✅ 主隊體能正常'}")
+        st.write(f"📊 **戰前速報**：{'🚨 客隊 B2B' if curr['a_pkg']['b2b'] else '✅ 客隊體能正常'} | {'🚨 主隊 B2B' if curr['h_pkg']['b2b'] else '✅ 主隊體能正常'}")
         c_h, c_a = st.columns(2)
         for col, pkg, side in zip([c_h, c_a], [curr['h_pkg'], curr['a_pkg']], ["(主)", "(客)"]):
             with col:
