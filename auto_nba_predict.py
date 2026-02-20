@@ -28,24 +28,26 @@ TEAM_NAME_CH = {k: v[1] for k, v in TEAM_MAP.items()}
 VALID_TEAM_IDS = [t['id'] for t in teams.get_teams()]
 ID_MAP = {t['id']: t['abbreviation'] for t in teams.get_teams()}
 
-# --- 2. 高效數據抓取 (全量快取) ---
+# --- 2. 數據抓取引擎 ---
 def fetch_safe_df(endpoint, **kwargs):
     try:
         r = endpoint(**kwargs).get_dict()
         res = r['resultSets'][0]
         return pd.DataFrame(res['rowSet'], columns=res['headers'])
-    except: return pd.DataFrame()
+    except Exception: return pd.DataFrame()
 
 @st.cache_data(ttl=3600)
 def get_global_data():
-    """一次性抓取所有基礎數據，這是防止卡頓的最強防線"""
-    # 1. 抓取球員數據
+    # 1. 抓取球員數據 (加入 KeyError 防護)
     ps = fetch_safe_df(leaguedashplayerstats.LeagueDashPlayerStats, season='2025-26', per_mode_detailed='PerGame')
-    if not ps.empty:
+    if not ps.empty and 'TEAM_ID' in ps.columns:
         ps['IMPACT'] = ps['PTS'] + ps['REB']*1.1 + ps['AST']*1.5 + (ps['STL']+ps['BLK'])*2 - ps['TOV']*2
         ps['NORM'] = ps['PLAYER_NAME'].astype(str).str.lower().str.strip()
+    else:
+        # 萬一 API 失敗，建立空結構避免崩潰
+        ps = pd.DataFrame(columns=['PLAYER_NAME', 'TEAM_ID', 'PTS', 'IMPACT', 'NORM'])
 
-    # 2. 抓取所有隊伍 context (B2B, 近五場)
+    # 2. 抓取所有隊伍 Context
     ctx = {}
     yesterday = (datetime.now(us_east_tz) - timedelta(days=1)).strftime('%Y-%m-%d')
     for tid in VALID_TEAM_IDS:
@@ -81,37 +83,38 @@ def get_global_data():
     return ps, ctx, pd.DataFrame(inj_list)
 
 # --- 3. UI 初始化 ---
-st.set_page_config(page_title="NBA Edge v15.8", layout="wide")
+st.set_page_config(page_title="NBA Edge v15.9", layout="wide")
 
-# 置頂 Hint
+# 置頂判讀指南
 h1, h2 = st.columns([0.8, 0.2])
 with h1: st.title("🏀 NBA Edge 數據預測系統")
 with h2:
-    pop = st.popover("💡 判讀指南")
-    pop.markdown("**Edge**: 模型與盤口差距 | **EV**: >10% 為極佳機會")
+    with st.popover("💡 判讀指南"):
+        st.markdown("**Edge**: 模型與盤口差距 | **EV**: >10% 為極佳機會")
 
-# [最強優化] 進入主流程前先完成所有計算
-with st.spinner("⚡ 正在極速裝載 NBA 數據中心..."):
+with st.spinner("⚡ 正在載入 NBA 即時數據中心..."):
     ps_db, ctx_db, inj_db = get_global_data()
 
-# 獲取今日賽程
+# 獲取賽程
 nba_today = datetime.now(us_east_tz)
 sb = fetch_safe_df(scoreboardv2.ScoreboardV2, game_date=nba_today.strftime('%m/%d/%Y'))
 if sb.empty: sb = fetch_safe_df(scoreboardv2.ScoreboardV2, game_date=(nba_today + timedelta(days=1)).strftime('%m/%d/%Y'))
 
 if not sb.empty:
     all_games_data = []
-    # 預編譯每場比賽所需的完整 Package
-    for _, row in sb[sb['HOME_TEAM_ID'].isin(VALID_TEAM_IDS)].iterrows():
+    sb_filtered = sb[sb['HOME_TEAM_ID'].isin(VALID_TEAM_IDS)]
+    
+    for _, row in sb_filtered.iterrows():
         h_id, a_id = row['HOME_TEAM_ID'], row['VISITOR_TEAM_ID']
         h_abbr, a_abbr = ID_MAP.get(h_id), ID_MAP.get(a_id)
         
         def build_pkg(tid, abbr):
             ctx = ctx_db.get(tid, {'b2b': False, 'recent_w': 0.5})
             t_inj = inj_db[inj_db['球隊'] == abbr] if not inj_db.empty else pd.DataFrame()
-            out_list = t_inj[t_inj['IS_OUT']]['NORM'].tolist()
-            active = ps_db[(ps_db['TEAM_ID'] == tid) & (~ps_db['NORM'].isin(out_list))].sort_values('IMPACT', ascending=False)
-            return {'pts': active['PTS'].sum(), 'impact': active['IMPACT'].mean(), 'df': active, 'inj': t_inj, 'b2b': ctx['b2b'], 'recent_w': ctx['recent_w']}
+            out_list = t_inj[t_inj['IS_OUT']]['NORM'].tolist() if not t_inj.empty else []
+            # 增加 TEAM_ID 欄位檢查防護
+            active = ps_db[(ps_db['TEAM_ID'] == tid) & (~ps_db['NORM'].isin(out_list))].sort_values('IMPACT', ascending=False) if 'TEAM_ID' in ps_db.columns else pd.DataFrame()
+            return {'pts': active['PTS'].sum() if not active.empty else 0, 'impact': active['IMPACT'].mean() if not active.empty else 0, 'df': active, 'inj': t_inj, 'b2b': ctx['b2b'], 'recent_w': ctx['recent_w']}
 
         h_p, a_p = build_pkg(h_id, h_abbr), build_pkg(a_id, a_abbr)
         b2b_v = (-2.5 if h_p['b2b'] else 0) - (-2.5 if a_p['b2b'] else 0)
@@ -123,8 +126,25 @@ if not sb.empty:
             'base_diff': base_diff, 'h_pkg': h_p, 'a_pkg': a_p, 'h_cn': TEAM_NAME_CH.get(h_abbr), 'a_cn': TEAM_NAME_CH.get(a_abbr)
         })
 
-    # 區域一：即時推薦 (現在切換時這裡絕對不卡)
-    st.header("🎯 今日對戰組合與實時預測")
+    # --- [新增] 區域：今日 Top 推薦 ---
+    st.header("🔥 今日過盤推薦 (Top 4)")
+    # 根據基礎 Edge 排序 (不考慮賠率下的預設優勢)
+    top_recommend = sorted(all_games_data, key=lambda x: abs(x['base_diff']), reverse=True)[:4]
+    
+    t_cols = st.columns(len(top_recommend))
+    for idx, g in enumerate(top_recommend):
+        with t_cols[idx]:
+            with st.container(border=True):
+                rec_side = g['h_cn'] if g['base_diff'] > 0 else g['a_cn']
+                st.subheader(f"Rank {idx+1}")
+                st.write(f"**{g['label']}**")
+                st.metric("戰力優勢 (Edge)", f"{abs(g['base_diff']):.1f}")
+                st.success(f"首選：{rec_side}")
+
+    st.divider()
+
+    # --- 區域二：即時預測 (保留 v15.2 樣式) ---
+    st.header("🎯 全部場次與實時計算")
     for i in range(0, len(all_games_data), 3):
         cols = st.columns(3)
         for j, g in enumerate(all_games_data[i:i+3]):
@@ -146,7 +166,7 @@ if not sb.empty:
                     if ev > 0.05: st.success(f"🔥 推薦：{rec}")
                     else: st.info(f"建議：{rec}")
 
-    # 區域二：深度查詢 (秒開版)
+    # --- 區域三：深度查詢 ---
     st.divider()
     st.header("🔍 深度數據查詢")
     sel = st.selectbox("請選擇場次", [g['label'] for g in all_games_data])
