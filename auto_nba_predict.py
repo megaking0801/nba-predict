@@ -2,7 +2,7 @@ import streamlit as st
 from nba_api.stats.endpoints import scoreboardv2, leaguedashplayerstats
 from nba_api.stats.static import teams
 import pandas as pd
-import pytz, warnings, requests, re, unicodedata
+import pytz, warnings, requests, re
 from datetime import datetime, timedelta
 from bs4 import BeautifulSoup
 
@@ -41,10 +41,13 @@ def translate_reason(text):
     return text
 
 def translate_status(status_text, reason_text):
+    # 這是修復截圖中「Out 卻判定出賽」的關鍵邏輯
     full = f"{status_text} {reason_text}".lower()
-    # 嚴格缺陣判定
-    if any(w in full for w in ['out', 'surgery', 'suspended', '报销']): return "❌ [確定缺陣]"
-    if any(w in full for w in ['questionable', 'gtd', 'day-to-day', 'doubtful']): return "📋 [觀察名單]"
+    # 只要出現缺陣相關字眼，第一優先權判定為不打
+    if any(w in full for w in ['out', 'surgery', 'suspended', '报销', 'season']):
+        return "❌ [確定缺陣]"
+    if any(w in full for w in ['questionable', 'gtd', 'day-to-day', 'doubtful']):
+        return "📋 [觀察名單]"
     return "✅ [預計出賽]"
 
 def fetch_safe_df(endpoint, **kwargs):
@@ -54,7 +57,7 @@ def fetch_safe_df(endpoint, **kwargs):
         return pd.DataFrame(res['rowSet'], columns=res['headers'])
     except: return pd.DataFrame()
 
-# --- 2. 數據引擎 (修復 .strip() 錯誤) ---
+# --- 2. 數據引擎 ---
 @st.cache_data(ttl=600)
 def get_espn_injuries():
     url = "https://www.espn.com/nba/injuries"
@@ -72,37 +75,30 @@ def get_espn_injuries():
                     p_name = re.sub(r'(PG|SG|SF|PF|C|G|F)$', '', cols[0].get_text(strip=True))
                     raw_st = cols[2].get_text(strip=True)
                     raw_re = cols[3].get_text(strip=True) if len(cols)>3 else "無"
-                    status = translate_status(raw_st, raw_re)
+                    status_cn = translate_status(raw_st, raw_re)
                     all_inj.append({
-                        '球員': p_name, 
-                        'NORM': p_name.lower().strip(), # 此處為原生字串，可用 .strip()
-                        '狀態': status, '原因': translate_reason(raw_re),
-                        '球隊': t_abbr, 'IS_OUT': "❌" in status
+                        '球員': p_name, 'NORM': p_name.lower().strip(),
+                        '狀態': status_cn, '原因': translate_reason(raw_re),
+                        '球隊': t_abbr, 'IS_OUT': "❌" in status_cn
                     })
     except: pass
-    return pd.DataFrame(all_inj) if all_inj else pd.DataFrame(columns=['球員','NORM','狀態','原因','球隊','IS_OUT'])
+    return pd.DataFrame(all_inj)
 
 @st.cache_data(ttl=3600)
 def load_nba_stats():
     p_full = fetch_safe_df(leaguedashplayerstats.LeagueDashPlayerStats, season='2025-26', per_mode_detailed='PerGame')
-    
     if p_full.empty:
         return pd.DataFrame(columns=['PLAYER_NAME', 'TEAM_ID', 'PTS', 'REB', 'AST', 'STL', 'BLK', 'TOV', 'IMPACT', 'NORM'])
-    
-    # 計算影響力
     p_full['IMPACT'] = p_full['PTS'] + p_full['REB']*1.1 + p_full['AST']*1.5 + (p_full['STL']+p_full['BLK'])*2 - p_full['TOV']*2
-    
-    # 修復錯誤點：必須使用 .str.strip() 而非 .strip()
     p_full['PLAYER_NAME'] = p_full['PLAYER_NAME'].astype(str)
-    p_full['NORM'] = p_full['PLAYER_NAME'].str.lower().str.strip() 
+    p_full['NORM'] = p_full['PLAYER_NAME'].str.lower().str.strip()
     return p_full
 
-# --- 3. UI 主架構 ---
-st.set_page_config(page_title="NBA Edge v15.1", layout="wide")
+# --- 3. UI 顯示邏輯 ---
+st.set_page_config(page_title="NBA Edge v15.2", layout="wide")
 ps_db = load_nba_stats()
 inj_db = get_espn_injuries()
 
-# 獲取賽程
 nba_today = datetime.now(us_east_tz)
 sb = fetch_safe_df(scoreboardv2.ScoreboardV2, game_date=nba_today.strftime('%m/%d/%Y'))
 if sb.empty:
@@ -119,13 +115,12 @@ if not sb.empty:
         h_abbr, a_abbr = id_map.get(h_id), id_map.get(a_id)
         
         def process_team(tid, abbr):
-            t_inj = inj_db[inj_db['球隊'] == abbr] if not inj_db.empty else pd.DataFrame(columns=['球員','NORM','狀態','原因','IS_OUT'])
-            out_list = t_inj[t_inj['IS_OUT']]['NORM'].tolist()
+            t_inj = inj_db[inj_db['球隊'] == abbr] if not inj_db.empty else pd.DataFrame()
+            out_list = t_inj[t_inj['IS_OUT']]['NORM'].tolist() if not t_inj.empty else []
             active = ps_db[(ps_db['TEAM_ID'] == tid) & (~ps_db['NORM'].isin(out_list))].sort_values('IMPACT', ascending=False)
             return {'pts': active['PTS'].sum(), 'impact': active['IMPACT'].mean(), 'df': active, 'inj': t_inj}
 
-        h_pkg = process_team(h_id, h_abbr)
-        a_pkg = process_team(a_id, a_abbr)
+        h_pkg, a_pkg = process_team(h_id, h_abbr), process_team(a_id, a_abbr)
         h_cn, a_cn = TEAM_NAME_CH.get(h_abbr, h_abbr), TEAM_NAME_CH.get(a_abbr, a_abbr)
         
         all_games.append({
@@ -134,7 +129,7 @@ if not sb.empty:
             'h_pkg': h_pkg, 'a_pkg': a_pkg
         })
 
-    # 區域一：即時計算
+    # --- 區域一：即時推薦 ---
     st.header("🎯 今日對戰組合與實時預測")
     for i in range(0, len(all_games), 3):
         cols = st.columns(3)
@@ -146,6 +141,7 @@ if not sb.empty:
                     u_oh = st.number_input("主賠", 1.01, 5.0, 1.90, key=f"oh_{g['label']}")
                     u_oa = st.number_input("客賠", 1.01, 5.0, 1.90, key=f"oa_{g['label']}")
                     
+                    # 計算邏輯
                     final_edge = g['base_diff'] + u_sp
                     win_prob = 1 / (1 + 10**(-abs(final_edge)/8)) * 100
                     rec = g['h_cn'] if final_edge > 0 else g['a_cn']
@@ -154,9 +150,14 @@ if not sb.empty:
                     
                     st.write(f"勝率: **{win_prob:.1f}%** | Edge: **{abs(final_edge):.1f}**")
                     st.write(f"EV: **{ev*100:+.1f}%**")
-                    st.success(f"推薦：{rec}") if ev > 0.05 else st.info(f"建議：{rec}")
+                    
+                    # 修復截圖中的 DeltaGenerator 錯誤：不要將元件賦值給變數或放在單行 if 中
+                    if ev > 0.05:
+                        st.success(f"🔥 推薦：{rec}")
+                    else:
+                        st.info(f"建議：{rec}")
 
-    # 區域二：深度查詢
+    # --- 區域二：深度查詢 ---
     st.divider()
     st.header("🔍 深度數據查詢")
     sel = st.selectbox("請選擇場次", [g['label'] for g in all_games])
@@ -168,4 +169,8 @@ if not sb.empty:
                 st.subheader(f"{curr['h_cn' if side=='(主)' else 'a_cn']} {side}")
                 st.dataframe(pkg['df'][['PLAYER_NAME', 'PTS', 'IMPACT']].head(15), hide_index=True)
                 st.write("**🚑 傷病名單**")
-                st.dataframe(pkg['inj'][['球員', '狀態', '原因']] if not pkg['inj'].empty else pd.DataFrame(columns=['球員','狀態','原因']), hide_index=True)
+                # 修復 API 報錯：確保傳入的是 DataFrame 而非字串
+                if not pkg['inj'].empty:
+                    st.dataframe(pkg['inj'][['球員', '狀態', '原因']], hide_index=True)
+                else:
+                    st.write("✅ 目前無傷病報告")
