@@ -4,7 +4,7 @@ from nba_api.stats.endpoints import (
 )
 from nba_api.stats.static import teams
 import pandas as pd
-import pytz, warnings, requests, re, unicodedata
+import pytz, warnings, requests, re, unicodedata, time
 from datetime import datetime, timedelta
 from bs4 import BeautifulSoup
 
@@ -13,18 +13,16 @@ warnings.filterwarnings('ignore')
 tw_tz = pytz.timezone('Asia/Taipei')
 us_east_tz = pytz.timezone('US/Eastern')
 
-# 判讀指南 (固定於側欄)
 def render_legend():
     st.sidebar.info("""
-    **💡 數據判讀指南 (已修正 EV 邏輯)**
-    
+    **💡 數據判讀指南**
     **Edge (讓分優勢)**
     - ⭐ **1.0 ~ 3.0**: 輕微優勢
     - ⭐⭐ **3.0 ~ 5.0**: 價值投資
     - ⭐⭐⭐ **> 5.0**: 強烈推薦
     
     **EV (期望值)**
-    - 📈 **> 3%**: 值得進場 (已平滑化)
+    - 📈 **> 3%**: 值得進場
     - 🔥 **> 8%**: 極佳機會
     
     **穩定度 (Stability)**
@@ -54,8 +52,7 @@ def normalize_name(name):
     name = ''.join(c for c in unicodedata.normalize('NFD', name) if unicodedata.category(c) != 'Mn')
     name = name.lower()
     name = re.sub(r'\b(jr\.?|sr\.?|ii|iii|iv)\b', '', name)
-    name = re.sub(r'[.\']', '', name)
-    return name.strip()
+    return re.sub(r'[.\']', '', name).strip()
 
 def translate_status(text):
     if not text or pd.isna(text): return ""
@@ -69,18 +66,22 @@ def translate_status(text):
     for eng, chi in trans.items(): text_str = re.sub(eng, chi, text_str, flags=re.IGNORECASE)
     return text_str
 
-def fetch_safe_df(endpoint, **kwargs):
-    try:
-        r = endpoint(**kwargs).get_dict()
-        res = r['resultSets'][0]
-        return pd.DataFrame(res['rowSet'], columns=res['headers'])
-    except: return pd.DataFrame()
+# 新增重試機制與錯誤捕捉
+def fetch_safe_df(endpoint_class, retries=2, **kwargs):
+    for attempt in range(retries):
+        try:
+            ep = endpoint_class(**kwargs)
+            r = ep.get_dict()
+            res = r['resultSets'][0]
+            df = pd.DataFrame(res['rowSet'], columns=res['headers'])
+            if not df.empty: return df
+        except Exception as e:
+            time.sleep(1) # 暫停 1 秒避免被伺服器阻擋
+    return pd.DataFrame()
 
 def evaluate_stability(inj_df, top_players_names):
     gtd_list = ['📋', '🤔', 'GTD', 'Day-To-Day', 'Questionable']
-    core_gtd = 0
-    for _, row in inj_df.iterrows():
-        if any(x in row['狀態'] for x in gtd_list) and row['NORMALIZED_NAME'] in top_players_names: core_gtd += 1
+    core_gtd = sum(1 for _, row in inj_df.iterrows() if any(x in row['狀態'] for x in gtd_list) and row['NORMALIZED_NAME'] in top_players_names)
     if core_gtd >= 2: return "🔴 極高風險 (核心變數大)", 20
     if core_gtd == 1: return "🟡 中度風險 (建議觀望)", 60
     return "🟢 穩定性高 (適合隔夜)", 95
@@ -101,7 +102,7 @@ def format_stats_df(df):
 
 # --- 2. 數據抓取引擎 ---
 @st.cache_data(ttl=600)
-def get_espn_injuries_v32():
+def get_espn_injuries_v33():
     url = "https://www.espn.com/nba/injuries"
     headers = {'User-Agent': 'Mozilla/5.0'}
     all_inj = []
@@ -122,7 +123,7 @@ def get_espn_injuries_v32():
     return pd.DataFrame(all_inj)
 
 @st.cache_data(ttl=3600)
-def load_nba_stats_v32():
+def load_nba_stats_v33():
     S = '2025-26'
     p_base = fetch_safe_df(leaguedashplayerstats.LeagueDashPlayerStats, season=S, per_mode_detailed='PerGame')
     p_adv = fetch_safe_df(leaguedashplayerstats.LeagueDashPlayerStats, season=S, per_mode_detailed='PerGame', measure_type_detailed_defense='Advanced')
@@ -133,104 +134,116 @@ def load_nba_stats_v32():
     return p_full
 
 # --- 3. UI 主架構 ---
-st.set_page_config(page_title="NBA Edge 專家 v13.32", layout="wide")
+st.set_page_config(page_title="NBA Edge 專家 v13.33", layout="wide")
 render_legend()
-st.title("🏀 NBA 數據預測 v13.32 (EV 精準修正版)")
+st.title("🏀 NBA 數據預測 v13.33 (防護升級版)")
 
-ps_db = load_nba_stats_v32()
-injury_df = get_espn_injuries_v32()
-all_season_games = fetch_safe_df(leaguegamefinder.LeagueGameFinder, season_nullable='2025-26')
+with st.spinner("正在連線 NBA 官方資料庫，請稍候... (若卡住超過 30 秒請重新整理)"):
+    ps_db = load_nba_stats_v33()
+    injury_df = get_espn_injuries_v33()
+    # 增加過濾條件，減少 API 負載
+    all_season_games = fetch_safe_df(leaguegamefinder.LeagueGameFinder, season_nullable='2025-26', league_id_nullable='00')
+
+if ps_db.empty:
+    st.error("🚨 嚴重錯誤：無法載入 NBA 球員數據。這通常是因為 NBA API 暫時阻擋了連線，請等待 3-5 分鐘後重新整理頁面。")
+    st.stop()
 
 # 日期搜尋
 nba_today = datetime.now(us_east_tz)
 sb = pd.DataFrame()
 found_regular = False
-for i in range(14):
-    target_date = nba_today + timedelta(days=i)
-    temp_sb = fetch_safe_df(scoreboardv2.ScoreboardV2, game_date=target_date.strftime('%m/%d/%Y'))
-    if not temp_sb.empty:
-        reg_games = temp_sb[temp_sb['HOME_TEAM_ID'].isin(VALID_TEAM_IDS)]
-        if not reg_games.empty:
-            sb, found_regular = reg_games, True
-            break
+target_date = nba_today
+
+with st.spinner("正在搜尋近期正規賽程..."):
+    for i in range(14):
+        search_date = nba_today + timedelta(days=i)
+        # 使用 YYYY-MM-DD 格式，NBA API 相容性更好
+        temp_sb = fetch_safe_df(scoreboardv2.ScoreboardV2, game_date=search_date.strftime('%Y-%m-%d'))
+        if not temp_sb.empty and 'HOME_TEAM_ID' in temp_sb.columns:
+            reg_games = temp_sb[temp_sb['HOME_TEAM_ID'].isin(VALID_TEAM_IDS)]
+            if not reg_games.empty:
+                sb, found_regular, target_date = reg_games, True, search_date
+                break
 
 if not found_regular:
-    st.error("⚠️ 未來 14 天內無正規賽。")
-else:
-    st.markdown(f"### 📅 分析日期：{target_date.strftime('%Y-%m-%d')} (美東時間)")
-    all_game_data, rankings = [], []
-    grid = st.columns(3)
-    id_map = {t['id']: t['abbreviation'] for t in teams.get_teams()}
+    st.warning("⚠️ 未來 14 天內無正規賽，或是 API 未回傳賽程表。")
+    st.stop()
+
+st.markdown(f"### 📅 分析日期：{target_date.strftime('%Y-%m-%d')} (美東時間)")
+all_game_data, rankings = [], []
+grid = st.columns(3)
+id_map = {t['id']: t['abbreviation'] for t in teams.get_teams()}
+
+for idx, row in sb.iterrows():
+    h_id, a_id = row['HOME_TEAM_ID'], row['VISITOR_TEAM_ID']
+    h_abbr, a_abbr = id_map.get(h_id), id_map.get(a_id)
+    if not h_abbr or not a_abbr: continue
     
-    for idx, row in sb.iterrows():
-        h_id, a_id = row['HOME_TEAM_ID'], row['VISITOR_TEAM_ID']
-        h_abbr, a_abbr = id_map.get(h_id), id_map.get(a_id)
-        if not h_abbr or not a_abbr: continue
-        
-        def get_pkg(tid, abbr, date):
-            is_b2b = not all_season_games[(all_season_games['TEAM_ID'] == tid) & (all_season_games['GAME_DATE'] == (date - timedelta(days=1)).strftime('%Y-%m-%d'))].empty if not all_season_games.empty else False
-            t_inj = injury_df[injury_df['球隊'] == abbr]
-            out_names = t_inj[t_inj['IS_OUT']]['NORMALIZED_NAME'].tolist()
-            all_ps = ps_db[ps_db['TEAM_ID'] == tid].sort_values('IMPACT', ascending=False)
-            top_8 = all_ps[~all_ps['NORMALIZED_NAME'].isin(out_names)].head(8)
-            status_text, s_score = evaluate_stability(t_inj, top_8['NORMALIZED_NAME'].tolist())
-            return {'pts': top_8['PTS'].sum(), 'pie': top_8['PIE'].mean(), 'df': top_8, 'inj': t_inj, 'b2b': is_b2b, 'status': status_text, 'score': s_score}
+    def get_pkg(tid, abbr, date):
+        is_b2b = not all_season_games[(all_season_games['TEAM_ID'] == tid) & (all_season_games['GAME_DATE'] == (date - timedelta(days=1)).strftime('%Y-%m-%d'))].empty if not all_season_games.empty else False
+        t_inj = injury_df[injury_df['球隊'] == abbr] if not injury_df.empty else pd.DataFrame(columns=['IS_OUT', 'NORMALIZED_NAME', '狀態', '說明', '球員'])
+        out_names = t_inj[t_inj['IS_OUT']]['NORMALIZED_NAME'].tolist() if 'IS_OUT' in t_inj.columns else []
+        all_ps = ps_db[ps_db['TEAM_ID'] == tid].sort_values('IMPACT', ascending=False)
+        top_8 = all_ps[~all_ps['NORMALIZED_NAME'].isin(out_names)].head(8)
+        status_text, s_score = evaluate_stability(t_inj, top_8['NORMALIZED_NAME'].tolist())
+        return {'pts': top_8['PTS'].sum(), 'pie': top_8['PIE'].mean(), 'df': top_8, 'inj': t_inj, 'b2b': is_b2b, 'status': status_text, 'score': s_score}
 
-        h_pkg, a_pkg = get_pkg(h_id, h_abbr, target_date), get_pkg(a_id, a_abbr, target_date)
-        h_cn, a_cn = TEAM_NAME_CH.get(h_abbr, h_abbr), TEAM_NAME_CH.get(a_abbr, a_abbr)
-        
-        # --- 精準修正邏輯 ---
-        raw_diff = (h_pkg['pts'] - a_pkg['pts']) * 0.11 + (h_pkg['pie'] - a_pkg['pie']) * 42 + 2.0
-        if h_pkg['b2b']: raw_diff -= 1.0
-        if a_pkg['b2b']: raw_diff += 1.0
-        
-        g_key = f"v32_{idx}"
-        with grid[idx % 3]:
-            with st.container(border=True):
-                st.markdown(f"#### 🏀 {a_cn} (客) @ {h_cn} (主)")
-                c_sp, c_h, c_a = st.columns([2, 1, 1])
-                u_spread = c_sp.number_input(f"讓分", value=0.0, step=0.5, key=f"sp_{g_key}")
-                u_oh, u_oa = c_h.number_input(f"主賠", 1.01, 5.0, 1.90, 0.01, key=f"oh_{g_key}"), c_a.number_input(f"客賠", 1.01, 5.0, 1.90, 0.01, key=f"oa_{g_key}")
-                
-                # 修正後的勝率計算 (更平滑)
-                edge_val = raw_diff + u_spread 
-                cover_prob = 1 / (1 + 10**(-edge_val/12)) * 100 # 系數從 8 改為 12
-                cover_prob = min(max(cover_prob, 15.0), 85.0) # 強制封頂 85%
-                
-                if edge_val >= 0: disp_prob, rec_team, sel_odds = cover_prob, h_cn, u_oh
-                else: disp_prob, rec_team, sel_odds = (100-cover_prob), a_cn, u_oa
-                
-                ev = (disp_prob/100 * sel_odds) - 1
-                final_edge = abs(edge_val)
-                avg_stab = (h_pkg['score'] + a_pkg['score']) / 2
-                
-                st.divider()
-                st.success(f"🔥 推薦：{rec_team}") if avg_stab > 70 else st.warning(f"⚠️ 推薦：{rec_team}")
-                c1, c2 = st.columns(2)
-                c1.metric("勝率", f"{disp_prob:.1f}%")
-                c2.metric("EV", f"{ev*100:+.1f}%")
-                st.write(f"📊 評級：{get_edge_stars(final_edge, ev, avg_stab)} | Edge：{final_edge:.1f}")
+    h_pkg, a_pkg = get_pkg(h_id, h_abbr, target_date), get_pkg(a_id, a_abbr, target_date)
+    h_cn, a_cn = TEAM_NAME_CH.get(h_abbr, h_abbr), TEAM_NAME_CH.get(a_abbr, a_abbr)
+    
+    raw_diff = (h_pkg['pts'] - a_pkg['pts']) * 0.11 + (h_pkg['pie'] - a_pkg['pie']) * 42 + 2.0
+    if h_pkg['b2b']: raw_diff -= 1.0
+    if a_pkg['b2b']: raw_diff += 1.0
+    
+    g_key = f"v33_{idx}"
+    with grid[idx % 3]:
+        with st.container(border=True):
+            st.markdown(f"#### 🏀 {a_cn} (客) @ {h_cn} (主)")
+            c_sp, c_h, c_a = st.columns([2, 1, 1])
+            u_spread = c_sp.number_input(f"讓分", value=0.0, step=0.5, key=f"sp_{g_key}")
+            u_oh, u_oa = c_h.number_input(f"主賠", 1.01, 5.0, 1.90, 0.01, key=f"oh_{g_key}"), c_a.number_input(f"客賠", 1.01, 5.0, 1.90, 0.01, key=f"oa_{g_key}")
+            
+            edge_val = raw_diff + u_spread 
+            cover_prob = min(max(1 / (1 + 10**(-edge_val/12)) * 100, 15.0), 85.0)
+            
+            if edge_val >= 0: disp_prob, rec_team, sel_odds = cover_prob, h_cn, u_oh
+            else: disp_prob, rec_team, sel_odds = (100-cover_prob), a_cn, u_oa
+            
+            ev = (disp_prob/100 * sel_odds) - 1
+            final_edge = abs(edge_val)
+            avg_stab = (h_pkg['score'] + a_pkg['score']) / 2
+            
+            st.divider()
+            st.success(f"🔥 推薦：{rec_team}") if avg_stab > 70 else st.warning(f"⚠️ 推薦：{rec_team}")
+            c1, c2 = st.columns(2)
+            c1.metric("勝率", f"{disp_prob:.1f}%")
+            c2.metric("EV", f"{ev*100:+.1f}%")
+            st.write(f"📊 評級：{get_edge_stars(final_edge, ev, avg_stab)} | Edge：{final_edge:.1f}")
 
-                rankings.append({'matchup': f"{a_cn}@{h_cn}", 'rec_team': rec_team, 'prob': disp_prob, 'edge': final_edge, 'ev': ev, 'stability': avg_stab})
-        all_game_data.append({'label': f"{a_cn} (客) @ {h_cn} (主)", 'h_pkg': h_pkg, 'a_pkg': a_pkg, 'h_cn': h_cn, 'a_cn': a_cn})
+            rankings.append({'matchup': f"{a_cn}@{h_cn}", 'rec_team': rec_team, 'prob': disp_prob, 'edge': final_edge, 'ev': ev, 'stability': avg_stab})
+    all_game_data.append({'label': f"{a_cn} (客) @ {h_cn} (主)", 'h_pkg': h_pkg, 'a_pkg': a_pkg, 'h_cn': h_cn, 'a_cn': a_cn})
 
-    # Top 4 推薦區
-    st.markdown("### 🏆 過盤率最高推薦 (Top 4)")
-    rankings.sort(key=lambda x: x['prob'], reverse=True)
-    cols = st.columns(min(len(rankings), 4))
-    for i in range(len(cols)):
+# Top 4 推薦區 (遵循：不足四場全推，超過四場推勝率前四，預設賠率自動運作)
+st.markdown("### 🏆 過盤率最高推薦 (Top 4)")
+rankings.sort(key=lambda x: x['prob'], reverse=True)
+n_show = min(len(rankings), 4)
+if n_show > 0:
+    cols = st.columns(n_show)
+    for i in range(n_show):
         r = rankings[i]
         cols[i].info(f"**TOP {i+1}**\n\n{r['matchup']}\n**{r['rec_team']}**\n🎯 {r['prob']:.1f}%")
+else:
+    st.write("目前無賽事可推薦。")
 
-    st.divider()
-    st.markdown("### 🔍 詳細數據 (含前 8 人數據表)")
-    if all_game_data:
-        curr = next((g for g in all_game_data if g['label'] == st.selectbox("選擇對戰組合", [g['label'] for g in all_game_data])), None)
-        if curr:
-            h, a = st.columns(2)
-            for col, p, side in zip([h, a], [curr['h_pkg'], curr['a_pkg']], ["🏠 [主]", "✈️ [客]"]):
-                with col:
-                    st.header(f"{side} {curr['h_cn' if '主' in side else 'a_cn']}")
-                    st.caption(f"穩定度: {p['status']}")
-                    st.markdown("#### 🚑 傷病名單"); st.dataframe(p['inj'][['球員', '狀態', '說明']] if not p['inj'].empty else pd.DataFrame(columns=['✅ 健康']), hide_index=True)
-                    st.markdown("#### 💪 核心 8 人"); st.dataframe(format_stats_df(p['df']), hide_index=True)
+st.divider()
+st.markdown("### 🔍 詳細數據 (含前 8 人數據表)")
+if all_game_data:
+    curr = next((g for g in all_game_data if g['label'] == st.selectbox("選擇對戰組合", [g['label'] for g in all_game_data])), None)
+    if curr:
+        h, a = st.columns(2)
+        for col, p, side in zip([h, a], [curr['h_pkg'], curr['a_pkg']], ["🏠 [主]", "✈️ [客]"]):
+            with col:
+                st.header(f"{side} {curr['h_cn' if '主' in side else 'a_cn']}")
+                st.caption(f"穩定度: {p['status']}")
+                st.markdown("#### 🚑 傷病名單"); st.dataframe(p['inj'][['球員', '狀態', '說明']] if not p['inj'].empty else pd.DataFrame(columns=['✅ 健康']), hide_index=True)
+                st.markdown("#### 💪 核心 8 人"); st.dataframe(format_stats_df(p['df']), hide_index=True)
