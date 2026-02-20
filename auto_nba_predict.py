@@ -42,6 +42,7 @@ def translate_reason(text):
 
 def translate_status(status_text, reason_text):
     full = f"{status_text} {reason_text}".lower()
+    # 嚴格缺陣判定
     if any(w in full for w in ['out', 'surgery', 'suspended', '报销']): return "❌ [確定缺陣]"
     if any(w in full for w in ['questionable', 'gtd', 'day-to-day', 'doubtful']): return "📋 [觀察名單]"
     return "✅ [預計出賽]"
@@ -53,7 +54,7 @@ def fetch_safe_df(endpoint, **kwargs):
         return pd.DataFrame(res['rowSet'], columns=res['headers'])
     except: return pd.DataFrame()
 
-# --- 2. 數據引擎 (修復 AttributeError) ---
+# --- 2. 數據引擎 (修復 .strip() 錯誤) ---
 @st.cache_data(ttl=600)
 def get_espn_injuries():
     url = "https://www.espn.com/nba/injuries"
@@ -73,7 +74,8 @@ def get_espn_injuries():
                     raw_re = cols[3].get_text(strip=True) if len(cols)>3 else "無"
                     status = translate_status(raw_st, raw_re)
                     all_inj.append({
-                        '球員': p_name, 'NORM': p_name.lower().strip(),
+                        '球員': p_name, 
+                        'NORM': p_name.lower().strip(), # 此處為原生字串，可用 .strip()
                         '狀態': status, '原因': translate_reason(raw_re),
                         '球隊': t_abbr, 'IS_OUT': "❌" in status
                     })
@@ -82,27 +84,25 @@ def get_espn_injuries():
 
 @st.cache_data(ttl=3600)
 def load_nba_stats():
-    # 獲取 2025-26 賽季數據
     p_full = fetch_safe_df(leaguedashplayerstats.LeagueDashPlayerStats, season='2025-26', per_mode_detailed='PerGame')
     
-    # 安全檢查：如果數據為空，回傳帶有正確欄位的空 DataFrame
     if p_full.empty:
-        st.error("⚠️ 無法獲取 NBA 球員數據，請檢查網路連線或稍後再試。")
         return pd.DataFrame(columns=['PLAYER_NAME', 'TEAM_ID', 'PTS', 'REB', 'AST', 'STL', 'BLK', 'TOV', 'IMPACT', 'NORM'])
     
-    # 確保數據類型正確，避免 .str 操作失敗
-    p_full['PLAYER_NAME'] = p_full['PLAYER_NAME'].astype(str)
-    
-    # 計算影響力指標
+    # 計算影響力
     p_full['IMPACT'] = p_full['PTS'] + p_full['REB']*1.1 + p_full['AST']*1.5 + (p_full['STL']+p_full['BLK'])*2 - p_full['TOV']*2
-    p_full['NORM'] = p_full['PLAYER_NAME'].str.lower().strip()
+    
+    # 修復錯誤點：必須使用 .str.strip() 而非 .strip()
+    p_full['PLAYER_NAME'] = p_full['PLAYER_NAME'].astype(str)
+    p_full['NORM'] = p_full['PLAYER_NAME'].str.lower().str.strip() 
     return p_full
 
-# --- 3. UI 邏輯 ---
-st.set_page_config(page_title="NBA Edge v15.0", layout="wide")
+# --- 3. UI 主架構 ---
+st.set_page_config(page_title="NBA Edge v15.1", layout="wide")
 ps_db = load_nba_stats()
 inj_db = get_espn_injuries()
 
+# 獲取賽程
 nba_today = datetime.now(us_east_tz)
 sb = fetch_safe_df(scoreboardv2.ScoreboardV2, game_date=nba_today.strftime('%m/%d/%Y'))
 if sb.empty:
@@ -114,18 +114,18 @@ if not sb.empty:
     all_games = []
     sb_f = sb[sb['HOME_TEAM_ID'].isin(VALID_TEAM_IDS)]
     
-    for idx, row in sb_f.iterrows():
+    for _, row in sb_f.iterrows():
         h_id, a_id = row['HOME_TEAM_ID'], row['VISITOR_TEAM_ID']
         h_abbr, a_abbr = id_map.get(h_id), id_map.get(a_id)
         
         def process_team(tid, abbr):
             t_inj = inj_db[inj_db['球隊'] == abbr] if not inj_db.empty else pd.DataFrame(columns=['球員','NORM','狀態','原因','IS_OUT'])
             out_list = t_inj[t_inj['IS_OUT']]['NORM'].tolist()
-            # 過濾掉確定不打的球員
             active = ps_db[(ps_db['TEAM_ID'] == tid) & (~ps_db['NORM'].isin(out_list))].sort_values('IMPACT', ascending=False)
             return {'pts': active['PTS'].sum(), 'impact': active['IMPACT'].mean(), 'df': active, 'inj': t_inj}
 
-        h_pkg, a_pkg = process_team(h_id, h_abbr), process_team(a_id, a_abbr)
+        h_pkg = process_team(h_id, h_abbr)
+        a_pkg = process_team(a_id, a_abbr)
         h_cn, a_cn = TEAM_NAME_CH.get(h_abbr, h_abbr), TEAM_NAME_CH.get(a_abbr, a_abbr)
         
         all_games.append({
@@ -134,7 +134,7 @@ if not sb.empty:
             'h_pkg': h_pkg, 'a_pkg': a_pkg
         })
 
-    # --- 區域一：即時賠率與預測 ---
+    # 區域一：即時計算
     st.header("🎯 今日對戰組合與實時預測")
     for i in range(0, len(all_games), 3):
         cols = st.columns(3)
@@ -156,7 +156,7 @@ if not sb.empty:
                     st.write(f"EV: **{ev*100:+.1f}%**")
                     st.success(f"推薦：{rec}") if ev > 0.05 else st.info(f"建議：{rec}")
 
-    # --- 區域二：深度數據查詢 ---
+    # 區域二：深度查詢
     st.divider()
     st.header("🔍 深度數據查詢")
     sel = st.selectbox("請選擇場次", [g['label'] for g in all_games])
@@ -166,9 +166,6 @@ if not sb.empty:
         for col, pkg, side in zip([c_h, c_a], [curr['h_pkg'], curr['a_pkg']], ["(主)", "(客)"]):
             with col:
                 st.subheader(f"{curr['h_cn' if side=='(主)' else 'a_cn']} {side}")
-                st.dataframe(pkg['df'][['PLAYER_NAME', 'PTS', 'IMPACT']].head(12), hide_index=True, use_container_width=True)
-                st.write("**🚑 傷病與原因**")
-                inj_display = pkg['inj'][['球員', '狀態', '原因']] if not pkg['inj'].empty else pd.DataFrame(columns=['球員','狀態','原因'])
-                st.dataframe(inj_display, hide_index=True, use_container_width=True)
-else:
-    st.info("📅 目前無比賽進行中或尚未開賽。")
+                st.dataframe(pkg['df'][['PLAYER_NAME', 'PTS', 'IMPACT']].head(15), hide_index=True)
+                st.write("**🚑 傷病名單**")
+                st.dataframe(pkg['inj'][['球員', '狀態', '原因']] if not pkg['inj'].empty else pd.DataFrame(columns=['球員','狀態','原因']), hide_index=True)
