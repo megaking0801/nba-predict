@@ -392,8 +392,10 @@ for i in range(0, len(all_games_data), 3):
                 gid = g["game_id"]
                 # 盤口輸入方向容易搞反 → 文案明確化，但不改你的計算方式（仍是 base_diff + u_sp）
                 u_sp = st.number_input(
-                    "盤口（以主隊為基準；主隊讓分填負、受讓填正）",
-                    0.0,
+                    "主隊盤口（主讓分填負｜主受讓填正）",
+                    min_value=-60.0,
+                    max_value=60.0,
+                    value=0.0,
                     step=0.5,
                     key=f"sp_{gid}",
                 )
@@ -447,3 +449,4 @@ if sel:
                 st.dataframe(pkg["inj"][["球員", "狀態", "原因"]], hide_index=True)
             else:
                 st.write("✅ 無傷病報告")
+
