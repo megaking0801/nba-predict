@@ -5,3 +5,4 @@ beautifulsoup4
 lxml
 html5lib
 pytz
+nba_api
