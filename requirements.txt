@@ -1,6 +1,7 @@
 streamlit
-nba_api
 pandas
 requests
 beautifulsoup4
+lxml
+html5lib
 pytz
