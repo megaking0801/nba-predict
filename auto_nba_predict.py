@@ -38,28 +38,30 @@ def fetch_safe_df(endpoint, **kwargs):
 
 @st.cache_data(ttl=3600)
 def get_global_data():
-    # 1. 抓取球員數據 (加入 KeyError 防護)
+    # 1. 抓取球員數據
     ps = fetch_safe_df(leaguedashplayerstats.LeagueDashPlayerStats, season='2025-26', per_mode_detailed='PerGame')
     if not ps.empty and 'TEAM_ID' in ps.columns:
         ps['IMPACT'] = ps['PTS'] + ps['REB']*1.1 + ps['AST']*1.5 + (ps['STL']+ps['BLK'])*2 - ps['TOV']*2
         ps['NORM'] = ps['PLAYER_NAME'].astype(str).str.lower().str.strip()
     else:
-        # 萬一 API 失敗，建立空結構避免崩潰
         ps = pd.DataFrame(columns=['PLAYER_NAME', 'TEAM_ID', 'PTS', 'IMPACT', 'NORM'])
 
-    # 2. 抓取所有隊伍 Context
+    # 2. 抓取所有隊伍 Context (B2B, 近五場)
     ctx = {}
-    yesterday = (datetime.now(us_east_tz) - timedelta(days=1)).strftime('%Y-%m-%d')
+    # 關鍵修正：抓取 B2B 必須參考美東時間的昨天
+    now_us = datetime.now(us_east_tz)
+    yesterday_us = (now_us - timedelta(days=1)).strftime('%Y-%m-%d')
+    
     for tid in VALID_TEAM_IDS:
         log = fetch_safe_df(teamgamelog.TeamGameLog, team_id=tid, season='2025-26')
         is_b2b, recent_w = False, 0.5
         if not log.empty:
             log['GAME_DATE'] = pd.to_datetime(log['GAME_DATE'])
-            is_b2b = any(log['GAME_DATE'].dt.strftime('%Y-%m-%d') == yesterday)
+            is_b2b = any(log['GAME_DATE'].dt.strftime('%Y-%m-%d') == yesterday_us)
             recent_w = (log.head(5)['WL'] == 'W').mean()
         ctx[tid] = {'b2b': is_b2b, 'recent_w': recent_w}
 
-    # 3. 抓取傷病報告
+    # 3. 傷病報告
     inj_list = []
     try:
         url = "https://www.espn.com/nba/injuries"
@@ -79,26 +81,38 @@ def get_global_data():
                     status_cn = "❌ [確定缺陣]" if is_out else "📋 [觀察名單]" if any(w in (raw_st + raw_re).lower() for w in ['questionable', 'gtd', 'day-to-day', 'doubtful']) else "✅ [預計出賽]"
                     inj_list.append({'NORM': p_name.lower().strip(), '球員': p_name, '狀態': status_cn, '原因': raw_re, '球隊': t_abbr, 'IS_OUT': is_out})
     except: pass
-    
     return ps, ctx, pd.DataFrame(inj_list)
 
 # --- 3. UI 初始化 ---
-st.set_page_config(page_title="NBA Edge v15.9", layout="wide")
+st.set_page_config(page_title="NBA Edge v16.0", layout="wide")
 
 # 置頂判讀指南
 h1, h2 = st.columns([0.8, 0.2])
-with h1: st.title("🏀 NBA Edge 數據預測系統")
+with h1: 
+    now_tw_str = datetime.now(tw_tz).strftime('%m/%d %H:%M')
+    st.title(f"🏀 NBA Edge 數據預測系統")
+    st.caption(f"台灣現在時間：{now_tw_str}")
 with h2:
     with st.popover("💡 判讀指南"):
-        st.markdown("**Edge**: 模型與盤口差距 | **EV**: >10% 為極佳機會")
+        st.markdown("**Edge**: 模型預測分差與盤口的差距。\\n**EV**: >10% 為極佳機會。")
 
-with st.spinner("⚡ 正在載入 NBA 即時數據中心..."):
+with st.spinner("⚡ 正在同步美東數據中心..."):
     ps_db, ctx_db, inj_db = get_global_data()
 
-# 獲取賽程
-nba_today = datetime.now(us_east_tz)
-sb = fetch_safe_df(scoreboardv2.ScoreboardV2, game_date=nba_today.strftime('%m/%d/%Y'))
-if sb.empty: sb = fetch_safe_df(scoreboardv2.ScoreboardV2, game_date=(nba_today + timedelta(days=1)).strftime('%m/%d/%Y'))
+# --- 日期邏輯精準修正 ---
+now_us = datetime.now(us_east_tz)
+# 如果美東還沒到中午，有時候 API 還在抓昨晚的賽果，所以我們鎖定美東「今天」的日期
+target_date_us = now_us.strftime('%m/%d/%Y')
+
+sb = fetch_safe_df(scoreboardv2.ScoreboardV2, game_date=target_date_us)
+
+# 假如今天真的沒比賽 (例如明星賽週)，才去抓明天
+if sb.empty or len(sb[sb['HOME_TEAM_ID'].isin(VALID_TEAM_IDS)]) == 0:
+    target_date_us = (now_us + timedelta(days=1)).strftime('%m/%d/%Y')
+    sb = fetch_safe_df(scoreboardv2.ScoreboardV2, game_date=target_date_us)
+    st.info(f"📅 今日美東無賽程，已為您自動跳轉至明日：{target_date_us}")
+else:
+    st.success(f"📅 正在分析美東今日賽程：{target_date_us}")
 
 if not sb.empty:
     all_games_data = []
@@ -112,7 +126,6 @@ if not sb.empty:
             ctx = ctx_db.get(tid, {'b2b': False, 'recent_w': 0.5})
             t_inj = inj_db[inj_db['球隊'] == abbr] if not inj_db.empty else pd.DataFrame()
             out_list = t_inj[t_inj['IS_OUT']]['NORM'].tolist() if not t_inj.empty else []
-            # 增加 TEAM_ID 欄位檢查防護
             active = ps_db[(ps_db['TEAM_ID'] == tid) & (~ps_db['NORM'].isin(out_list))].sort_values('IMPACT', ascending=False) if 'TEAM_ID' in ps_db.columns else pd.DataFrame()
             return {'pts': active['PTS'].sum() if not active.empty else 0, 'impact': active['IMPACT'].mean() if not active.empty else 0, 'df': active, 'inj': t_inj, 'b2b': ctx['b2b'], 'recent_w': ctx['recent_w']}
 
@@ -126,11 +139,9 @@ if not sb.empty:
             'base_diff': base_diff, 'h_pkg': h_p, 'a_pkg': a_p, 'h_cn': TEAM_NAME_CH.get(h_abbr), 'a_cn': TEAM_NAME_CH.get(a_abbr)
         })
 
-    # --- [新增] 區域：今日 Top 推薦 ---
+    # --- 今日 Top 推薦 ---
     st.header("🔥 今日過盤推薦 (Top 4)")
-    # 根據基礎 Edge 排序 (不考慮賠率下的預設優勢)
     top_recommend = sorted(all_games_data, key=lambda x: abs(x['base_diff']), reverse=True)[:4]
-    
     t_cols = st.columns(len(top_recommend))
     for idx, g in enumerate(top_recommend):
         with t_cols[idx]:
@@ -143,7 +154,7 @@ if not sb.empty:
 
     st.divider()
 
-    # --- 區域二：即時預測 (保留 v15.2 樣式) ---
+    # --- 即時預測區域 (保留 v15.2 樣式) ---
     st.header("🎯 全部場次與實時計算")
     for i in range(0, len(all_games_data), 3):
         cols = st.columns(3)
@@ -166,7 +177,7 @@ if not sb.empty:
                     if ev > 0.05: st.success(f"🔥 推薦：{rec}")
                     else: st.info(f"建議：{rec}")
 
-    # --- 區域三：深度查詢 ---
+    # --- 深度查詢 ---
     st.divider()
     st.header("🔍 深度數據查詢")
     sel = st.selectbox("請選擇場次", [g['label'] for g in all_games_data])
