@@ -1,7 +1,5 @@
 import streamlit as st
-from nba_api.stats.endpoints import (
-    leaguegamefinder, scoreboardv2, leaguedashplayerstats
-)
+from nba_api.stats.endpoints import scoreboardv2, leaguedashplayerstats
 from nba_api.stats.static import teams
 import pandas as pd
 import pytz, warnings, requests, re, unicodedata
@@ -38,11 +36,13 @@ def normalize_name(name):
     return name.strip()
 
 def translate_status(text):
-    if not text or pd.isna(text): return ""
+    if not text or pd.isna(text): return "未知"
     text_str = str(text).strip()
-    trans = {r'\bOut\b': '❌ 缺陣', r'\bDay-To-Day\b': '📋 觀察', r'\bGTD\b': '📋 賽前決定', r'\bQuestionable\b': '🤔 出戰成疑'}
-    for eng, chi in trans.items():
-        text_str = re.sub(eng, chi, text_str, flags=re.IGNORECASE)
+    # 分類邏輯
+    if any(w in text_str.lower() for w in ['out', 'surgery', 'injured']):
+        return "❌ [確定缺陣]"
+    if any(w in text_str.lower() for w in ['questionable', 'gtd', 'day-to-day', 'doubtful']):
+        return "📋 [觀察名單]"
     return text_str
 
 def fetch_safe_df(endpoint, **kwargs):
@@ -52,7 +52,7 @@ def fetch_safe_df(endpoint, **kwargs):
         return pd.DataFrame(res['rowSet'], columns=res['headers'])
     except: return pd.DataFrame()
 
-# --- 2. 數據抓取 ---
+# --- 2. 數據引擎 ---
 @st.cache_data(ttl=600)
 def get_espn_injuries():
     url = "https://www.espn.com/nba/injuries"
@@ -72,7 +72,7 @@ def get_espn_injuries():
                     all_inj.append({
                         '球員': p_name, 'NORM': normalize_name(p_name),
                         '狀態': translate_status(st_val), '球隊': t_abbr, 
-                        'IS_OUT': any(w in st_val.lower() for w in ['out', 'doubtful', 'injured'])
+                        'IS_OUT': "❌" in translate_status(st_val)
                     })
     except: pass
     return pd.DataFrame(all_inj)
@@ -85,14 +85,13 @@ def load_nba_stats():
     p_full['NORM'] = p_full['PLAYER_NAME'].apply(normalize_name)
     return p_full
 
-# --- 3. UI 邏輯 ---
-st.set_page_config(page_title="NBA Edge v14.6", layout="wide")
-st.title("🏀 NBA 數據預測系統")
+# --- 3. UI 構建 ---
+st.set_page_config(page_title="NBA Edge v14.7", layout="wide")
+st.title("🏀 NBA 數據預測與深度分析")
 
 ps_db = load_nba_stats()
-injury_df = get_espn_injuries()
+inj_db = get_espn_injuries()
 
-# 獲取賽程 (優先今日，若無則明日)
 nba_today = datetime.now(us_east_tz)
 date_str = nba_today.strftime('%m/%d/%Y')
 sb = fetch_safe_df(scoreboardv2.ScoreboardV2, game_date=date_str)
@@ -102,9 +101,7 @@ if sb.empty or sb[sb['HOME_TEAM_ID'].isin(VALID_TEAM_IDS)].empty:
 
 id_map = {t['id']: t['abbreviation'] for t in teams.get_teams()}
 
-if sb.empty:
-    st.warning("📅 暫無賽程數據。")
-else:
+if not sb.empty:
     all_game_results = []
     sb_filtered = sb[sb['HOME_TEAM_ID'].isin(VALID_TEAM_IDS)]
     
@@ -113,66 +110,63 @@ else:
         h_abbr, a_abbr = id_map.get(h_id), id_map.get(a_id)
         
         def get_team_data(tid, abbr):
-            t_inj = injury_df[injury_df['球隊'] == abbr] if not injury_df.empty else pd.DataFrame()
+            t_inj = inj_db[inj_db['球隊'] == abbr] if not inj_db.empty else pd.DataFrame(columns=['球員', '狀態', 'NORM'])
             out_names = t_inj[t_inj['IS_OUT']]['NORM'].tolist()
-            # 全員分析：抓取所有人並排除缺陣者
             active = ps_db[(ps_db['TEAM_ID'] == tid) & (~ps_db['NORM'].isin(out_names))].sort_values('IMPACT', ascending=False)
             return {'pts': active['PTS'].sum(), 'impact': active['IMPACT'].mean(), 'df': active, 'inj': t_inj}
 
-        h_pkg = get_team_data(h_id, h_abbr)
-        a_pkg = get_team_data(a_id, a_abbr)
+        h_pkg, a_pkg = get_team_data(h_id, h_abbr), get_team_data(a_id, a_abbr)
         h_cn, a_cn = TEAM_NAME_CH.get(h_abbr, h_abbr), TEAM_NAME_CH.get(a_abbr, a_abbr)
         
         raw_diff = (h_pkg['pts'] - a_pkg['pts']) * 0.12 + (h_pkg['impact'] - a_pkg['impact']) * 5 + 2.5
-        prob = 1 / (1 + 10**(-abs(raw_diff)/8)) * 100
-        
         all_game_results.append({
-            'label': f"{a_cn} @ {h_cn}", 'h_cn': h_cn, 'a_cn': a_cn,
-            'diff': raw_diff, 'prob': prob, 'h_pkg': h_pkg, 'a_pkg': a_pkg
+            'label': f"{a_cn}(客) @ {h_cn}(主)", 'h_cn': h_cn, 'a_cn': a_cn,
+            'diff': raw_diff, 'h_pkg': h_pkg, 'a_pkg': a_pkg
         })
 
-    # --- 第一部分：今日所有場次勝率 ---
-    st.subheader("📋 今日所有場次預測")
-    summary_df = []
-    for g in all_game_results:
-        winner = g['h_cn'] if g['diff'] > 0 else g['a_cn']
-        summary_df.append({"對戰組合": g['label'], "預計勝隊": winner, "原始勝率": f"{g['prob']:.1f}%", "預估分差": f"{g['diff']:+.1f}"})
-    st.table(summary_df)
-
-    # --- 第二部分：最強推薦 Top 4 ---
-    st.divider()
-    top_4 = sorted(all_game_results, key=lambda x: x['prob'], reverse=True)[:4]
+    # Top 4 推薦區
     st.subheader("🔥 系統最強推薦 (Top 4)")
-    cols = st.columns(len(top_4))
+    top_4 = sorted(all_game_results, key=lambda x: abs(x['diff']), reverse=True)[:4]
+    t_cols = st.columns(4)
     for i, g in enumerate(top_4):
-        with cols[i]:
-            with st.container(border=True):
-                st.markdown(f"**{g['label']}**")
-                u_sp = st.number_input("讓分", 0.0, step=0.5, key=f"sp_{i}")
-                f_diff = g['diff'] + u_sp
-                rec = g['h_cn'] if f_diff > 0 else g['a_cn']
-                st.success(f"推薦：{rec}")
-                st.caption(f"原始勝率：{g['prob']:.1f}%")
+        with t_cols[i]:
+            st.info(f"**{g['label']}**\n\n建議：{g['h_cn'] if g['diff']>0 else g['a_cn']}")
 
-    # --- 第三部分：深度數據選取區 ---
+    # 深度分析區
     st.divider()
-    st.subheader("🔍 深度數據分析 (選取場次查看球員與傷病)")
-    selected_label = st.selectbox("請選擇欲查看的場次", [g['label'] for g in all_game_results])
+    st.subheader("🔍 深度數據分析")
+    selected_label = st.selectbox("請選擇場次", [g['label'] for g in all_game_results])
     
     if selected_label:
         curr = next(g for g in all_game_results if g['label'] == selected_label)
-        c_h, c_a = st.columns(2)
         
+        # 補回 EV 與 Edge 輸入欄位
+        c_in1, c_in2, c_in3 = st.columns(3)
+        u_sp = c_in1.number_input("輸入讓分 (主正客負)", 0.0, step=0.5, key="deep_sp")
+        u_oh = c_in2.number_input("主隊賠率", 1.01, 5.0, 1.90, key="deep_h")
+        u_oa = c_in3.number_input("客隊賠率", 1.01, 5.0, 1.90, key="deep_a")
+        
+        # 計算 Edge 與 EV
+        final_edge = curr['diff'] + u_sp
+        win_prob = 1 / (1 + 10**(-abs(final_edge)/8)) * 100
+        rec_team = curr['h_cn'] if final_edge > 0 else curr['a_cn']
+        final_odds = u_oh if final_edge > 0 else u_oa
+        ev = (win_prob/100 * final_odds) - 1
+        
+        st.success(f"🎯 最終推薦：**{rec_team}** | Edge: **{abs(final_edge):.1f}** | 勝率: **{win_prob:.1f}%** | EV: **{ev*100:+.1f}%**")
+
+        c_h, c_a = st.columns(2)
         with c_h:
-            st.markdown(f"### 🏠 {curr['h_cn']}")
-            st.write("**預計出賽人員戰力 (全員)**")
-            st.dataframe(curr['h_pkg']['df'][['PLAYER_NAME', 'PTS', 'REB', 'AST', 'IMPACT']], hide_index=True, use_container_width=True)
-            st.write("**🚑 傷病名單**")
-            st.dataframe(curr['h_pkg']['inj'][['球員', '狀態']] if not curr['h_pkg']['inj'].empty else "✅ 全員健康", hide_index=True, use_container_width=True)
+            st.markdown(f"### 🏠 {curr['h_cn']} (主場)")
+            st.dataframe(curr['h_pkg']['df'][['PLAYER_NAME', 'PTS', 'REB', 'AST', 'IMPACT']], hide_index=True)
+            st.write("**🚑 傷病與觀察名單**")
+            # 修復：確保即使沒人也顯示表格標頭
+            display_inj_h = curr['h_pkg']['inj'][['球員', '狀態']] if not curr['h_pkg']['inj'].empty else pd.DataFrame(columns=['球員', '狀態'])
+            st.dataframe(display_inj_h, hide_index=True)
 
         with c_a:
-            st.markdown(f"### ✈️ {curr['a_cn']}")
-            st.write("**預計出賽人員戰力 (全員)**")
-            st.dataframe(curr['a_pkg']['df'][['PLAYER_NAME', 'PTS', 'REB', 'AST', 'IMPACT']], hide_index=True, use_container_width=True)
-            st.write("**🚑 傷病名單**")
-            st.dataframe(curr['a_pkg']['inj'][['球員', '狀態']] if not curr['a_pkg']['inj'].empty else "✅ 全員健康", hide_index=True, use_container_width=True)
+            st.markdown(f"### ✈️ {curr['a_cn']} (客場)")
+            st.dataframe(curr['a_pkg']['df'][['PLAYER_NAME', 'PTS', 'REB', 'AST', 'IMPACT']], hide_index=True)
+            st.write("**🚑 傷病與觀察名單**")
+            display_inj_a = curr['a_pkg']['inj'][['球員', '狀態']] if not curr['a_pkg']['inj'].empty else pd.DataFrame(columns=['球員', '狀態'])
+            st.dataframe(display_inj_a, hide_index=True)
