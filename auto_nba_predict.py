@@ -6,7 +6,7 @@ import pytz, warnings, requests, re
 from datetime import datetime, timedelta
 from bs4 import BeautifulSoup
 
-# --- 1. 核心配置 ---
+# --- 1. 核心配置 (保留所有團隊對應) ---
 warnings.filterwarnings('ignore')
 tw_tz = pytz.timezone('Asia/Taipei')
 us_east_tz = pytz.timezone('US/Eastern')
@@ -27,7 +27,7 @@ TEAM_MAP = {
 TEAM_NAME_CH = {k: v[1] for k, v in TEAM_MAP.items()}
 VALID_TEAM_IDS = [t['id'] for t in teams.get_teams()]
 
-# --- 工具函數 ---
+# --- 2. 工具函數 (保留 v15.2 的判定邏輯) ---
 def translate_reason(text):
     if not text or text == "無": return "正常"
     trans = {
@@ -41,9 +41,7 @@ def translate_reason(text):
     return text
 
 def translate_status(status_text, reason_text):
-    # 這是修復截圖中「Out 卻判定出賽」的關鍵邏輯
     full = f"{status_text} {reason_text}".lower()
-    # 只要出現缺陣相關字眼，第一優先權判定為不打
     if any(w in full for w in ['out', 'surgery', 'suspended', '报销', 'season']):
         return "❌ [確定缺陣]"
     if any(w in full for w in ['questionable', 'gtd', 'day-to-day', 'doubtful']):
@@ -57,7 +55,6 @@ def fetch_safe_df(endpoint, **kwargs):
         return pd.DataFrame(res['rowSet'], columns=res['headers'])
     except: return pd.DataFrame()
 
-# --- 2. 數據引擎 ---
 @st.cache_data(ttl=600)
 def get_espn_injuries():
     url = "https://www.espn.com/nba/injuries"
@@ -73,8 +70,7 @@ def get_espn_injuries():
                 cols = r.select('td')
                 if len(cols) >= 3:
                     p_name = re.sub(r'(PG|SG|SF|PF|C|G|F)$', '', cols[0].get_text(strip=True))
-                    raw_st = cols[2].get_text(strip=True)
-                    raw_re = cols[3].get_text(strip=True) if len(cols)>3 else "無"
+                    raw_st, raw_re = cols[2].get_text(strip=True), (cols[3].get_text(strip=True) if len(cols)>3 else "無")
                     status_cn = translate_status(raw_st, raw_re)
                     all_inj.append({
                         '球員': p_name, 'NORM': p_name.lower().strip(),
@@ -94,8 +90,8 @@ def load_nba_stats():
     p_full['NORM'] = p_full['PLAYER_NAME'].str.lower().str.strip()
     return p_full
 
-# --- 3. UI 顯示邏輯 ---
-st.set_page_config(page_title="NBA Edge v15.2", layout="wide")
+# --- 3. UI 顯示 (完全恢復 v15.2 樣式) ---
+st.set_page_config(page_title="NBA Edge v15.4", layout="wide")
 ps_db = load_nba_stats()
 inj_db = get_espn_injuries()
 
@@ -123,13 +119,16 @@ if not sb.empty:
         h_pkg, a_pkg = process_team(h_id, h_abbr), process_team(a_id, a_abbr)
         h_cn, a_cn = TEAM_NAME_CH.get(h_abbr, h_abbr), TEAM_NAME_CH.get(a_abbr, a_abbr)
         
+        # --- 數值微調 (僅調整權重讓 Edge 更合理) ---
+        # 將權重稍微下修 (PTS: 0.12->0.09, IMPACT: 5->3.8) 以降低過高的分差
+        base_diff = (h_pkg['pts'] - a_pkg['pts']) * 0.09 + (h_pkg['impact'] - a_pkg['impact']) * 3.8 + 2.5
+        
         all_games.append({
             'label': f"{a_cn}(客) @ {h_cn}(主)", 'h_cn': h_cn, 'a_cn': a_cn,
-            'base_diff': (h_pkg['pts'] - a_pkg['pts']) * 0.12 + (h_pkg['impact'] - a_pkg['impact']) * 5 + 2.5,
-            'h_pkg': h_pkg, 'a_pkg': a_pkg
+            'base_diff': base_diff, 'h_pkg': h_pkg, 'a_pkg': a_pkg
         })
 
-    # --- 區域一：即時推薦 ---
+    # 區域一：即時推薦 (樣式 100% 參照 v15.2)
     st.header("🎯 今日對戰組合與實時預測")
     for i in range(0, len(all_games), 3):
         cols = st.columns(3)
@@ -141,9 +140,10 @@ if not sb.empty:
                     u_oh = st.number_input("主賠", 1.01, 5.0, 1.90, key=f"oh_{g['label']}")
                     u_oa = st.number_input("客賠", 1.01, 5.0, 1.90, key=f"oa_{g['label']}")
                     
-                    # 計算邏輯
                     final_edge = g['base_diff'] + u_sp
-                    win_prob = 1 / (1 + 10**(-abs(final_edge)/8)) * 100
+                    # 邏輯轉換：將 8 改為 12，勝率會更平滑，不會動不動就 99%
+                    win_prob = 1 / (1 + 10**(-abs(final_edge)/12)) * 100
+                    
                     rec = g['h_cn'] if final_edge > 0 else g['a_cn']
                     odds = u_oh if final_edge > 0 else u_oa
                     ev = (win_prob/100 * odds) - 1
@@ -151,13 +151,13 @@ if not sb.empty:
                     st.write(f"勝率: **{win_prob:.1f}%** | Edge: **{abs(final_edge):.1f}**")
                     st.write(f"EV: **{ev*100:+.1f}%**")
                     
-                    # 修復截圖中的 DeltaGenerator 錯誤：不要將元件賦值給變數或放在單行 if 中
+                    # 樣式修復：使用明確的 if else 避免顯示 DeltaGenerator 偵錯文字
                     if ev > 0.05:
                         st.success(f"🔥 推薦：{rec}")
                     else:
                         st.info(f"建議：{rec}")
 
-    # --- 區域二：深度查詢 ---
+    # 區域二：深度查詢 (樣式 100% 參照 v15.2)
     st.divider()
     st.header("🔍 深度數據查詢")
     sel = st.selectbox("請選擇場次", [g['label'] for g in all_games])
@@ -169,7 +169,6 @@ if not sb.empty:
                 st.subheader(f"{curr['h_cn' if side=='(主)' else 'a_cn']} {side}")
                 st.dataframe(pkg['df'][['PLAYER_NAME', 'PTS', 'IMPACT']].head(15), hide_index=True)
                 st.write("**🚑 傷病名單**")
-                # 修復 API 報錯：確保傳入的是 DataFrame 而非字串
                 if not pkg['inj'].empty:
                     st.dataframe(pkg['inj'][['球員', '狀態', '原因']], hide_index=True)
                 else:
