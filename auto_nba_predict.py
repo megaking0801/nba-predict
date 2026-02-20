@@ -61,18 +61,13 @@ def fetch_safe_df(endpoint, retries: int = 2, sleep_s: float = 0.6, **kwargs) ->
 
 
 # =========================================================
-# 2.1) ✅ 更合理的「過盤機率」映射（避免 99% 這種假穩）
-#      - 用 sigmoid + 截斷範圍（更保守）
+# 2.1) 過盤機率映射（保守 + 截斷）
 # =========================================================
-PROB_SCALE = 10.0     # 越大越保守（建議 9~12）
-PROB_FLOOR = 0.08     # 最低過盤機率
-PROB_CEIL  = 0.92     # 最高過盤機率
+PROB_SCALE = 10.0
+PROB_FLOOR = 0.08
+PROB_CEIL  = 0.92
 
 def calc_cover_prob(edge_points: float) -> float:
-    """
-    edge_points：base_diff + 主隊盤口 後的「相對盤口優勢(點數)」
-    轉成「推薦方過盤機率」：sigmoid(|edge|/scale)，再 clamp 到 [floor, ceil]
-    """
     x = abs(edge_points) / PROB_SCALE
     p = 1.0 / (1.0 + math.exp(-x))
     if p < PROB_FLOOR:
@@ -134,8 +129,12 @@ def get_player_stats(season: str = "2025-26") -> pd.DataFrame:
 
 # =========================================================
 # 5) 傷病報告（ESPN）— cache
+#    ✅ 修正重點：
+#    - 合併整列文字判讀（避免狀態藏在別欄位）
+#    - 預設不再回傳 ✅，而是「資訊不足/待確認」
+#    - TTL 降到 15 分鐘，減少落後
 # =========================================================
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=900)
 def get_injuries() -> pd.DataFrame:
     inj_list = []
     try:
@@ -154,6 +153,7 @@ def get_injuries() -> pd.DataFrame:
             t_name = title_el.get_text(strip=True)
             t_name_norm = t_name.lower()
 
+            # 找隊伍縮寫
             t_abbr = None
             for abbr, info in TEAM_MAP.items():
                 if info[0].lower() in t_name_norm:
@@ -171,25 +171,34 @@ def get_injuries() -> pd.DataFrame:
             rows = table.select("tbody tr") if table.select("tbody tr") else table.select("tr")
             for r in rows:
                 cols = r.select("td")
-                if len(cols) < 3:
+                if len(cols) < 2:
                     continue
 
                 raw_player = cols[0].get_text(" ", strip=True)
                 raw_player = re.sub(r"\s+(PG|SG|SF|PF|C|G|F)\s*$", "", raw_player, flags=re.I).strip()
 
-                raw_status = cols[2].get_text(" ", strip=True).lower()
-                raw_reason = cols[-1].get_text(" ", strip=True) if len(cols) >= 4 else "無"
-                text_blob = (raw_status + " " + raw_reason).lower()
+                # ✅ 合併整列文字（更穩）
+                row_text = " | ".join([c.get_text(" ", strip=True) for c in cols]).lower()
 
-                is_out = any(w in text_blob for w in ["out", "surgery", "suspended", "season"])
-                is_q = any(w in text_blob for w in ["questionable", "gtd", "day-to-day", "doubtful", "probable"])
+                raw_reason = cols[-1].get_text(" ", strip=True) if len(cols) >= 3 else "無"
 
+                out_kw = ["out", "ruled out", "will not play", "inactive", "suspended"]
+                q_kw   = ["questionable", "doubtful", "gtd", "day-to-day", "game time decision"]
+                ok_kw  = ["available", "will play", "probable"]
+
+                is_out = any(k in row_text for k in out_kw)
+                is_q   = any(k in row_text for k in q_kw)
+                is_ok  = any(k in row_text for k in ok_kw)
+
+                # ✅ 預設不要給 ✅，避免誤判
                 if is_out:
                     status_cn = "❌ [確定缺陣]"
                 elif is_q:
                     status_cn = "📋 [觀察名單]"
-                else:
+                elif is_ok:
                     status_cn = "✅ [預計出賽]"
+                else:
+                    status_cn = "📋 [資訊不足/待確認]"
 
                 inj_list.append(
                     {
@@ -241,7 +250,7 @@ def get_team_context(team_ids: list[int], game_date_us: str, season: str = "2025
 
 
 # =========================================================
-# 7) UI 初始化（保留原本配置）
+# 7) UI 初始化（保留原本配置 + 強制更新按鈕）
 # =========================================================
 st.set_page_config(page_title="NBA Edge v16.0", layout="wide")
 
@@ -251,11 +260,15 @@ with h1:
     st.title("🏀 NBA Edge 數據預測系統")
     st.caption(f"台灣現在時間：{now_tw_str}")
 with h2:
+    if st.button("🔄 強制更新傷病/數據"):
+        st.cache_data.clear()
+        st.rerun()
     with st.popover("💡 判讀指南"):
         st.markdown(
             "**點數優勢**：模型預測分差與盤口的差距（點數）。\n\n"
             "**盤口優勢**：過盤機率 - 損益兩平機率（%）。\n\n"
-            "**期望報酬**：以盤口機率估算的長期期望（%）。"
+            "**期望報酬**：以盤口機率估算的長期期望（%）。\n\n"
+            "**提醒**：ESPN 列表頁與球員頁可能不同步；若列表頁資訊不足，系統會顯示「待確認」以避免誤判✅。"
         )
 
 with st.spinner("⚡ 正在同步美東數據中心..."):
@@ -344,7 +357,7 @@ for _, row in sb_filtered.iterrows():
 
 
 # =========================================================
-# 9) 🔥 今日最能買（至多三場）— 依你挑場規則
+# 9) 🔥 今日最能買（至多三場）— 依挑場規則
 # =========================================================
 EDGE_THRESHOLD = 0.05
 MAX_PICKS = 3
@@ -453,7 +466,7 @@ for i in range(0, len(all_games_data), 3):
                 )
 
                 f_edge = g["base_diff"] + u_sp
-                cover_prob = calc_cover_prob(f_edge)  # ✅ 更保守 + 截斷
+                cover_prob = calc_cover_prob(f_edge)
                 rec = g["h_cn"] if f_edge > 0 else g["a_cn"]
                 odds = u_oh if f_edge > 0 else u_oa
 
