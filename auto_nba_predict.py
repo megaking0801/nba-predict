@@ -2,7 +2,7 @@ import streamlit as st
 from nba_api.stats.endpoints import scoreboardv2, leaguedashplayerstats, teamgamelog
 from nba_api.stats.static import teams
 import pandas as pd
-import pytz, warnings, requests, re, unicodedata, time
+import pytz, warnings, requests, re, unicodedata, time, math
 from datetime import datetime, timedelta
 from bs4 import BeautifulSoup
 
@@ -32,7 +32,6 @@ ALL_TEAMS = teams.get_teams()
 VALID_TEAM_IDS = [t["id"] for t in ALL_TEAMS]
 ID_MAP = {t["id"]: t["abbreviation"] for t in ALL_TEAMS}
 
-
 # =========================================================
 # 2) 工具：名字正規化 + endpoint 安全抓取（含簡單重試）
 # =========================================================
@@ -59,6 +58,28 @@ def fetch_safe_df(endpoint, retries: int = 2, sleep_s: float = 0.6, **kwargs) ->
                 time.sleep(sleep_s * (attempt + 1))
             else:
                 return pd.DataFrame()
+
+
+# =========================================================
+# 2.1) ✅ 更合理的「過盤機率」映射（避免 99% 這種假穩）
+#      - 用 sigmoid + 截斷範圍（更保守）
+# =========================================================
+PROB_SCALE = 10.0     # 越大越保守（建議 9~12）
+PROB_FLOOR = 0.08     # 最低過盤機率
+PROB_CEIL  = 0.92     # 最高過盤機率
+
+def calc_cover_prob(edge_points: float) -> float:
+    """
+    edge_points：base_diff + 主隊盤口 後的「相對盤口優勢(點數)」
+    轉成「推薦方過盤機率」：sigmoid(|edge|/scale)，再 clamp 到 [floor, ceil]
+    """
+    x = abs(edge_points) / PROB_SCALE
+    p = 1.0 / (1.0 + math.exp(-x))
+    if p < PROB_FLOOR:
+        p = PROB_FLOOR
+    if p > PROB_CEIL:
+        p = PROB_CEIL
+    return p
 
 
 # =========================================================
@@ -98,7 +119,6 @@ def get_player_stats(season: str = "2025-26") -> pd.DataFrame:
         if c not in ps.columns:
             ps[c] = 0
 
-    # 避免板凳路人影響團隊火力估計
     ps = ps[(ps["GP"] >= 5) & (ps["MIN"] >= 10)].copy()
 
     ps["IMPACT"] = (
@@ -189,8 +209,6 @@ def get_injuries() -> pd.DataFrame:
 
 # =========================================================
 # 6) 隊伍 Context（只針對「今日有賽程」隊伍）— cache
-#    - 真 B2B：本場日期前一天是否有比賽
-#    - 近五場勝率：本場日期之前最近 5 場
 # =========================================================
 @st.cache_data(ttl=3600)
 def get_team_context(team_ids: list[int], game_date_us: str, season: str = "2025-26") -> dict:
@@ -234,7 +252,11 @@ with h1:
     st.caption(f"台灣現在時間：{now_tw_str}")
 with h2:
     with st.popover("💡 判讀指南"):
-        st.markdown("**Edge**: 模型預測分差與盤口的差距。\n\n**EV**: >10% 為極佳機會。")
+        st.markdown(
+            "**點數優勢**：模型預測分差與盤口的差距（點數）。\n\n"
+            "**盤口優勢**：過盤機率 - 損益兩平機率（%）。\n\n"
+            "**期望報酬**：以盤口機率估算的長期期望（%）。"
+        )
 
 with st.spinner("⚡ 正在同步美東數據中心..."):
     target_date_us, sb = get_target_scoreboard()
@@ -304,7 +326,6 @@ for _, row in sb_filtered.iterrows():
 
     base_diff = (h_p["pts"] - a_p["pts"]) * 0.09 + (h_p["impact"] - a_p["impact"]) * 3.8 + 2.5 + b2b_v + recent_v
 
-    # 穩定唯一 ID（避免 widget key 炸掉）
     game_id = f"{a_abbr}_{h_abbr}_{target_date_us.replace('/','')}"
     a_cn = TEAM_NAME_CH.get(a_abbr, a_abbr)
     h_cn = TEAM_NAME_CH.get(h_abbr, h_abbr)
@@ -323,30 +344,19 @@ for _, row in sb_filtered.iterrows():
 
 
 # =========================================================
-# 9) 🔥 今日最能買（至多三場）— 依你新挑場規則（保留原 UI 區塊位置）
-#    規則：
-#    1) 算 edge_value = cover_prob - implied_prob
-#    2) 只保留 edge_value > 5%
-#    3) 從中挑 cover_prob 高的前 1~3 場（最多三場）
-#    ※ 若只有 1 場符合，就只顯示 1 場（不硬湊）
+# 9) 🔥 今日最能買（至多三場）— 依你挑場規則
 # =========================================================
 EDGE_THRESHOLD = 0.05
 MAX_PICKS = 3
-MAX_GAMES_FOR_PICK = 10  # 你指定「在 10 場裡」
-
-def calc_cover_prob(edge_points: float) -> float:
-    # 你原本的映射（保留）
-    return 1 / (1 + 10 ** (-abs(edge_points) / 11))
+MAX_GAMES_FOR_PICK = 10
 
 def get_market_inputs_for_game(g):
-    # 如果使用者已在下方輸入盤口/賠率，Streamlit rerun 後會留在 session_state
     gid = g["game_id"]
     sp = st.session_state.get(f"sp_{gid}", 0.0)
     oh = st.session_state.get(f"oh_{gid}", 1.90)
     oa = st.session_state.get(f"oa_{gid}", 1.90)
     return float(sp), float(oh), float(oa)
 
-# 先用「目前已輸入/預設」的盤口與賠率，計算挑場（不改 UI，只改推薦邏輯）
 pick_pool = []
 for g in all_games_data[:MAX_GAMES_FOR_PICK]:
     u_sp, u_oh, u_oa = get_market_inputs_for_game(g)
@@ -358,7 +368,7 @@ for g in all_games_data[:MAX_GAMES_FOR_PICK]:
     odds = u_oh if f_edge > 0 else u_oa
     implied_prob = 1.0 / odds if odds and odds > 0 else 1.0
 
-    edge_value = cover_prob - implied_prob  # >0.05 才符合規則
+    edge_value = cover_prob - implied_prob
 
     pick_pool.append({
         "g": g,
@@ -377,10 +387,10 @@ picks = qualified[:MAX_PICKS]
 
 st.header("🔥 今日過盤推薦 (Top 4)")
 if len(picks) == 0:
-    st.info("依挑場規則：目前前 10 場中沒有任何一場 edge_value > 5%（建議不買、不硬湊）。")
+    st.info("依挑場規則：前 10 場中沒有任何一場「盤口優勢 > 5%」，建議不買、不硬湊。")
 else:
     if len(picks) == 1:
-        st.success("🎯 今日只有 1 場符合 edge_value > 5%：建議只買單場（或分注單場），不要硬湊串關。")
+        st.success("🎯 今日只有 1 場符合「盤口優勢 > 5%」：建議只買單場（或分注單場），不要硬湊串關。")
     else:
         st.success(f"🎯 今日最能買：已依規則挑出 {len(picks)} 場（最多三場）。")
 
@@ -389,16 +399,16 @@ else:
         g = item["g"]
         with cols[idx]:
             with st.container(border=True):
-                st.subheader(f"Pick {idx+1}")
+                st.subheader(f"精選 {idx+1}")
                 st.write(f"**{g['label']}**")
                 st.success(f"首選：{item['pick_side']}")
                 st.write(
-                    f"cover_prob: **{item['cover_prob']*100:.1f}%** | "
-                    f"implied: **{item['implied_prob']*100:.1f}%**"
+                    f"過盤機率：**{item['cover_prob']*100:.1f}%** | "
+                    f"損益兩平：**{item['implied_prob']*100:.1f}%**"
                 )
-                st.metric("edge_value", f"{item['edge_value']*100:+.1f}%")
-                st.write(f"主隊盤口: **{item['home_spread_input']}** | 賠率: **{item['odds']:.2f}**")
-                st.write(f"Edge(點數): **{item['edge_points']:.1f}**")
+                st.metric("盤口優勢", f"{item['edge_value']*100:+.1f}%")
+                st.write(f"主隊盤口：**{item['home_spread_input']}** | 賠率：**{item['odds']:.2f}**")
+                st.write(f"點數優勢：**{item['edge_points']:.1f}**")
 
 st.divider()
 
@@ -417,9 +427,6 @@ for i in range(0, len(all_games_data), 3):
 
                 gid = g["game_id"]
 
-                # ✅ 只輸入「主隊盤口」：
-                # 主隊讓分：輸入負數（例：主 -5.5 → -5.5）
-                # 主隊受讓：輸入正數（例：主 +3.5 → +3.5）
                 u_sp = st.number_input(
                     "主隊盤口（主讓分填負｜主受讓填正）",
                     min_value=-60.0,
@@ -446,21 +453,19 @@ for i in range(0, len(all_games_data), 3):
                 )
 
                 f_edge = g["base_diff"] + u_sp
-                prob = calc_cover_prob(f_edge) * 100
+                cover_prob = calc_cover_prob(f_edge)  # ✅ 更保守 + 截斷
                 rec = g["h_cn"] if f_edge > 0 else g["a_cn"]
                 odds = u_oh if f_edge > 0 else u_oa
-                ev = (prob / 100 * odds) - 1
 
-                # 新增：edge_value（%）＝cover_prob - implied_prob（與上方挑場一致）
-                cover_prob = prob / 100.0
                 implied_prob = 1.0 / odds if odds and odds > 0 else 1.0
                 edge_value = cover_prob - implied_prob
+                ev = (cover_prob * odds) - 1
 
-                st.write(f"勝率: **{prob:.1f}%** | Edge(點數): **{abs(f_edge):.1f}**")
-                st.write(f"edge_value: **{edge_value*100:+.1f}%** | EV: **{ev*100:+.1f}%**")
+                st.write(f"過盤機率：**{cover_prob*100:.1f}%** | 點數優勢：**{abs(f_edge):.1f}**")
+                st.write(f"盤口優勢：**{edge_value*100:+.1f}%** | 期望報酬：**{ev*100:+.1f}%**")
 
                 if edge_value > EDGE_THRESHOLD:
-                    st.success(f"🔥 符合挑場門檻（edge_value>5%）：{rec}")
+                    st.success(f"🔥 符合挑場門檻（盤口優勢 > 5%）：{rec}")
                 else:
                     st.info(f"建議：{rec}")
 
