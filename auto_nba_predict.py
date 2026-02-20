@@ -14,7 +14,7 @@ us_east_tz = pytz.timezone('US/Eastern')
 TEAM_MAP = {
     'ATL': ['Atlanta Hawks', '老鷹'], 'BKN': ['Brooklyn Nets', '籃網'], 'BOS': ['Boston Celtics', '塞爾提克'],
     'CHA': ['Charlotte Hornets', '黃蜂'], 'CHI': ['Chicago Bulls', '公牛'], 'CLE': ['Cleveland Cavaliers', '騎士'],
-    'DAL': ['Dallas Mavericks', '獨行俠'], 'DEN': ['Denver Nuggets', '金塊'], 'DET': ['Detective Pistons', '活塞'],
+    'DAL': ['Dallas Mavericks', '獨行俠'], 'DEN': ['Denver Nuggets', '金塊'], 'DET': ['Detroit Pistons', '活塞'],
     'GSW': ['Golden State Warriors', '勇士'], 'HOU': ['Houston Rockets', '火箭'], 'IND': ['Indiana Pacers', '溜馬'],
     'LAC': ['LA Clippers', '快艇'], 'LAL': ['Los Angeles Lakers', '湖人'], 'MEM': ['Memphis Grizzlies', '灰熊'],
     'MIA': ['Miami Heat', '熱火'], 'MIL': ['Milwaukee Bucks', '公鹿'], 'MIN': ['Minnesota Timberwolves', '灰狼'],
@@ -76,18 +76,21 @@ def get_global_data():
     return ps, ctx, pd.DataFrame(inj_list)
 
 # --- 3. UI 初始化 ---
-st.set_page_config(page_title="NBA Edge v16.2", layout="wide")
+st.set_page_config(page_title="NBA Edge v16.3", layout="wide")
 
-# [頂部區域] 標題與判讀指南
 h_top1, h_top2 = st.columns([0.8, 0.2])
 with h_top1: 
     st.title("🏀 NBA Edge 數據預測系統")
     st.caption(f"台灣時間：{datetime.now(tw_tz).strftime('%m/%d %H:%M')}")
 with h_top2:
-    with st.popover("💡 判讀指南"):
-        st.markdown("**Edge**: 模型與盤口差距\\n**EV**: >10% 為極佳機會")
+    with st.popover("💡 挑場規則"):
+        st.markdown("""
+        1. **Edge > 5.0**: 模型領先盤口 5 分以上。
+        2. **機率排序**: 從 Edge > 5 中選機率最高的前 2~3 場。
+        3. **寧缺勿濫**: 若不達標，不強行推薦。
+        """)
 
-with st.spinner("⚡ 數據載入中..."):
+with st.spinner("⚡ 數據同步中..."):
     ps_db, ctx_db, inj_db = get_global_data()
 
 now_us = datetime.now(us_east_tz)
@@ -97,9 +100,9 @@ sb = fetch_safe_df(scoreboardv2.ScoreboardV2, game_date=target_date_us)
 if sb.empty or len(sb[sb['HOME_TEAM_ID'].isin(VALID_TEAM_IDS)]) == 0:
     target_date_us = (now_us + timedelta(days=1)).strftime('%m/%d/%Y')
     sb = fetch_safe_df(scoreboardv2.ScoreboardV2, game_date=target_date_us)
-    st.info(f"📅 目前顯示美東明日賽程：{target_date_us}")
+    st.info(f"📅 顯示美東明日賽程：{target_date_us}")
 else:
-    st.success(f"📅 正在分析美東今日賽程：{target_date_us}")
+    st.success(f"📅 分析美東今日賽程：{target_date_us}")
 
 if not sb.empty:
     all_games_data = []
@@ -107,34 +110,56 @@ if not sb.empty:
     for _, row in sb_f.iterrows():
         h_id, a_id = row['HOME_TEAM_ID'], row['VISITOR_TEAM_ID']
         h_abbr, a_abbr = ID_MAP.get(h_id), ID_MAP.get(a_id)
+        
         def build_pkg(tid, abbr):
             ctx = ctx_db.get(tid, {'b2b': False, 'recent_w': 0.5})
             t_inj = inj_db[inj_db['球隊'] == abbr] if not inj_db.empty else pd.DataFrame()
             out_list = t_inj[t_inj['IS_OUT']]['NORM'].tolist() if not t_inj.empty else []
             active = ps_db[(ps_db['TEAM_ID'] == tid) & (~ps_db['NORM'].isin(out_list))].sort_values('IMPACT', ascending=False) if 'TEAM_ID' in ps_db.columns else pd.DataFrame()
             return {'pts': active['PTS'].sum() if not active.empty else 0, 'impact': active['IMPACT'].mean() if not active.empty else 0, 'df': active, 'inj': t_inj, 'b2b': ctx['b2b'], 'recent_w': ctx['recent_w']}
+        
         h_p, a_p = build_pkg(h_id, h_abbr), build_pkg(a_id, a_abbr)
         b2b_v = (-2.5 if h_p['b2b'] else 0) - (-2.5 if a_p['b2b'] else 0)
         recent_v = (h_p['recent_w'] - a_p['recent_w']) * 5
         base_diff = (h_p['pts'] - a_p['pts']) * 0.09 + (h_p['impact'] - a_p['impact']) * 3.8 + 2.5 + b2b_v + recent_v
-        all_games_data.append({'label': f"{TEAM_NAME_CH.get(a_abbr)}(客) @ {TEAM_NAME_CH.get(h_abbr)}(主)", 'base_diff': base_diff, 'h_pkg': h_p, 'a_pkg': a_p, 'h_cn': TEAM_NAME_CH.get(h_abbr), 'a_cn': TEAM_NAME_CH.get(a_abbr)})
+        
+        # 預計算不含讓分前的機率
+        raw_prob = 1 / (1 + 10**(-abs(base_diff)/11)) * 100
+        
+        all_games_data.append({
+            'label': f"{TEAM_NAME_CH.get(a_abbr)}(客) @ {TEAM_NAME_CH.get(h_abbr)}(主)", 
+            'base_diff': base_diff, 
+            'raw_prob': raw_prob,
+            'h_pkg': h_p, 'a_pkg': a_p, 
+            'h_cn': TEAM_NAME_CH.get(h_abbr), 'a_cn': TEAM_NAME_CH.get(a_abbr)
+        })
 
-    # --- [區域一] Top 4 推薦 ---
-    st.header("🔥 今日過盤推薦 (Top 4)")
-    top_recommend = sorted(all_games_data, key=lambda x: abs(x['base_diff']), reverse=True)[:4]
-    t_cols = st.columns(len(top_recommend))
-    for idx, g in enumerate(top_recommend):
-        with t_cols[idx]:
-            with st.container(border=True):
-                rec_side = g['h_cn'] if g['base_diff'] > 0 else g['a_cn']
-                st.subheader(f"Rank {idx+1}")
-                st.write(f"**{g['label']}**")
-                st.metric("基礎 Edge", f"{abs(g['base_diff']):.1f}")
-                st.success(f"首選：{rec_side}")
+    # --- [關鍵更新] 區域一：專業選場機制 ---
+    st.header("🎯 專業串關挑場 (Edge > 5.0)")
+    
+    # 挑選規則：Edge > 5.0 且按勝率排序
+    qualified_games = [g for g in all_games_data if abs(g['base_diff']) > 5.0]
+    final_picks = sorted(qualified_games, key=lambda x: x['raw_prob'], reverse=True)[:3] # 最多選三場
+    
+    if not final_picks:
+        st.warning("⚠️ 今日數據模型分析：無任何場次 Edge > 5.0。建議今日觀望，不要硬湊串關。")
+    else:
+        t_cols = st.columns(len(final_picks))
+        for idx, g in enumerate(final_picks):
+            with t_cols[idx]:
+                with st.container(border=True):
+                    rec_side = g['h_cn'] if g['base_diff'] > 0 else g['a_cn']
+                    st.subheader(f"精選 Pick {idx+1}")
+                    st.write(f"**{g['label']}**")
+                    st.metric("基礎 Edge", f"{abs(g['base_diff']):.1f}")
+                    st.write(f"預估過盤率: **{g['raw_prob']:.1f}%**")
+                    st.success(f"推薦：{rec_side}")
+                    if len(final_picks) == 1:
+                        st.info("💡 今日僅 1 場達標，建議買單場或搭配 2 串 1。")
 
     st.divider()
 
-    # --- [區域二] 全部場次與實時計算 (回歸 v15.2 經典樣式) ---
+    # --- [區域二] 全部場次 ---
     st.header("🎯 全部場次與實時預測")
     for i in range(0, len(all_games_data), 3):
         cols = st.columns(3)
@@ -142,7 +167,6 @@ if not sb.empty:
             with cols[j]:
                 with st.container(border=True):
                     st.subheader(g['label'])
-                    # 數值輸入與顯示
                     u_sp = st.number_input("讓分值 (主讓負數)", value=0.0, step=0.5, key=f"sp_{g['label']}")
                     u_oh = st.number_input("主賠", 1.01, 5.0, 1.90, key=f"oh_{g['label']}")
                     u_oa = st.number_input("客賠", 1.01, 5.0, 1.90, key=f"oa_{g['label']}")
@@ -158,15 +182,13 @@ if not sb.empty:
                     if ev > 0.05: st.success(f"🔥 推薦：{rec}")
                     else: st.info(f"建議：{rec}")
 
-    # --- [區域三] 深度數據查詢 ---
+    # --- [區域三] 深度查詢 ---
     st.divider()
     st.header("🔍 深度數據分析")
     sel = st.selectbox("選擇場次細看數據", [g['label'] for g in all_games_data])
     if sel:
         curr = next(g for g in all_games_data if g['label'] == sel)
-        # B2B 與體能狀態顯示
         st.write(f"📊 **戰前速報**：{'🚨 客隊背靠背' if curr['a_pkg']['b2b'] else '✅ 客隊體能正常'} | {'🚨 主隊背靠背' if curr['h_pkg']['b2b'] else '✅ 主隊體能正常'}")
-        
         c_h, c_a = st.columns(2)
         for col, pkg, side in zip([c_h, c_a], [curr['h_pkg'], curr['a_pkg']], ["(主)", "(客)"]):
             with col:
