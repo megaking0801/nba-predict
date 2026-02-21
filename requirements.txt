@@ -1,8 +1,6 @@
-streamlit
 pandas
+pytz
 requests
 beautifulsoup4
-lxml
-html5lib
-pytz
 nba_api
+psycopg2-binary
