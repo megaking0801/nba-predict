@@ -7,6 +7,21 @@ from datetime import datetime, timedelta
 from bs4 import BeautifulSoup
 
 # =========================================================
+# 0) 版本 / 說明
+# =========================================================
+APP_VERSION = "v16.2 (Calibrated + Backtest Fit)"
+
+# 你要求的「再更硬核」校準（回測校準）這版做法：
+# - 新增「校準/回測」面板：可上傳你自己的歷史資料 CSV
+# - 用歷史資料自動 fit：
+#   (1) sigma：用 grid search 找到讓 NLL 最小的 sigma（常態CDF模型）
+#   (2) Platt scaling（可選）：對 raw probability 做二次校準，降低過度自信
+#
+# 注意：你目前即時系統沒有「歷史市場盤口」與「歷史賽果」的可靠來源，
+# 所以最穩健的方法是你提供/累積自己的歷史樣本（f_edge 與 cover 結果）。
+# 這版 code 已把 pipeline 做好：你只要匯出 CSV 上傳即可自動校準。
+
+# =========================================================
 # 1) 核心配置（保留原 UI；強化邏輯與穩定性）
 # =========================================================
 warnings.filterwarnings("ignore")
@@ -32,7 +47,6 @@ ALL_TEAMS = teams.get_teams()
 VALID_TEAM_IDS = [t["id"] for t in ALL_TEAMS]
 ID_MAP = {t["id"]: t["abbreviation"] for t in ALL_TEAMS}
 
-# Odds API 端常見隊名 → 我們的縮寫（盡量涵蓋變形）
 ODDS_TEAMNAME_TO_ABBR = {
     "atlanta hawks": "ATL",
     "brooklyn nets": "BKN",
@@ -69,7 +83,7 @@ ODDS_TEAMNAME_TO_ABBR = {
 }
 
 # =========================================================
-# 2) 工具：名字正規化 + endpoint 安全抓取（含簡單重試）
+# 2) 工具：名字正規化 + endpoint 安全抓取
 # =========================================================
 def norm_name(s: str) -> str:
     if not isinstance(s, str):
@@ -81,7 +95,6 @@ def norm_name(s: str) -> str:
     s = re.sub(r"[^a-z\s]", " ", s)
     s = re.sub(r"\s+", " ", s).strip()
     return s
-
 
 def fetch_safe_df(endpoint, retries: int = 2, sleep_s: float = 0.6, **kwargs) -> pd.DataFrame:
     for attempt in range(retries + 1):
@@ -95,27 +108,148 @@ def fetch_safe_df(endpoint, retries: int = 2, sleep_s: float = 0.6, **kwargs) ->
             else:
                 return pd.DataFrame()
 
-
 # =========================================================
-# 2.1) 過盤機率映射（更保守：12%~88%）
+# 3) 機率映射（校準版）+ 回測擬合（sigma + Platt scaling）
 # =========================================================
-PROB_SCALE = 12.0
 PROB_FLOOR = 0.12
 PROB_CEIL  = 0.88
 
-def calc_cover_prob(edge_points: float) -> float:
-    # logistic，但做硬性截斷（避免“穩賺不賠”的假象）
-    x = abs(edge_points) / PROB_SCALE
-    p = 1.0 / (1.0 + math.exp(-x))
-    if p < PROB_FLOOR:
-        p = PROB_FLOOR
-    if p > PROB_CEIL:
-        p = PROB_CEIL
-    return p
+SIGMA_BASE = 12.0
+SIGMA_NO_INJ = 15.0
+SIGMA_PER_Q = 0.9
+SIGMA_PER_OUT = 0.4
+SIGMA_CAP = 19.0
 
+def clamp(x: float, lo: float, hi: float) -> float:
+    return max(lo, min(hi, x))
+
+def norm_cdf(z: float) -> float:
+    return 0.5 * (1.0 + math.erf(z / math.sqrt(2.0)))
+
+def sigmoid(x: float) -> float:
+    # 避免 overflow
+    if x >= 20:
+        return 1.0
+    if x <= -20:
+        return 0.0
+    return 1.0 / (1.0 + math.exp(-x))
+
+def logit(p: float) -> float:
+    p = clamp(p, 1e-6, 1 - 1e-6)
+    return math.log(p / (1 - p))
+
+def calc_cover_prob_raw(f_edge: float, sigma: float) -> float:
+    """raw 機率：常態CDF，並做硬性截斷"""
+    if sigma <= 0:
+        sigma = SIGMA_BASE
+    p = norm_cdf(f_edge / sigma)
+    return clamp(p, PROB_FLOOR, PROB_CEIL)
+
+def apply_platt(p_raw: float, a: float, b: float) -> float:
+    """
+    Platt scaling：p_cal = sigmoid(a + b*logit(p_raw))
+    - 若 a=0,b=1 → 不改
+    """
+    z = a + b * logit(p_raw)
+    p = sigmoid(z)
+    return clamp(p, PROB_FLOOR, PROB_CEIL)
+
+def nll_bernoulli(p: float, y: float) -> float:
+    p = clamp(p, 1e-9, 1 - 1e-9)
+    return -(y * math.log(p) + (1 - y) * math.log(1 - p))
+
+def fit_sigma_by_grid(df: pd.DataFrame, fcol="f_edge", ycol="cover",
+                      sigma_min=7.0, sigma_max=20.0, sigma_step=0.25) -> dict:
+    """
+    用歷史資料找最好的 sigma（最小化 NLL）
+    需要 df[f_edge], df[cover]，cover ∈ {0,1}
+    """
+    if df.empty or fcol not in df.columns or ycol not in df.columns:
+        return {"ok": False, "sigma": SIGMA_BASE, "n": 0, "best_nll": None}
+
+    x = pd.to_numeric(df[fcol], errors="coerce")
+    y = pd.to_numeric(df[ycol], errors="coerce")
+    m = x.notna() & y.notna()
+    x = x[m].tolist()
+    y = y[m].tolist()
+
+    if len(x) < 50:
+        # 樣本太少不建議 fit
+        return {"ok": False, "sigma": SIGMA_BASE, "n": len(x), "best_nll": None}
+
+    best_sigma = SIGMA_BASE
+    best_nll = float("inf")
+
+    s = sigma_min
+    while s <= sigma_max + 1e-9:
+        total = 0.0
+        for xi, yi in zip(x, y):
+            p = calc_cover_prob_raw(float(xi), float(s))
+            total += nll_bernoulli(p, float(yi))
+        avg = total / len(x)
+        if avg < best_nll:
+            best_nll = avg
+            best_sigma = s
+        s += sigma_step
+
+    return {"ok": True, "sigma": float(best_sigma), "n": len(x), "best_nll": float(best_nll)}
+
+def fit_platt(df: pd.DataFrame, sigma: float, fcol="f_edge", ycol="cover",
+              iters=25, lr=0.4, l2=1e-3) -> dict:
+    """
+    以 raw prob = CDF(f_edge/sigma) 當 base，fit a,b 讓 NLL 最小
+    使用簡單梯度下降（穩定、無 sklearn 依賴）
+    """
+    if df.empty or fcol not in df.columns or ycol not in df.columns:
+        return {"ok": False, "a": 0.0, "b": 1.0, "n": 0, "nll": None}
+
+    x = pd.to_numeric(df[fcol], errors="coerce")
+    y = pd.to_numeric(df[ycol], errors="coerce")
+    m = x.notna() & y.notna()
+    x = x[m].tolist()
+    y = y[m].tolist()
+
+    if len(x) < 200:
+        # Platt 至少要多一點樣本，否則容易 overfit
+        return {"ok": False, "a": 0.0, "b": 1.0, "n": len(x), "nll": None}
+
+    a, b = 0.0, 1.0
+
+    def compute_nll(a_, b_) -> float:
+        total = 0.0
+        for xi, yi in zip(x, y):
+            p_raw = calc_cover_prob_raw(float(xi), sigma)
+            p_cal = apply_platt(p_raw, a_, b_)
+            total += nll_bernoulli(p_cal, float(yi))
+        total = total / len(x)
+        # L2 regularization 避免 b 暴衝
+        total += l2 * (a_ * a_ + (b_ - 1.0) * (b_ - 1.0))
+        return total
+
+    for _ in range(iters):
+        # numerical gradient（簡單可靠）
+        eps = 1e-4
+        base = compute_nll(a, b)
+        da = (compute_nll(a + eps, b) - compute_nll(a - eps, b)) / (2 * eps)
+        db = (compute_nll(a, b + eps) - compute_nll(a, b - eps)) / (2 * eps)
+
+        a = a - lr * da
+        b = b - lr * db
+
+        # 合理限制（避免奇怪校準）
+        a = clamp(a, -4.0, 4.0)
+        b = clamp(b, 0.2, 3.0)
+
+        # 若改善很小可提早停
+        new = compute_nll(a, b)
+        if abs(base - new) < 1e-5:
+            break
+
+    final_nll = compute_nll(a, b)
+    return {"ok": True, "a": float(a), "b": float(b), "n": len(x), "nll": float(final_nll)}
 
 # =========================================================
-# 3) 賽程抓取（先決定目標日期，再拉賽程）
+# 4) 賽程抓取
 # =========================================================
 def get_target_scoreboard() -> tuple[str, pd.DataFrame]:
     now_us = datetime.now(us_east_tz)
@@ -133,9 +267,8 @@ def get_target_scoreboard() -> tuple[str, pd.DataFrame]:
 
     return target_date_us, sb
 
-
 # =========================================================
-# 4) 球員資料（全聯盟）— cache
+# 5) 球員資料（全聯盟）— cache
 # =========================================================
 @st.cache_data(ttl=3600)
 def get_player_stats(season: str = "2025-26") -> pd.DataFrame:
@@ -151,7 +284,6 @@ def get_player_stats(season: str = "2025-26") -> pd.DataFrame:
         if c not in ps.columns:
             ps[c] = 0
 
-    # 避免季初/小樣本造成“神準假象”
     ps = ps[(ps["GP"] >= 5) & (ps["MIN"] >= 10)].copy()
 
     ps["IMPACT"] = (
@@ -164,9 +296,8 @@ def get_player_stats(season: str = "2025-26") -> pd.DataFrame:
     ps["NORM"] = ps["PLAYER_NAME"].astype(str).map(norm_name)
     return ps
 
-
 # =========================================================
-# 5) 傷病報告（ESPN）— cache（更保守判讀）
+# 6) 傷病報告（ESPN）— cache（含 IS_Q）
 # =========================================================
 @st.cache_data(ttl=900)
 def get_injuries() -> pd.DataFrame:
@@ -187,7 +318,6 @@ def get_injuries() -> pd.DataFrame:
             t_name = title_el.get_text(strip=True)
             t_name_norm = t_name.lower()
 
-            # 找隊伍縮寫
             t_abbr = None
             for abbr, info in TEAM_MAP.items():
                 if info[0].lower() in t_name_norm:
@@ -239,6 +369,7 @@ def get_injuries() -> pd.DataFrame:
                         "原因": raw_reason,
                         "球隊": t_abbr,
                         "IS_OUT": bool(is_out),
+                        "IS_Q": bool(is_q),
                     }
                 )
     except Exception:
@@ -246,9 +377,8 @@ def get_injuries() -> pd.DataFrame:
 
     return pd.DataFrame(inj_list)
 
-
 # =========================================================
-# 6) 隊伍 Context（只針對「今日有賽程」隊伍）— cache
+# 7) 隊伍 Context — cache
 # =========================================================
 @st.cache_data(ttl=3600)
 def get_team_context(team_ids: list[int], game_date_us: str, season: str = "2025-26") -> dict:
@@ -277,17 +407,11 @@ def get_team_context(team_ids: list[int], game_date_us: str, season: str = "2025
 
     return ctx
 
-
 # =========================================================
-# 7) Odds API（Pinnacle）抓盤口/賠率 — cache
-#    目標：帶入「預設值」+ 只用真盤當候選池
+# 8) Odds API（Pinnacle）抓盤口/賠率 — cache
 # =========================================================
 @st.cache_data(ttl=900)
 def get_pinnacle_odds_for_date(game_date_us: str) -> dict:
-    """
-    回傳 dict keyed by (away_abbr, home_abbr):
-      {("BOS","LAL"): {"home_spread": -3.5, "home_odds": 1.91, "away_odds": 1.91, "ok": True}}
-    """
     api_key = None
     try:
         api_key = st.secrets.get("ODDS_API_KEY", None)
@@ -297,13 +421,6 @@ def get_pinnacle_odds_for_date(game_date_us: str) -> dict:
     if not api_key:
         return {}
 
-    # Odds API 通常用 ISO 日期（YYYY-MM-DD）
-    # 用美東日期的當天 00:00 來推
-    dt = datetime.strptime(game_date_us, "%m/%d/%Y").date()
-    iso_date = dt.strftime("%Y-%m-%d")
-
-    # The Odds API v4 常見：/sports/basketball_nba/odds
-    # markets=spreads，bookmakers=pinnacle，oddsFormat=decimal
     url = "https://api.the-odds-api.com/v4/sports/basketball_nba/odds"
     params = {
         "apiKey": api_key,
@@ -323,16 +440,8 @@ def get_pinnacle_odds_for_date(game_date_us: str) -> dict:
         return {}
 
     out = {}
-
-    # 只取該日期（美東日期附近）— 這裡做「日期包含」而不是嚴格等於，避免時區差
     for g in data:
         try:
-            commence = g.get("commence_time", "")
-            if iso_date not in commence:
-                # 若時區落差，commence_time 可能是前一天/後一天 UTC
-                # 這裡放寬：同一週期內先不硬濾，交給隊名配對
-                pass
-
             home_name = norm_name(g.get("home_team", ""))
             away_name = norm_name(g.get("away_team", ""))
 
@@ -345,14 +454,12 @@ def get_pinnacle_odds_for_date(game_date_us: str) -> dict:
             if not books:
                 continue
 
-            # 只抓 pinnacle spreads
             bk = None
             for b in books:
                 if norm_name(b.get("key", "")) == "pinnacle":
                     bk = b
                     break
             if not bk:
-                # 有些回傳 key 不是 pinnacle，但 title 是 Pinnacle
                 for b in books:
                     if "pinnacle" in norm_name(b.get("title", "")):
                         bk = b
@@ -361,9 +468,6 @@ def get_pinnacle_odds_for_date(game_date_us: str) -> dict:
                 continue
 
             mkts = bk.get("markets", [])
-            if not mkts:
-                continue
-
             spreads = None
             for m in mkts:
                 if m.get("key") == "spreads":
@@ -376,8 +480,6 @@ def get_pinnacle_odds_for_date(game_date_us: str) -> dict:
             if len(outcomes) < 2:
                 continue
 
-            # outcomes 會包含 home/away 各自 point + price
-            # 我們要回傳「home_spread（主隊讓分為負）」+ 主客賠率
             home_spread = None
             home_odds = None
             away_odds = None
@@ -388,9 +490,7 @@ def get_pinnacle_odds_for_date(game_date_us: str) -> dict:
                 price = o.get("price", None)
                 if point is None or price is None:
                     continue
-
                 if name == home_name:
-                    # 若 API 給的是主隊 -3.5 就是 -3.5
                     home_spread = float(point)
                     home_odds = float(price)
                 elif name == away_name:
@@ -410,32 +510,91 @@ def get_pinnacle_odds_for_date(game_date_us: str) -> dict:
 
     return out
 
-
 # =========================================================
-# 8) UI 初始化（保留原本配置 + 強制更新按鈕）
+# 9) UI 初始化 + 校準/回測面板
 # =========================================================
-st.set_page_config(page_title="NBA Edge v16.0", layout="wide")
+st.set_page_config(page_title=f"NBA Edge {APP_VERSION}", layout="wide")
 
-h1, h2 = st.columns([0.8, 0.2])
+h1, h2 = st.columns([0.78, 0.22])
 with h1:
     now_tw_str = datetime.now(tw_tz).strftime("%m/%d %H:%M")
     st.title("🏀 NBA Edge 數據預測系統")
-    st.caption(f"台灣現在時間：{now_tw_str}")
+    st.caption(f"版本：{APP_VERSION}｜台灣現在時間：{now_tw_str}")
 with h2:
     if st.button("🔄 強制更新（傷病/盤口/數據）"):
         st.cache_data.clear()
         st.rerun()
-    with st.popover("💡 判讀指南"):
+    with st.popover("💡 判讀指南（含回測校準）"):
         st.markdown(
             "**點數優勢**：模型預測分差與盤口的差距（點數）。\n\n"
-            "**盤口優勢**：過盤機率 - 損益兩平機率（%）。\n\n"
-            "**期望報酬**：以過盤機率估算的長期期望（%）。\n\n"
-            "**Top picks（你選 2）**：\n"
-            "- 只用 Pinnacle 有抓到 spreads 的場次當候選池（避免假盤）\n"
-            "- 但排序/EV/edge_value 用你手動輸入的運彩盤口/賠率重新計算\n\n"
-            "**提醒**：若你看到某場主隊盤口=0、賠率=1.90 且來源顯示 Fallback，代表沒有真盤資料，那場不會進 Top picks。"
+            "**過盤機率（校準）**：先用常態 CDF(f_edge/sigma) 估，再用 Platt scaling（可選）校準。\n\n"
+            "**盤口優勢**：過盤機率（校準） - 損益兩平機率。\n\n"
+            "**期望報酬**：以過盤機率（校準）估算的長期期望。\n\n"
+            "**回測資料格式（CSV）**：\n"
+            "- 必要欄位：`f_edge`、`cover`\n"
+            "- `cover`：主隊是否過盤（1=過盤, 0=沒過）\n"
+            "- `f_edge`：你當時算的（base_diff + 主隊盤口）\n\n"
+            "**Top picks 規則不變**：候選池只用 Pinnacle 真盤；排序用你手動輸入的盤口/賠率重算。"
         )
 
+# 側邊欄：校準/回測
+with st.sidebar:
+    st.header("🧪 校準 / 回測")
+    st.caption("上傳你的歷史樣本 CSV，自動 fit sigma + Platt scaling（可選）")
+    calib_file = st.file_uploader("上傳回測 CSV（含 f_edge, cover）", type=["csv"])
+
+    use_sigma_fit = st.toggle("啟用 sigma 擬合", value=True)
+    use_platt_fit = st.toggle("啟用 Platt scaling（需要較大樣本）", value=True)
+
+    st.divider()
+    st.subheader("⚙️ 校準參數（預設/上限）")
+    sigma_min = st.number_input("sigma 搜尋下限", 5.0, 30.0, 7.0, 0.5)
+    sigma_max = st.number_input("sigma 搜尋上限", 5.0, 40.0, 20.0, 0.5)
+    sigma_step = st.number_input("sigma 步長", 0.05, 2.0, 0.25, 0.05)
+
+    st.caption("提醒：若樣本 < 50，不做 sigma fit；樣本 < 200，不做 Platt fit（避免過度擬合）。")
+
+# 讀取校準資料 & 擬合
+fit_sigma = {"ok": False, "sigma": SIGMA_BASE, "n": 0, "best_nll": None}
+fit_pl = {"ok": False, "a": 0.0, "b": 1.0, "n": 0, "nll": None}
+
+calib_df = pd.DataFrame()
+if calib_file is not None:
+    try:
+        calib_df = pd.read_csv(calib_file)
+    except Exception:
+        calib_df = pd.DataFrame()
+
+if (not calib_df.empty) and use_sigma_fit:
+    fit_sigma = fit_sigma_by_grid(
+        calib_df, fcol="f_edge", ycol="cover",
+        sigma_min=float(sigma_min), sigma_max=float(sigma_max), sigma_step=float(sigma_step)
+    )
+
+sigma_fit_value = fit_sigma["sigma"] if fit_sigma["ok"] else SIGMA_BASE
+
+if (not calib_df.empty) and use_platt_fit:
+    fit_pl = fit_platt(calib_df, sigma=sigma_fit_value, fcol="f_edge", ycol="cover")
+
+# 顯示校準結果
+with st.sidebar:
+    st.subheader("📌 校準結果")
+    if calib_file is None:
+        st.info("尚未上傳回測資料：使用預設 sigma 與不套用 Platt（a=0,b=1）。")
+    else:
+        if fit_sigma["ok"]:
+            st.success(f"sigma 擬合成功：{fit_sigma['sigma']:.2f}（n={fit_sigma['n']}，NLL={fit_sigma['best_nll']:.4f}）")
+        else:
+            st.warning(f"sigma 未擬合（n={fit_sigma['n']}）：改用預設 {SIGMA_BASE:.1f}")
+
+        if fit_pl["ok"]:
+            st.success(f"Platt 擬合成功：a={fit_pl['a']:.3f}, b={fit_pl['b']:.3f}（n={fit_pl['n']}，NLL={fit_pl['nll']:.4f}）")
+        else:
+            st.warning(f"Platt 未擬合（n={fit_pl['n']}）：不套用（a=0,b=1）")
+
+# =========================================================
+# 10) 抓今日資料
+# =========================================================
 with st.spinner("⚡ 正在同步美東數據中心..."):
     target_date_us, sb = get_target_scoreboard()
     ps_db = get_player_stats(season="2025-26")
@@ -461,13 +620,12 @@ today_team_ids = sorted(set(sb_filtered["HOME_TEAM_ID"].tolist() + sb_filtered["
 ctx_db = get_team_context(today_team_ids, game_date_us=target_date_us, season="2025-26")
 
 if inj_db.empty:
-    st.warning("⚠️ 傷病名單目前抓不到（ESPN 可能改版或暫時阻擋），推薦將不會排除傷兵。")
+    st.warning("⚠️ ESPN 傷病名單抓不到：系統將自動更保守（sigma↑）。")
 
-# Pinnacle odds
 pinnacle_map = get_pinnacle_odds_for_date(target_date_us)
 
 # =========================================================
-# 9) 主計算：建立每場 pkg + base_diff（保留你的核心公式）
+# 11) 主計算：每場 base_diff（保留你的核心公式）
 # =========================================================
 all_games_data = []
 
@@ -479,7 +637,7 @@ for _, row in sb_filtered.iterrows():
         ctx = ctx_db.get(tid, {"b2b": False, "recent_w": 0.5})
 
         t_inj = inj_db[inj_db["球隊"] == abbr] if not inj_db.empty else pd.DataFrame()
-        out_list = t_inj[t_inj["IS_OUT"]]["NORM"].tolist() if not t_inj.empty else []
+        out_list = t_inj[t_inj.get("IS_OUT", False)]["NORM"].tolist() if not t_inj.empty else []
 
         if not ps_db.empty and "TEAM_ID" in ps_db.columns and "NORM" in ps_db.columns:
             active = (
@@ -490,6 +648,9 @@ for _, row in sb_filtered.iterrows():
         else:
             active = pd.DataFrame()
 
+        n_out = int(t_inj["IS_OUT"].sum()) if (not t_inj.empty and "IS_OUT" in t_inj.columns) else 0
+        n_q   = int(t_inj["IS_Q"].sum()) if (not t_inj.empty and "IS_Q" in t_inj.columns) else 0
+
         return {
             "pts": float(active["PTS"].sum()) if not active.empty and "PTS" in active.columns else 0.0,
             "impact": float(active["IMPACT"].mean()) if not active.empty and "IMPACT" in active.columns else 0.0,
@@ -497,6 +658,8 @@ for _, row in sb_filtered.iterrows():
             "inj": t_inj,
             "b2b": bool(ctx["b2b"]),
             "recent_w": float(ctx["recent_w"]),
+            "n_out": n_out,
+            "n_q": n_q,
         }
 
     h_p, a_p = build_pkg(h_id, h_abbr), build_pkg(a_id, a_abbr)
@@ -510,7 +673,6 @@ for _, row in sb_filtered.iterrows():
     a_cn = TEAM_NAME_CH.get(a_abbr, a_abbr)
     h_cn = TEAM_NAME_CH.get(h_abbr, h_abbr)
 
-    # Pinnacle default for this matchup
     pin = pinnacle_map.get((a_abbr, h_abbr), None)
     pin_ok = bool(pin and pin.get("ok"))
     pin_home_sp = float(pin["home_spread"]) if pin_ok else 0.0
@@ -536,7 +698,7 @@ for _, row in sb_filtered.iterrows():
     )
 
 # =========================================================
-# 10) 挑場規則（你指定的）：候選池=真盤；排序=你手動輸入的運彩
+# 12) 挑場規則：候選池=真盤；排序=你手動輸入
 # =========================================================
 EDGE_THRESHOLD = 0.05
 MAX_PICKS = 3
@@ -550,7 +712,6 @@ def safe_float(x, default):
 
 def get_market_inputs_for_game(g):
     gid = g["game_id"]
-    # 若使用者沒輸入過，預設帶 Pinnacle（抓不到才 fallback）
     sp_default = g["pin_home_sp"]
     oh_default = g["pin_home_od"]
     oa_default = g["pin_away_od"]
@@ -559,7 +720,6 @@ def get_market_inputs_for_game(g):
     oh = safe_float(st.session_state.get(f"oh_{gid}", oh_default), oh_default)
     oa = safe_float(st.session_state.get(f"oa_{gid}", oa_default), oa_default)
 
-    # 判斷是否手動改過（跟 Pinnacle default 不同即視為手動）
     manual = (abs(sp - sp_default) > 1e-9) or (abs(oh - oh_default) > 1e-9) or (abs(oa - oa_default) > 1e-9)
 
     if manual:
@@ -571,13 +731,41 @@ def get_market_inputs_for_game(g):
 
     return float(sp), float(oh), float(oa), src, manual
 
+def compute_sigma_for_game(g) -> float:
+    """
+    比賽層級 sigma：用「回測擬合 sigma」當 base，
+    再依資訊不確定性（inj empty / Q / OUT）加成。
+    """
+    base_sigma = sigma_fit_value if (fit_sigma["ok"] and use_sigma_fit) else SIGMA_BASE
+
+    if inj_db.empty:
+        sigma = max(SIGMA_NO_INJ, base_sigma)
+        return float(min(SIGMA_CAP, sigma))
+
+    h = g["h_pkg"]
+    a = g["a_pkg"]
+    n_out = int(h.get("n_out", 0) + a.get("n_out", 0))
+    n_q   = int(h.get("n_q", 0) + a.get("n_q", 0))
+
+    sigma = float(base_sigma) + (n_q * SIGMA_PER_Q) + (n_out * SIGMA_PER_OUT)
+    sigma = min(SIGMA_CAP, sigma)
+    return float(sigma)
+
 def compute_metrics(g, home_spread_input, home_odds, away_odds):
-    # f_edge：你的模型點差（home vs away） + 主隊盤口（主讓負、主受讓正）
+    # f_edge：模型點差（home vs away） + 主隊盤口（主讓負、主受讓正）
     f_edge = g["base_diff"] + home_spread_input
 
-    cover_prob = calc_cover_prob(f_edge)
+    sigma = compute_sigma_for_game(g)
+    p_raw = calc_cover_prob_raw(f_edge, sigma)
 
-    # 推薦邊：f_edge > 0 推主隊，否則客隊
+    # Platt scaling（若成功擬合且啟用）
+    if fit_pl["ok"] and use_platt_fit:
+        cover_prob = apply_platt(p_raw, fit_pl["a"], fit_pl["b"])
+        cal_tag = "Platt"
+    else:
+        cover_prob = p_raw
+        cal_tag = "RawCDF"
+
     pick_team = g["h_cn"] if f_edge > 0 else g["a_cn"]
     odds = home_odds if f_edge > 0 else away_odds
 
@@ -588,7 +776,10 @@ def compute_metrics(g, home_spread_input, home_odds, away_odds):
     return {
         "f_edge": float(f_edge),
         "edge_points": float(abs(f_edge)),
+        "sigma": float(sigma),
+        "cal_tag": cal_tag,
         "cover_prob": float(cover_prob),
+        "p_raw": float(p_raw),
         "implied_prob": float(implied_prob),
         "edge_value": float(edge_value),
         "ev": float(ev),
@@ -597,17 +788,14 @@ def compute_metrics(g, home_spread_input, home_odds, away_odds):
     }
 
 # =========================================================
-# 11) 🔥 今日最能買（至多三場）— 依挑場規則（候選池=真盤；排序=手動值）
+# 13) 🔥 今日推薦
 # =========================================================
-# 只取前 10 場
 pool_games = all_games_data[:MAX_GAMES_FOR_PICK]
 
 pick_pool = []
 for g in pool_games:
-    # 候選池：必須 Pinnacle 真盤 OK
     if not g["pin_ok"]:
         continue
-
     u_sp, u_oh, u_oa, src, manual = get_market_inputs_for_game(g)
     m = compute_metrics(g, u_sp, u_oh, u_oa)
     pick_pool.append({
@@ -644,7 +832,7 @@ else:
                 st.caption(f"盤口來源：{item['src']}（候選池=真盤；排序=你輸入的盤口/賠率）")
 
                 st.write(
-                    f"過盤機率：**{item['cover_prob']*100:.1f}%** | "
+                    f"過盤機率（{item['cal_tag']}）：**{item['cover_prob']*100:.1f}%** | "
                     f"損益兩平：**{item['implied_prob']*100:.1f}%**"
                 )
                 st.metric("盤口優勢", f"{item['edge_value']*100:+.1f}%")
@@ -652,12 +840,17 @@ else:
                     f"主隊盤口：**{item['home_spread_input']:+.1f}** | "
                     f"主賠：**{item['home_odds']:.2f}** | 客賠：**{item['away_odds']:.2f}**"
                 )
-                st.write(f"點數優勢：**{item['edge_points']:.1f}** | 期望報酬：**{item['ev']*100:+.1f}%**")
+                st.write(
+                    f"點數優勢：**{item['edge_points']:.1f}** | "
+                    f"sigma：**{item['sigma']:.2f}** | "
+                    f"raw：**{item['p_raw']*100:.1f}%** | "
+                    f"期望報酬：**{item['ev']*100:+.1f}%**"
+                )
 
 st.divider()
 
 # =========================================================
-# 12) 🎯 全部場次與實時計算（保留原 UI；主隊盤口輸入規則；預設帶 Pinnacle）
+# 14) 🎯 全部場次與實時計算
 # =========================================================
 st.header("🎯 全部場次與實時計算")
 
@@ -669,7 +862,6 @@ for i in range(0, len(all_games_data), 3):
                 st.subheader(g["label"])
                 gid = g["game_id"]
 
-                # 預設值：Pinnacle → 否則 fallback
                 sp_default = g["pin_home_sp"]
                 oh_default = g["pin_home_od"]
                 oa_default = g["pin_away_od"]
@@ -699,7 +891,6 @@ for i in range(0, len(all_games_data), 3):
                     key=f"oa_{gid}",
                 )
 
-                # 來源顯示
                 manual = (abs(float(u_sp) - sp_default) > 1e-9) or (abs(float(u_oh) - oh_default) > 1e-9) or (abs(float(u_oa) - oa_default) > 1e-9)
                 if manual:
                     src = "手動（運彩）✍️"
@@ -710,18 +901,21 @@ for i in range(0, len(all_games_data), 3):
 
                 m = compute_metrics(g, float(u_sp), float(u_oh), float(u_oa))
 
-                st.caption(f"盤口來源：{src}（Top picks 候選池只用 Pinnacle ✅）")
-                st.write(f"過盤機率：**{m['cover_prob']*100:.1f}%** | 點數優勢：**{m['edge_points']:.1f}**")
+                st.caption(f"盤口來源：{src}｜機率模式：{m['cal_tag']}（raw={m['p_raw']*100:.1f}%）")
+                st.write(
+                    f"過盤機率：**{m['cover_prob']*100:.1f}%** | "
+                    f"點數優勢：**{m['edge_points']:.1f}** | "
+                    f"sigma：**{m['sigma']:.2f}**"
+                )
                 st.write(f"盤口優勢：**{m['edge_value']*100:+.1f}%** | 期望報酬：**{m['ev']*100:+.1f}%**")
 
                 if g["pin_ok"] and m["edge_value"] > EDGE_THRESHOLD:
                     st.success(f"🔥 符合挑場門檻（真盤候選 + 盤口優勢 > 5%）：{m['pick_team']}")
                 else:
-                    # 沒真盤或沒過門檻
                     st.info(f"建議：{m['pick_team']}")
 
 # =========================================================
-# 13) 🔍 深度查詢（保留原 UI）
+# 15) 🔍 深度查詢
 # =========================================================
 st.divider()
 st.header("🔍 深度數據查詢")
@@ -735,6 +929,15 @@ if sel:
         f"{'🚨 客隊背靠背' if curr['a_pkg']['b2b'] else '✅ 客隊體能正常'} | "
         f"{'🚨 主隊背靠背' if curr['h_pkg']['b2b'] else '✅ 主隊體能正常'}"
     )
+
+    # 顯示該場的 sigma/校準狀態
+    sigma_dbg = compute_sigma_for_game(curr)
+    p_dbg = calc_cover_prob_raw(curr["base_diff"] + curr["pin_home_sp"], sigma_dbg)
+    if fit_pl["ok"] and use_platt_fit:
+        p_dbg2 = apply_platt(p_dbg, fit_pl["a"], fit_pl["b"])
+        st.caption(f"（Debug）sigma={sigma_dbg:.2f}｜raw={p_dbg*100:.1f}%｜platt={p_dbg2*100:.1f}%")
+    else:
+        st.caption(f"（Debug）sigma={sigma_dbg:.2f}｜raw={p_dbg*100:.1f}%（未套用 Platt）")
 
     c1, c2 = st.columns(2)
     for col, pkg, side in zip([c1, c2], [curr["h_pkg"], curr["a_pkg"]], ["(主)", "(客)"]):
@@ -750,8 +953,29 @@ if sel:
                 st.write("（球員資料不足或 API 暫時不可用）")
 
             if pkg["inj"] is not None and not pkg["inj"].empty:
-                st.dataframe(pkg["inj"][["球員", "狀態", "原因"]], hide_index=True)
+                show_inj_cols = [c for c in ["球員", "狀態", "原因"] if c in pkg["inj"].columns]
+                st.dataframe(pkg["inj"][show_inj_cols], hide_index=True)
+                st.caption(f"不確定性：OUT={pkg.get('n_out',0)} / Q={pkg.get('n_q',0)}（Q 會讓 sigma ↑ 更保守）")
             else:
                 st.write("✅ 無傷病報告")
 
-st.caption(f"（機率曲線參數：prob_scale={PROB_SCALE:.1f}；硬性截斷：{int(PROB_FLOOR*100)}%~{int(PROB_CEIL*100)}%）")
+st.caption(
+    f"（基礎參數：SIGMA_BASE={SIGMA_BASE:.1f}；inj缺失→sigma≥{SIGMA_NO_INJ:.1f}；"
+    f"Q 每人 +{SIGMA_PER_Q:.1f}；OUT 每人 +{SIGMA_PER_OUT:.1f}；"
+    f"sigma cap={SIGMA_CAP:.1f}；硬性截斷 {int(PROB_FLOOR*100)}%~{int(PROB_CEIL*100)}%）"
+)
+
+# =========================================================
+# 16) （可選）回測資料模板下載提示（不生成檔案，直接示範欄位）
+# =========================================================
+with st.expander("📄 回測 CSV 欄位模板（你可以照這個格式累積資料）"):
+    st.markdown(
+        "- `date`：比賽日期（可選）\n"
+        "- `matchup`：對戰（可選）\n"
+        "- `f_edge`：你當天算出來的 `base_diff + 主隊盤口`\n"
+        "- `cover`：主隊是否過盤（1=過盤, 0=沒過）\n"
+        "\n"
+        "最少只需要 `f_edge, cover` 兩欄就能校準。\n"
+        "\n"
+        "建議做法：每次你下注/觀察時，把該場的 f_edge 記下來，等賽果出來填 cover，累積到 200+ 場再開 Platt。"
+    )
