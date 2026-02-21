@@ -1,11 +1,10 @@
 import os
-import json
+import re
 import math
 import time
-import re
 import unicodedata
 import warnings
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 
 import pandas as pd
 import pytz
@@ -23,26 +22,13 @@ from nba_api.stats.static import teams
 
 
 # =========================================================
-# 0) 核心：安全設定
+# 1) 核心配置（保留原 UI；強化邏輯與穩定性）
 # =========================================================
 warnings.filterwarnings("ignore")
+
 tw_tz = pytz.timezone("Asia/Taipei")
 us_east_tz = pytz.timezone("US/Eastern")
 
-# Odds API Key：優先 st.secrets，其次環境變數
-ODDS_API_KEY = None
-if hasattr(st, "secrets") and "ODDS_API_KEY" in st.secrets:
-    ODDS_API_KEY = st.secrets["ODDS_API_KEY"]
-else:
-    ODDS_API_KEY = os.getenv("ODDS_API_KEY", "")
-
-if not ODDS_API_KEY:
-    st.warning("⚠️ 尚未設定 The Odds API Key。請在 .streamlit/secrets.toml 設定 ODDS_API_KEY。")
-
-
-# =========================================================
-# 1) 隊名與 ID 映射（維持原架構）
-# =========================================================
 TEAM_MAP = {
     "ATL": ["Atlanta Hawks", "老鷹"], "BKN": ["Brooklyn Nets", "籃網"], "BOS": ["Boston Celtics", "塞爾提克"],
     "CHA": ["Charlotte Hornets", "黃蜂"], "CHI": ["Chicago Bulls", "公牛"], "CLE": ["Cleveland Cavaliers", "騎士"],
@@ -55,6 +41,7 @@ TEAM_MAP = {
     "POR": ["Portland Trail Blazers", "拓荒者"], "SAC": ["Sacramento Kings", "國王"], "SAS": ["San Antonio Spurs", "馬刺"],
     "TOR": ["Toronto Raptors", "暴龍"], "UTA": ["Utah Jazz", "爵士"], "WAS": ["Washington Wizards", "巫師"],
 }
+
 TEAM_NAME_CH = {k: v[1] for k, v in TEAM_MAP.items()}
 TEAM_NAME_EN = {k: v[0] for k, v in TEAM_MAP.items()}
 
@@ -62,12 +49,17 @@ ALL_TEAMS = teams.get_teams()
 VALID_TEAM_IDS = [t["id"] for t in ALL_TEAMS]
 ID_MAP = {t["id"]: t["abbreviation"] for t in ALL_TEAMS}
 
-# Odds API team names 通常是英文全名；我們用 TEAM_NAME_EN 去對齊
-EN_TO_ABBR = {v[0]: k for k, v in TEAM_MAP.items()}
+
+# Odds API Key（優先 secrets，其次環境變數）
+ODDS_API_KEY = ""
+if hasattr(st, "secrets") and "ODDS_API_KEY" in st.secrets:
+    ODDS_API_KEY = str(st.secrets["ODDS_API_KEY"]).strip()
+else:
+    ODDS_API_KEY = str(os.getenv("ODDS_API_KEY", "")).strip()
 
 
 # =========================================================
-# 2) 基礎工具：正規化姓名、API 安全抓取
+# 2) 工具：名字正規化 + endpoint 安全抓取（含簡單重試）
 # =========================================================
 def norm_name(s: str) -> str:
     if not isinstance(s, str):
@@ -94,13 +86,25 @@ def fetch_safe_df(endpoint, retries: int = 2, sleep_s: float = 0.6, **kwargs) ->
                 return pd.DataFrame()
 
 
-def norm_cdf(x: float) -> float:
-    return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
+def make_game_id(away_abbr: str, home_abbr: str, date_us: str) -> str:
+    # date_us: "MM/DD/YYYY" -> "MMDDYYYY"
+    d = date_us.replace("/", "")
+    return f"{away_abbr}_{home_abbr}_{d}"
+
+
+def _safe_float(v, default=0.0) -> float:
+    try:
+        if v is None:
+            return default
+        if isinstance(v, float) and math.isnan(v):
+            return default
+        return float(v)
+    except Exception:
+        return default
 
 
 # =========================================================
-# 3) Odds API：抓「當前」spreads/odds（用於今天分析）
-#    - 建議用 pinnacle（sharp book）做基準
+# 3) Odds API：抓「當前」spreads/odds（Pinnacle）
 # =========================================================
 @st.cache_data(ttl=300)
 def get_odds_current(bookmaker_key: str = "pinnacle") -> dict:
@@ -108,11 +112,9 @@ def get_odds_current(bookmaker_key: str = "pinnacle") -> dict:
     回傳 dict:
       key: (home_team_en, away_team_en)
       val: {
-        "home_point": float (主隊讓分：主隊讓分是負，主隊受讓是正),
-        "home_price": float (主隊賠率 decimal),
-        "away_point": float,
-        "away_price": float,
-        "commence_time": iso str
+        "home_point": float, "home_price": float,
+        "away_point": float, "away_price": float,
+        "commence_time": str
       }
     """
     if not ODDS_API_KEY:
@@ -126,6 +128,7 @@ def get_odds_current(bookmaker_key: str = "pinnacle") -> dict:
         "oddsFormat": "decimal",
         "bookmakers": bookmaker_key,
     }
+
     try:
         r = requests.get(url, params=params, timeout=12)
         if r.status_code != 200:
@@ -143,14 +146,13 @@ def get_odds_current(bookmaker_key: str = "pinnacle") -> dict:
         bms = g.get("bookmakers", [])
         if not bms:
             continue
-        # 我們已經指定 bookmaker 了，通常只會回 1 家
+
         markets = bms[0].get("markets", [])
         m = next((x for x in markets if x.get("key") == "spreads"), None)
         if not m:
             continue
 
         outcomes = m.get("outcomes", [])
-        # outcomes 內會有兩筆：home / away
         home_out = next((o for o in outcomes if o.get("name") == home), None)
         away_out = next((o for o in outcomes if o.get("name") == away), None)
         if not home_out or not away_out:
@@ -164,11 +166,12 @@ def get_odds_current(bookmaker_key: str = "pinnacle") -> dict:
             "commence_time": commence_time,
             "bookmaker": bookmaker_key,
         }
+
     return out
 
 
 # =========================================================
-# 4) NBA 賽程（保持原本邏輯：今日沒賽程 → 明日）
+# 4) 賽程抓取（先決定目標日期，再拉賽程）
 # =========================================================
 def get_target_scoreboard() -> tuple[str, pd.DataFrame]:
     now_us = datetime.now(us_east_tz)
@@ -188,7 +191,7 @@ def get_target_scoreboard() -> tuple[str, pd.DataFrame]:
 
 
 # =========================================================
-# 5) 球員資料（box score proxy）
+# 5) 球員資料（全聯盟）— cache
 # =========================================================
 @st.cache_data(ttl=3600)
 def get_player_stats(season: str = "2025-26") -> pd.DataFrame:
@@ -218,7 +221,7 @@ def get_player_stats(season: str = "2025-26") -> pd.DataFrame:
 
 
 # =========================================================
-# 6) 團隊效率資料（完整版分系來源）
+# 6) 團隊效率資料（Per100）— cache
 # =========================================================
 @st.cache_data(ttl=3600)
 def get_team_stats(season: str = "2025-26") -> pd.DataFrame:
@@ -239,7 +242,8 @@ def get_team_stats(season: str = "2025-26") -> pd.DataFrame:
 
 
 # =========================================================
-# 7) ESPN 傷病（保守：不亂給 ✅）
+# 7) 傷病報告（ESPN）— cache
+#    - 保守：不要亂給 ✅
 # =========================================================
 @st.cache_data(ttl=900)
 def get_injuries() -> pd.DataFrame:
@@ -251,24 +255,24 @@ def get_injuries() -> pd.DataFrame:
         resp.raise_for_status()
 
         soup = BeautifulSoup(resp.text, "html.parser")
-        tables = soup.select(".ResponsiveTable") or soup.select("section")
+        tables = soup.select(".ResponsiveTable")
 
         for table in tables:
-            title_el = table.select_one(".Table__Title") or table.find(["h2", "h3"])
+            title_el = table.select_one(".Table__Title")
             if not title_el:
                 continue
-            t_name = title_el.get_text(strip=True).lower()
+            t_name_norm = title_el.get_text(strip=True).lower()
 
-            # 用英文全名對齊隊伍
+            # 找隊伍縮寫（用英文全名）
             t_abbr = None
             for abbr, info in TEAM_MAP.items():
-                if info[0].lower() in t_name:
+                if info[0].lower() in t_name_norm:
                     t_abbr = abbr
                     break
             if not t_abbr:
                 continue
 
-            rows = table.select("tbody tr") if table.select("tbody tr") else table.select("tr")
+            rows = table.select("tbody tr")
             for r in rows:
                 cols = r.select("td")
                 if len(cols) < 2:
@@ -276,6 +280,7 @@ def get_injuries() -> pd.DataFrame:
 
                 raw_player = cols[0].get_text(" ", strip=True)
                 raw_player = re.sub(r"\s+(PG|SG|SF|PF|C|G|F)\s*$", "", raw_player, flags=re.I).strip()
+
                 row_text = " | ".join([c.get_text(" ", strip=True) for c in cols]).lower()
                 raw_reason = cols[-1].get_text(" ", strip=True) if len(cols) >= 3 else "無"
 
@@ -315,7 +320,7 @@ def get_injuries() -> pd.DataFrame:
 
 
 # =========================================================
-# 8) 隊伍 Context：疲勞＋近期淨勝分＋波動
+# 8) 隊伍 Context（只針對「今日有賽程」隊伍）— cache
 # =========================================================
 @st.cache_data(ttl=3600)
 def get_team_context(team_ids: list[int], game_date_us: str, season: str = "2025-26") -> dict:
@@ -373,14 +378,11 @@ def get_team_context(team_ids: list[int], game_date_us: str, season: str = "2025
 
 # =========================================================
 # 9) 可學習模型（線上 logistic regression, 純 Python）
-#    - 不依賴 sklearn（避免環境沒裝）
-#    - 你每天跑，系統會把已結束場次寫進本地資料檔，越跑越準
 # =========================================================
 DATA_PATH = "edge_training_data.csv"
 
 MODEL_DEFAULT = {
     "bias": 0.0,
-    # features weights
     "w_net": 0.18,
     "w_ordr": 0.05,
     "w_misc": 0.02,
@@ -390,16 +392,17 @@ MODEL_DEFAULT = {
     "w_uncert": -0.12,
     "w_spread_depth": -0.06,
 }
+
 LR = 0.08
 L2 = 0.001
 
 def sigmoid(x: float) -> float:
-    # 防爆
     if x > 10:
         return 0.99995
     if x < -10:
         return 0.00005
     return 1.0 / (1.0 + math.exp(-x))
+
 
 def load_model() -> dict:
     if "model_params" in st.session_state:
@@ -407,8 +410,10 @@ def load_model() -> dict:
     st.session_state["model_params"] = dict(MODEL_DEFAULT)
     return dict(MODEL_DEFAULT)
 
+
 def save_model(m: dict):
     st.session_state["model_params"] = dict(m)
+
 
 def load_training_df() -> pd.DataFrame:
     if os.path.exists(DATA_PATH):
@@ -418,35 +423,30 @@ def load_training_df() -> pd.DataFrame:
             return pd.DataFrame()
     return pd.DataFrame()
 
+
 def append_training_rows(rows: list[dict]):
     if not rows:
         return
-    df_old = load_training_df()
-    df_new = pd.DataFrame(rows)
-    df = pd.concat([df_old, df_new], ignore_index=True)
-    # 去重：同一場只留一筆（以 game_key）
-    if "game_key" in df.columns:
-        df = df.drop_duplicates(subset=["game_key"], keep="last")
+    old = load_training_df()
+    new = pd.DataFrame(rows)
+    df = pd.concat([old, new], ignore_index=True)
+    if "game_id" in df.columns:
+        df = df.drop_duplicates(subset=["game_id"], keep="last")
     df.to_csv(DATA_PATH, index=False)
 
-def train_one_epoch(df: pd.DataFrame, m: dict, epochs: int = 3):
+
+def train_one_epoch(df: pd.DataFrame, m: dict, epochs: int = 3) -> dict:
     if df is None or df.empty:
         return m
 
     feats = ["net", "ordr", "misc", "recent", "home", "fatigue", "uncert", "spread_depth"]
+
     for _ in range(epochs):
-        for _, r in df.sample(frac=1.0, random_state=int(time.time()) % 10).iterrows():
-            y = float(r.get("y", 0.0))
-            x = {
-                "net": float(r.get("net", 0.0)),
-                "ordr": float(r.get("ordr", 0.0)),
-                "misc": float(r.get("misc", 0.0)),
-                "recent": float(r.get("recent", 0.0)),
-                "home": float(r.get("home", 0.0)),
-                "fatigue": float(r.get("fatigue", 0.0)),
-                "uncert": float(r.get("uncert", 0.0)),
-                "spread_depth": float(r.get("spread_depth", 0.0)),
-            }
+        df_shuf = df.sample(frac=1.0, random_state=int(time.time()) % 100000)
+        for _, r in df_shuf.iterrows():
+            y = _safe_float(r.get("y", 0.0), 0.0)
+            x = {k: _safe_float(r.get(k, 0.0), 0.0) for k in feats}
+
             z = m["bias"]
             z += m["w_net"] * x["net"]
             z += m["w_ordr"] * x["ordr"]
@@ -458,8 +458,8 @@ def train_one_epoch(df: pd.DataFrame, m: dict, epochs: int = 3):
             z += m["w_spread_depth"] * x["spread_depth"]
 
             p = sigmoid(z)
-            # gradient
             err = (p - y)
+
             m["bias"] -= LR * (err + L2 * m["bias"])
             for k in feats:
                 wk = f"w_{k}"
@@ -474,9 +474,6 @@ def train_one_epoch(df: pd.DataFrame, m: dict, epochs: int = 3):
 TOP_IMPACT_N_FOR_RISK = 6
 
 def team_uncertainty_score(active_df: pd.DataFrame, inj_df: pd.DataFrame) -> float:
-    """
-    回傳一個 0~? 的風險分數，讓模型自行學怎麼扣
-    """
     if active_df is None or active_df.empty or inj_df is None or inj_df.empty:
         return 0.0
     if "NORM" not in active_df.columns or "NORM" not in inj_df.columns:
@@ -487,20 +484,20 @@ def team_uncertainty_score(active_df: pd.DataFrame, inj_df: pd.DataFrame) -> flo
     hit = inj_df[inj_df["NORM"].isin(top_norms)]
     if hit.empty:
         return 0.0
+
     q_cnt = int(hit["IS_Q"].sum()) if "IS_Q" in hit.columns else 0
     unk_cnt = int(hit["IS_UNKNOWN"].sum()) if "IS_UNKNOWN" in hit.columns else 0
     out_cnt = int(hit["IS_OUT"].sum()) if "IS_OUT" in hit.columns else 0
-    # OUT 理論上已被排除，但若 ESPN 有落差，這裡也納入
+
     return 1.0 * out_cnt + 0.7 * q_cnt + 0.4 * unk_cnt
 
 
 def spread_depth(sp: float) -> float:
-    d = max(0.0, abs(sp) - 7.0)
-    return d
+    return max(0.0, abs(sp) - 7.0)
 
 
 # =========================================================
-# 11) UI 初始化（維持你的框架）
+# 11) UI 初始化（保留原本配置 + 強制更新按鈕）
 # =========================================================
 st.set_page_config(page_title="NBA Edge v16.0", layout="wide")
 
@@ -517,11 +514,10 @@ with h2:
         st.markdown(
             "**主隊盤口**：主讓分填負｜主受讓填正。\n\n"
             "**盤口優勢**：模型過盤機率 - 損益兩平機率。\n\n"
-            "**可學習版**：會把已結束比賽寫入資料庫（edge_training_data.csv），每天跑越準。\n\n"
-            "⚠️ 若你的 Odds API 沒有 historical 權限，系統仍可用「日常累積」逐步學習。"
+            "**可學習版**：會把已結束比賽寫入 edge_training_data.csv，越跑越準。\n\n"
+            "⚠️ 若 ESPN 資訊不足，系統會顯示「待確認」避免誤判。"
         )
 
-# 讀模型 & 讀訓練資料
 model = load_model()
 train_df = load_training_df()
 
@@ -532,6 +528,9 @@ with st.spinner("⚡ 正在同步美東數據中心..."):
     inj_db = get_injuries()
     odds_now = get_odds_current(bookmaker_key="pinnacle")
 
+if not ODDS_API_KEY:
+    st.warning("⚠️ 尚未設定 ODDS_API_KEY，將無法自動帶入 Pinnacle 盤口。")
+
 if sb.empty or "HOME_TEAM_ID" not in sb.columns:
     st.info("📅 目前抓不到賽程資料（Scoreboard API 回傳空）。請稍後重試。")
     st.stop()
@@ -541,8 +540,8 @@ if sb_filtered.empty:
     st.info(f"📅 {target_date_us}（美東）無有效 NBA 賽程。")
     st.stop()
 
-now_us_str = datetime.now(us_east_tz).strftime("%m/%d/%Y")
-if target_date_us != now_us_str:
+now_us = datetime.now(us_east_tz).strftime("%m/%d/%Y")
+if target_date_us != now_us:
     st.info(f"📅 今日美東無賽程，已為您自動跳轉至明日：{target_date_us}")
 else:
     st.success(f"📅 正在分析美東今日賽程：{target_date_us}")
@@ -551,13 +550,11 @@ today_team_ids = sorted(set(sb_filtered["HOME_TEAM_ID"].tolist() + sb_filtered["
 ctx_db = get_team_context(today_team_ids, game_date_us=target_date_us, season="2025-26")
 
 if inj_db.empty:
-    st.warning("⚠️ ESPN 傷病名單目前抓不到（可能改版/阻擋），名單風險會偏保守。")
-if not odds_now:
-    st.warning("⚠️ 目前抓不到 Pinnacle spreads/odds（可能 key 權限/額度/暫時錯誤）。精選挑場將受影響。")
+    st.warning("⚠️ ESPN 傷病名單抓不到（可能改版/阻擋），名單風險會偏保守。")
 
 
 # =========================================================
-# 12) 特徵工程：把每場轉成 features（主隊視角）
+# 12) 特徵工程：每場轉成 features（主隊視角）
 # =========================================================
 def get_team_row(team_id: int) -> pd.Series:
     if ts_db is None or ts_db.empty or "TEAM_ID" not in ts_db.columns:
@@ -566,6 +563,7 @@ def get_team_row(team_id: int) -> pd.Series:
     if r.empty:
         return pd.Series(dtype=float)
     return r.iloc[0]
+
 
 def build_pkg(tid: int, abbr: str):
     ctx = ctx_db.get(tid, {"b2b": False, "recent_w": 0.5, "margin10": 0.0, "margin10_sd": 12.0, "in_3in4": 0, "in_4in6": 0})
@@ -594,11 +592,12 @@ def build_pkg(tid: int, abbr: str):
         "in_4in6": int(ctx["in_4in6"]),
     }
 
+
 def calc_features(home_id: int, away_id: int, home_abbr: str, away_abbr: str, home_spread: float) -> dict:
     h = get_team_row(home_id)
     a = get_team_row(away_id)
 
-    # season efficiency diffs (主-客)
+    # Season efficiency diffs (主-客)
     net = float(h.get("NET_RATING", 0.0)) - float(a.get("NET_RATING", 0.0))
     ordr = (float(h.get("ORTG", 0.0)) - float(h.get("DRTG", 0.0))) - (float(a.get("ORTG", 0.0)) - float(a.get("DRTG", 0.0)))
 
@@ -625,7 +624,7 @@ def calc_features(home_id: int, away_id: int, home_abbr: str, away_abbr: str, ho
     # uncert (主 - 客)
     uncert = team_uncertainty_score(hp["df"], hp["inj"]) - team_uncertainty_score(ap["df"], ap["inj"])
 
-    # home indicator (固定 1)
+    # home indicator
     home = 1.0
 
     # spread depth
@@ -642,23 +641,22 @@ def calc_features(home_id: int, away_id: int, home_abbr: str, away_abbr: str, ho
         "spread_depth": sd,
         "h_pkg": hp,
         "a_pkg": ap,
-        "h_stats": dict(h),
-        "a_stats": dict(a),
     }
 
-def predict_cover_prob(m: dict, feats: dict) -> float:
-    z = m["bias"]
-    z += m["w_net"] * feats["net"]
-    z += m["w_ordr"] * feats["ordr"]
-    z += m["w_misc"] * feats["misc"]
-    z += m["w_recent"] * feats["recent"]
-    z += m["w_home"] * feats["home"]
-    z += m["w_fatigue"] * feats["fatigue"]
-    z += m["w_uncert"] * feats["uncert"]
-    z += m["w_spread_depth"] * feats["spread_depth"]
+
+def predict_cover_prob_home(model_params: dict, feats: dict) -> float:
+    z = model_params["bias"]
+    z += model_params["w_net"] * feats["net"]
+    z += model_params["w_ordr"] * feats["ordr"]
+    z += model_params["w_misc"] * feats["misc"]
+    z += model_params["w_recent"] * feats["recent"]
+    z += model_params["w_home"] * feats["home"]
+    z += model_params["w_fatigue"] * feats["fatigue"]
+    z += model_params["w_uncert"] * feats["uncert"]
+    z += model_params["w_spread_depth"] * feats["spread_depth"]
 
     p = sigmoid(z)
-    # 保守截斷：避免假穩
+    # ✅ 防止「假穩賺不賠」：硬性截斷
     return max(0.12, min(0.88, p))
 
 
@@ -666,6 +664,7 @@ def predict_cover_prob(m: dict, feats: dict) -> float:
 # 13) 建立 all_games_data（保留原框架）
 # =========================================================
 all_games_data = []
+
 for _, row in sb_filtered.iterrows():
     h_id = int(row["HOME_TEAM_ID"])
     a_id = int(row["VISITOR_TEAM_ID"])
@@ -677,15 +676,8 @@ for _, row in sb_filtered.iterrows():
     h_en = TEAM_NAME_EN.get(h_abbr, "")
     a_en = TEAM_NAME_EN.get(a_abbr, "")
 
-    # 先嘗試從 Odds API 拿「建議盤口/賠率」當預設值
-    odds_key = (h_en, a_en)
-    # Odds API 的 key 是 (home, away)；我們用英文全名 match
     odds_row = odds_now.get((h_en, a_en), None)
-    if odds_row is None:
-        # 有時 Odds API 是用 (home, away) 反過來（視資料源），做容錯
-        odds_row = odds_now.get((h_en, a_en), None)
 
-    # 預設：主隊盤口、主賠、客賠（可被 UI 輸入覆蓋）
     default_sp = 0.0
     default_oh = 1.90
     default_oa = 1.90
@@ -694,14 +686,14 @@ for _, row in sb_filtered.iterrows():
         default_oh = float(odds_row.get("home_price", 1.90))
         default_oa = float(odds_row.get("away_price", 1.90))
 
-    game_id = f"{a_abbr}_{h_abbr}_{target_date_us.replace('/','')}"
+    gid = make_game_id(a_abbr, h_abbr, target_date_us)
+
     all_games_data.append({
-        "game_id": game_id,
+        "game_id": gid,
         "label": f"{a_cn}(客) @ {h_cn}(主)",
         "h_id": h_id, "a_id": a_id,
         "h_abbr": h_abbr, "a_abbr": a_abbr,
         "h_cn": h_cn, "a_cn": a_cn,
-        "h_en": h_en, "a_en": a_en,
         "default_sp": default_sp,
         "default_oh": default_oh,
         "default_oa": default_oa,
@@ -709,40 +701,31 @@ for _, row in sb_filtered.iterrows():
 
 
 # =========================================================
-# 14) 精選挑場規則（你指定的版本 + 長期門檻）
+# 14) 🔥 今日最能買（至多三場）— 挑場規則
 # =========================================================
-EDGE_THRESHOLD = 0.08   # 長期：建議 8% 起跳（運彩通常更要高門檻）
+EDGE_THRESHOLD = 0.08        # 長期更保守：>8% 才出手
 MAX_PICKS = 3
 MAX_GAMES_FOR_PICK = 10
 
-
-# =========================================================
-# 15) 🔥 今日最能買（至多三場）— 維持你框架
-# =========================================================
 st.header("🔥 今日最能買（至多三場）")
 
 pick_pool = []
 for g in all_games_data[:MAX_GAMES_FOR_PICK]:
     gid = g["game_id"]
 
-    # 使用者輸入：主隊盤口（主讓負｜主受讓正）
     u_sp = float(st.session_state.get(f"sp_{gid}", g["default_sp"]))
     u_oh = float(st.session_state.get(f"oh_{gid}", g["default_oh"]))
     u_oa = float(st.session_state.get(f"oa_{gid}", g["default_oa"]))
 
-    # 建特徵（主隊視角）
     feats = calc_features(g["h_id"], g["a_id"], g["h_abbr"], g["a_abbr"], home_spread=u_sp)
-    cover_prob_home = predict_cover_prob(model, feats)
+    p_home_cover = predict_cover_prob_home(model, feats)
 
-    # 這裡的 cover_prob_home 指「主隊過盤」機率
-    # 若主隊盤口 u_sp + 預估 -> 我們直接以 cover_prob_home 做決策
-    # 選邊：若主隊過盤機率 > 0.5 → 推主；反之推客
-    pick_home = (cover_prob_home >= 0.5)
+    pick_home = (p_home_cover >= 0.5)
     pick_side = g["h_cn"] if pick_home else g["a_cn"]
     odds = u_oh if pick_home else u_oa
 
+    cover_prob = p_home_cover if pick_home else (1.0 - p_home_cover)
     implied_prob = 1.0 / odds if odds and odds > 0 else 1.0
-    cover_prob = cover_prob_home if pick_home else (1.0 - cover_prob_home)
 
     edge_value = cover_prob - implied_prob
     ev = (cover_prob * odds) - 1.0
@@ -750,14 +733,12 @@ for g in all_games_data[:MAX_GAMES_FOR_PICK]:
     pick_pool.append({
         "g": g,
         "pick_side": pick_side,
-        "pick_home": pick_home,
         "cover_prob": cover_prob,
         "implied_prob": implied_prob,
         "edge_value": edge_value,
         "ev": ev,
         "u_sp": u_sp,
         "odds": odds,
-        "feats": feats,
     })
 
 qualified = [x for x in pick_pool if x["edge_value"] > EDGE_THRESHOLD]
@@ -792,7 +773,7 @@ st.divider()
 
 
 # =========================================================
-# 16) 🎯 全部場次與實時計算（維持原 UI）
+# 15) 🎯 全部場次與實時計算（保留原 UI）
 # =========================================================
 st.header("🎯 全部場次與實時計算")
 
@@ -827,7 +808,7 @@ for i in range(0, len(all_games_data), 3):
                 )
 
                 feats = calc_features(g["h_id"], g["a_id"], g["h_abbr"], g["a_abbr"], home_spread=u_sp)
-                p_home_cover = predict_cover_prob(model, feats)
+                p_home_cover = predict_cover_prob_home(model, feats)
 
                 pick_home = (p_home_cover >= 0.5)
                 rec = g["h_cn"] if pick_home else g["a_cn"]
@@ -835,6 +816,7 @@ for i in range(0, len(all_games_data), 3):
 
                 cover_prob = p_home_cover if pick_home else (1.0 - p_home_cover)
                 implied_prob = 1.0 / odds if odds and odds > 0 else 1.0
+
                 edge_value = cover_prob - implied_prob
                 ev = (cover_prob * odds) - 1.0
 
@@ -848,7 +830,7 @@ for i in range(0, len(all_games_data), 3):
 
 
 # =========================================================
-# 17) 🔍 深度查詢（加更多分系＋顯示模型特徵）
+# 16) 🔍 深度查詢（分系拆解 + 名單）
 # =========================================================
 st.divider()
 st.header("🔍 深度數據查詢（分系拆解）")
@@ -857,30 +839,31 @@ sel = st.selectbox("請選擇場次", [g["label"] for g in all_games_data])
 if sel:
     curr = next(g for g in all_games_data if g["label"] == sel)
     gid = curr["game_id"]
-
     u_sp = float(st.session_state.get(f"sp_{gid}", curr["default_sp"]))
+
     feats = calc_features(curr["h_id"], curr["a_id"], curr["h_abbr"], curr["a_abbr"], home_spread=u_sp)
-    p_home_cover = predict_cover_prob(model, feats)
+    p_home_cover = predict_cover_prob_home(model, feats)
 
     st.write(f"📌 主隊盤口：**{u_sp:+.1f}**（主讓負｜主受讓正）")
-    st.write(f"📌 模型估計：主隊過盤機率 **{p_home_cover*100:.1f}%** ｜客隊過盤機率 **{(1-p_home_cover)*100:.1f}%**")
+    st.write(f"📌 主隊過盤機率：**{p_home_cover*100:.1f}%**｜客隊過盤機率：**{(1-p_home_cover)*100:.1f}%**")
 
-    # 分系區塊
     st.subheader("① 效率分系（Season Per100）")
     st.write(f"NET 差（主-客）：**{feats['net']:+.2f}**")
     st.write(f"OR-DR 結構差（主-客）：**{feats['ordr']:+.2f}**")
     st.write(f"eFG/TOV/REB 綜合差：**{feats['misc']:+.2f}**")
 
-    st.subheader("② 近期/疲勞/波動分系")
+    st.subheader("② 近期/疲勞/名單風險")
     st.write(f"近10淨勝分差（主-客）：**{feats['recent']:+.2f}**")
-    st.write(f"疲勞優勢（主相對客，正=主更累）：**{feats['fatigue']:+.2f}**")
+    st.write(f"疲勞（主相對客，正=主更累）：**{feats['fatigue']:+.2f}**")
     st.write(f"名單不確定性（主-客）：**{feats['uncert']:+.2f}**")
     st.write(f"盤深（|spread|-7）：**{feats['spread_depth']:.2f}**")
 
     st.subheader("③ 兩隊球員戰力（已排除 ESPN 確定缺陣）")
     c1, c2 = st.columns(2)
-    for col, pkg, title in [(c1, feats["h_pkg"], f"{curr['h_cn']} (主)"),
-                            (c2, feats["a_pkg"], f"{curr['a_cn']} (客)")]:
+    for col, pkg, title in [
+        (c1, feats["h_pkg"], f"{curr['h_cn']} (主)"),
+        (c2, feats["a_pkg"], f"{curr['a_cn']} (客)"),
+    ]:
         with col:
             st.write(f"**{title}**")
             if pkg["df"] is not None and not pkg["df"].empty:
@@ -899,37 +882,97 @@ if sel:
 
 
 # =========================================================
-# 18) 🧠 讓模型「自動學」：把已結束比賽寫入資料庫 + 訓練
-#     - 不需要 historical odds 也能做：你每天跑，系統記錄當天盤口與結果
+# 17) 🧠 自動學習：回填昨天結果 → 更新模型
 # =========================================================
 st.divider()
 st.header("🧠 模型自動學習（越跑越準）")
 
-with st.expander("點我展開：如何讓模型自動變準？（重要）", expanded=False):
+with st.expander("如何變成「長期可賺」？你每天要做什麼", expanded=False):
     st.markdown(
-        "1) 你每天開一次這個系統（賽前）。\n"
-        "2) 系統會抓 Pinnacle 當下盤口/賠率（或你手動輸入的盤口/賠率）。\n"
-        "3) 隔天你再打開一次，系統會把「昨天已結束的比賽」寫進 edge_training_data.csv。\n"
-        "4) 之後模型會用這些真實資料做線上學習，自動校準哪些分系真的有用。\n\n"
-        "✅ 這個方法不需要 The Odds API 的 historical 權限，但需要你每天開一次。"
+        "✅ 每天賽前跑一次，輸入你真正下注看到的盤口/賠率（或用 Pinnacle 預設）。\n"
+        "✅ 隔天再跑一次，按下「更新已結束比賽」：系統會把昨天結果寫進資料庫並訓練。\n\n"
+        "重點：你不是要猜單日，而是讓模型在累積樣本後，校準「哪些分系真的有 edge」。"
     )
 
-if st.button("📥 更新已結束比賽到訓練資料（建議每天按一次）"):
-    # 我們用 teamgamelog 去抓「昨天」結果，並用你當時輸入/或預設的盤口做回填
-    # 這裡的策略：把「昨日日期」的 scoreboard 取出，對應你的盤口輸入，算是否過盤（主隊視角）
+st.caption(f"目前訓練資料筆數：{len(train_df) if train_df is not None else 0}")
+
+if st.button("📥 更新已結束比賽到訓練資料並訓練（建議每天按一次）"):
     y_us = (datetime.now(us_east_tz) - timedelta(days=1)).strftime("%m/%d/%Y")
     sb_y = fetch_safe_df(scoreboardv2.ScoreboardV2, game_date=y_us)
+
     new_rows = []
+    added = 0
 
     if not sb_y.empty and "HOME_TEAM_ID" in sb_y.columns:
         sb_y = sb_y[sb_y["HOME_TEAM_ID"].isin(VALID_TEAM_IDS)].copy()
 
-        # ScoreboardV2 的比分欄位依版本不同，常見是 HOME_TEAM_SCORE / VISITOR_TEAM_SCORE
-        # 做容錯
         home_score_col = "HOME_TEAM_SCORE" if "HOME_TEAM_SCORE" in sb_y.columns else None
         away_score_col = "VISITOR_TEAM_SCORE" if "VISITOR_TEAM_SCORE" in sb_y.columns else None
 
-        for _, r in sb_y.iterrows():
-            hid, aid = int(r["HOME_TEAM_ID"]), int(r["VISITOR_TEAM_ID"])
-            habbr, aabbr = ID_MAP.get(hid, str(hid)), ID_MAP.get(aid, str(aid))
-            hcn, acn = TEAM_NAME_CH.get(h
+        if not home_score_col or not away_score_col:
+            st.warning("⚠️ Scoreboard API 沒有回傳比分欄位，暫時無法寫入訓練資料。")
+        else:
+            # 昨天的 context 需要重新算（避免用今天的 ctx）
+            team_ids_y = sorted(set(sb_y["HOME_TEAM_ID"].tolist() + sb_y["VISITOR_TEAM_ID"].tolist()))
+            ctx_db_y = get_team_context(team_ids_y, game_date_us=y_us, season="2025-26")
+
+            # 用昨天的 ctx 暫時替換（只在這段 scope 用）
+            ctx_db_backup = ctx_db
+            ctx_db = ctx_db_y
+
+            for _, r in sb_y.iterrows():
+                hid, aid = int(r["HOME_TEAM_ID"]), int(r["VISITOR_TEAM_ID"])
+                habbr = ID_MAP.get(hid, str(hid))
+                aabbr = ID_MAP.get(aid, str(aid))
+
+                game_id = make_game_id(aabbr, habbr, y_us)
+
+                # 盤口/賠率：若你昨天有在 UI 輸入（同一個 game_id key），就會被存到 session_state
+                u_sp = _safe_float(st.session_state.get(f"sp_{game_id}", 0.0), 0.0)
+                u_oh = _safe_float(st.session_state.get(f"oh_{game_id}", 1.90), 1.90)
+                u_oa = _safe_float(st.session_state.get(f"oa_{game_id}", 1.90), 1.90)
+
+                hs = _safe_float(r.get(home_score_col, 0.0), 0.0)
+                as_ = _safe_float(r.get(away_score_col, 0.0), 0.0)
+
+                # y：主隊是否過盤
+                y = 1.0 if (hs + u_sp) > as_ else 0.0
+
+                feats = calc_features(hid, aid, habbr, aabbr, home_spread=u_sp)
+
+                new_rows.append({
+                    "game_id": game_id,
+                    "date_us": y_us,
+                    "home_abbr": habbr,
+                    "away_abbr": aabbr,
+                    "home_spread": u_sp,
+                    "home_odds": u_oh,
+                    "away_odds": u_oa,
+                    "home_score": hs,
+                    "away_score": as_,
+                    "y": y,
+                    "net": feats["net"],
+                    "ordr": feats["ordr"],
+                    "misc": feats["misc"],
+                    "recent": feats["recent"],
+                    "home": feats["home"],
+                    "fatigue": feats["fatigue"],
+                    "uncert": feats["uncert"],
+                    "spread_depth": feats["spread_depth"],
+                })
+                added += 1
+
+            # 還原 ctx_db
+            ctx_db = ctx_db_backup
+
+            append_training_rows(new_rows)
+            train_df = load_training_df()
+            model = train_one_epoch(train_df, model, epochs=3)
+            save_model(model)
+
+            st.success(f"✅ 已寫入 {added} 場到訓練資料，並完成一次模型更新。")
+
+    else:
+        st.warning("⚠️ 昨日賽程抓不到或無比分，暫時無法更新訓練資料。")
+
+    st.rerun()
