@@ -6,20 +6,9 @@ import pytz, warnings, requests, re, unicodedata, time, math
 from datetime import datetime, timedelta
 from bs4 import BeautifulSoup
 
-# =========================================================
-# 0) 版本 / 說明
-# =========================================================
-APP_VERSION = "v16.2 (Calibrated + Backtest Fit)"
-
-# 你要求的「再更硬核」校準（回測校準）這版做法：
-# - 新增「校準/回測」面板：可上傳你自己的歷史資料 CSV
-# - 用歷史資料自動 fit：
-#   (1) sigma：用 grid search 找到讓 NLL 最小的 sigma（常態CDF模型）
-#   (2) Platt scaling（可選）：對 raw probability 做二次校準，降低過度自信
-#
-# 注意：你目前即時系統沒有「歷史市場盤口」與「歷史賽果」的可靠來源，
-# 所以最穩健的方法是你提供/累積自己的歷史樣本（f_edge 與 cover 結果）。
-# 這版 code 已把 pipeline 做好：你只要匯出 CSV 上傳即可自動校準。
+# ===== NEW: Supabase(Postgres) driver =====
+import psycopg2
+from psycopg2.extras import execute_values
 
 # =========================================================
 # 1) 核心配置（保留原 UI；強化邏輯與穩定性）
@@ -47,6 +36,7 @@ ALL_TEAMS = teams.get_teams()
 VALID_TEAM_IDS = [t["id"] for t in ALL_TEAMS]
 ID_MAP = {t["id"]: t["abbreviation"] for t in ALL_TEAMS}
 
+# Odds API 端常見隊名 → 我們的縮寫（盡量涵蓋變形）
 ODDS_TEAMNAME_TO_ABBR = {
     "atlanta hawks": "ATL",
     "brooklyn nets": "BKN",
@@ -83,7 +73,7 @@ ODDS_TEAMNAME_TO_ABBR = {
 }
 
 # =========================================================
-# 2) 工具：名字正規化 + endpoint 安全抓取
+# 2) 工具：名字正規化 + endpoint 安全抓取（含簡單重試）
 # =========================================================
 def norm_name(s: str) -> str:
     if not isinstance(s, str):
@@ -95,6 +85,7 @@ def norm_name(s: str) -> str:
     s = re.sub(r"[^a-z\s]", " ", s)
     s = re.sub(r"\s+", " ", s).strip()
     return s
+
 
 def fetch_safe_df(endpoint, retries: int = 2, sleep_s: float = 0.6, **kwargs) -> pd.DataFrame:
     for attempt in range(retries + 1):
@@ -109,147 +100,257 @@ def fetch_safe_df(endpoint, retries: int = 2, sleep_s: float = 0.6, **kwargs) ->
                 return pd.DataFrame()
 
 # =========================================================
-# 3) 機率映射（校準版）+ 回測擬合（sigma + Platt scaling）
+# 2.1) 過盤機率映射（更保守：12%~88%）
 # =========================================================
+PROB_SCALE = 12.0
 PROB_FLOOR = 0.12
 PROB_CEIL  = 0.88
 
-SIGMA_BASE = 12.0
-SIGMA_NO_INJ = 15.0
-SIGMA_PER_Q = 0.9
-SIGMA_PER_OUT = 0.4
-SIGMA_CAP = 19.0
-
-def clamp(x: float, lo: float, hi: float) -> float:
-    return max(lo, min(hi, x))
-
-def norm_cdf(z: float) -> float:
-    return 0.5 * (1.0 + math.erf(z / math.sqrt(2.0)))
-
-def sigmoid(x: float) -> float:
-    # 避免 overflow
-    if x >= 20:
-        return 1.0
-    if x <= -20:
-        return 0.0
-    return 1.0 / (1.0 + math.exp(-x))
-
-def logit(p: float) -> float:
-    p = clamp(p, 1e-6, 1 - 1e-6)
-    return math.log(p / (1 - p))
-
-def calc_cover_prob_raw(f_edge: float, sigma: float) -> float:
-    """raw 機率：常態CDF，並做硬性截斷"""
-    if sigma <= 0:
-        sigma = SIGMA_BASE
-    p = norm_cdf(f_edge / sigma)
-    return clamp(p, PROB_FLOOR, PROB_CEIL)
-
-def apply_platt(p_raw: float, a: float, b: float) -> float:
-    """
-    Platt scaling：p_cal = sigmoid(a + b*logit(p_raw))
-    - 若 a=0,b=1 → 不改
-    """
-    z = a + b * logit(p_raw)
-    p = sigmoid(z)
-    return clamp(p, PROB_FLOOR, PROB_CEIL)
-
-def nll_bernoulli(p: float, y: float) -> float:
-    p = clamp(p, 1e-9, 1 - 1e-9)
-    return -(y * math.log(p) + (1 - y) * math.log(1 - p))
-
-def fit_sigma_by_grid(df: pd.DataFrame, fcol="f_edge", ycol="cover",
-                      sigma_min=7.0, sigma_max=20.0, sigma_step=0.25) -> dict:
-    """
-    用歷史資料找最好的 sigma（最小化 NLL）
-    需要 df[f_edge], df[cover]，cover ∈ {0,1}
-    """
-    if df.empty or fcol not in df.columns or ycol not in df.columns:
-        return {"ok": False, "sigma": SIGMA_BASE, "n": 0, "best_nll": None}
-
-    x = pd.to_numeric(df[fcol], errors="coerce")
-    y = pd.to_numeric(df[ycol], errors="coerce")
-    m = x.notna() & y.notna()
-    x = x[m].tolist()
-    y = y[m].tolist()
-
-    if len(x) < 50:
-        # 樣本太少不建議 fit
-        return {"ok": False, "sigma": SIGMA_BASE, "n": len(x), "best_nll": None}
-
-    best_sigma = SIGMA_BASE
-    best_nll = float("inf")
-
-    s = sigma_min
-    while s <= sigma_max + 1e-9:
-        total = 0.0
-        for xi, yi in zip(x, y):
-            p = calc_cover_prob_raw(float(xi), float(s))
-            total += nll_bernoulli(p, float(yi))
-        avg = total / len(x)
-        if avg < best_nll:
-            best_nll = avg
-            best_sigma = s
-        s += sigma_step
-
-    return {"ok": True, "sigma": float(best_sigma), "n": len(x), "best_nll": float(best_nll)}
-
-def fit_platt(df: pd.DataFrame, sigma: float, fcol="f_edge", ycol="cover",
-              iters=25, lr=0.4, l2=1e-3) -> dict:
-    """
-    以 raw prob = CDF(f_edge/sigma) 當 base，fit a,b 讓 NLL 最小
-    使用簡單梯度下降（穩定、無 sklearn 依賴）
-    """
-    if df.empty or fcol not in df.columns or ycol not in df.columns:
-        return {"ok": False, "a": 0.0, "b": 1.0, "n": 0, "nll": None}
-
-    x = pd.to_numeric(df[fcol], errors="coerce")
-    y = pd.to_numeric(df[ycol], errors="coerce")
-    m = x.notna() & y.notna()
-    x = x[m].tolist()
-    y = y[m].tolist()
-
-    if len(x) < 200:
-        # Platt 至少要多一點樣本，否則容易 overfit
-        return {"ok": False, "a": 0.0, "b": 1.0, "n": len(x), "nll": None}
-
-    a, b = 0.0, 1.0
-
-    def compute_nll(a_, b_) -> float:
-        total = 0.0
-        for xi, yi in zip(x, y):
-            p_raw = calc_cover_prob_raw(float(xi), sigma)
-            p_cal = apply_platt(p_raw, a_, b_)
-            total += nll_bernoulli(p_cal, float(yi))
-        total = total / len(x)
-        # L2 regularization 避免 b 暴衝
-        total += l2 * (a_ * a_ + (b_ - 1.0) * (b_ - 1.0))
-        return total
-
-    for _ in range(iters):
-        # numerical gradient（簡單可靠）
-        eps = 1e-4
-        base = compute_nll(a, b)
-        da = (compute_nll(a + eps, b) - compute_nll(a - eps, b)) / (2 * eps)
-        db = (compute_nll(a, b + eps) - compute_nll(a, b - eps)) / (2 * eps)
-
-        a = a - lr * da
-        b = b - lr * db
-
-        # 合理限制（避免奇怪校準）
-        a = clamp(a, -4.0, 4.0)
-        b = clamp(b, 0.2, 3.0)
-
-        # 若改善很小可提早停
-        new = compute_nll(a, b)
-        if abs(base - new) < 1e-5:
-            break
-
-    final_nll = compute_nll(a, b)
-    return {"ok": True, "a": float(a), "b": float(b), "n": len(x), "nll": float(final_nll)}
+def calc_cover_prob(edge_points: float) -> float:
+    x = abs(edge_points) / PROB_SCALE
+    p = 1.0 / (1.0 + math.exp(-x))
+    if p < PROB_FLOOR:
+        p = PROB_FLOOR
+    if p > PROB_CEIL:
+        p = PROB_CEIL
+    return p
 
 # =========================================================
-# 4) 賽程抓取
+# NEW) Supabase(Postgres) DB：連線 / 建表 / upsert / bulk / 結算
+# =========================================================
+def pg_conn():
+    host = st.secrets["SUPABASE_HOST"]
+    db   = st.secrets.get("SUPABASE_DB", "postgres")
+    user = st.secrets["SUPABASE_USER"]
+    pw   = st.secrets["SUPABASE_PASSWORD"]
+    port = int(st.secrets.get("SUPABASE_PORT", 5432))
+
+    return psycopg2.connect(
+        host=host,
+        dbname=db,
+        user=user,
+        password=pw,
+        port=port,
+        connect_timeout=8,
+        sslmode="require",
+    )
+
+def db_init():
+    sql = """
+    CREATE TABLE IF NOT EXISTS games (
+        game_id TEXT PRIMARY KEY,
+        game_date_us TEXT,
+        season TEXT,
+        away_abbr TEXT,
+        home_abbr TEXT,
+        away_name TEXT,
+        home_name TEXT,
+
+        home_spread DOUBLE PRECISION,
+        home_odds DOUBLE PRECISION,
+        away_odds DOUBLE PRECISION,
+        line_source TEXT,
+
+        base_diff DOUBLE PRECISION,
+        f_edge DOUBLE PRECISION,
+        cover_prob DOUBLE PRECISION,
+        implied_prob DOUBLE PRECISION,
+        edge_value DOUBLE PRECISION,
+        ev DOUBLE PRECISION,
+        pick_team TEXT,
+
+        status TEXT,            -- scheduled/in_progress/final
+        away_score INTEGER,
+        home_score INTEGER,
+        cover INTEGER,          -- 1=home cover, 0=not, 2=push, NULL=unknown
+        settled_at_tw TEXT,
+
+        created_at_tw TEXT,
+        updated_at_tw TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_games_date ON games (game_date_us);
+    """
+    conn = pg_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(sql)
+        conn.commit()
+    finally:
+        conn.close()
+
+def upsert_game_row(row: dict):
+    now_tw = datetime.now(tw_tz).strftime("%Y-%m-%d %H:%M:%S")
+    row = dict(row)
+    row.setdefault("created_at_tw", now_tw)
+    row["updated_at_tw"] = now_tw
+
+    cols = list(row.keys())
+    vals = [row[c] for c in cols]
+    placeholders = ",".join(["%s"] * len(cols))
+    updates = ",".join([f"{c}=EXCLUDED.{c}" for c in cols if c != "game_id"])
+
+    sql = f"""
+    INSERT INTO games ({",".join(cols)})
+    VALUES ({placeholders})
+    ON CONFLICT (game_id) DO UPDATE SET
+      {updates};
+    """
+
+    conn = pg_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(sql, vals)
+        conn.commit()
+    finally:
+        conn.close()
+
+def bulk_upsert(rows: list[dict]):
+    if not rows:
+        return
+
+    now_tw = datetime.now(tw_tz).strftime("%Y-%m-%d %H:%M:%S")
+    all_cols = sorted(set().union(*[r.keys() for r in rows]))
+    if "game_id" not in all_cols:
+        return
+    if "created_at_tw" not in all_cols:
+        all_cols.append("created_at_tw")
+    if "updated_at_tw" not in all_cols:
+        all_cols.append("updated_at_tw")
+
+    values = []
+    for r in rows:
+        rr = dict(r)
+        rr.setdefault("created_at_tw", now_tw)
+        rr["updated_at_tw"] = now_tw
+        values.append([rr.get(c, None) for c in all_cols])
+
+    updates = ",".join([f"{c}=EXCLUDED.{c}" for c in all_cols if c != "game_id"])
+    sql = f"""
+    INSERT INTO games ({",".join(all_cols)})
+    VALUES %s
+    ON CONFLICT (game_id) DO UPDATE SET
+      {updates};
+    """
+
+    conn = pg_conn()
+    try:
+        with conn.cursor() as cur:
+            execute_values(cur, sql, values, page_size=200)
+        conn.commit()
+    finally:
+        conn.close()
+
+def get_scoreboard_status_map(game_date_us: str) -> dict:
+    """
+    用 scoreboardv2 拿到比賽狀態與比分
+    回傳 keyed by (away_abbr, home_abbr): {status, away_score, home_score}
+    """
+    sbx = fetch_safe_df(scoreboardv2.ScoreboardV2, game_date=game_date_us)
+    out = {}
+    if sbx.empty:
+        return out
+
+    for _, r in sbx.iterrows():
+        try:
+            hid = int(r.get("HOME_TEAM_ID"))
+            aid = int(r.get("VISITOR_TEAM_ID"))
+            home_abbr = ID_MAP.get(hid)
+            away_abbr = ID_MAP.get(aid)
+            if not home_abbr or not away_abbr:
+                continue
+
+            hs = r.get("HOME_TEAM_SCORE", None)
+            as_ = r.get("VISITOR_TEAM_SCORE", None)
+            stxt = str(r.get("GAME_STATUS_TEXT", "")).lower()
+
+            if "final" in stxt:
+                status = "final"
+            elif ("q" in stxt) or ("half" in stxt) or ("end" in stxt) or ("ot" in stxt):
+                status = "in_progress"
+            else:
+                status = "scheduled"
+
+            out[(away_abbr, home_abbr)] = {
+                "status": status,
+                "away_score": int(as_) if as_ is not None and str(as_).isdigit() else None,
+                "home_score": int(hs) if hs is not None and str(hs).isdigit() else None,
+            }
+        except Exception:
+            continue
+    return out
+
+def settle_cover(home_score: int, away_score: int, home_spread: float):
+    """
+    主隊盤口 home_spread：主讓負、主受讓正
+    adjusted = home_score + home_spread
+    """
+    if home_score is None or away_score is None or home_spread is None:
+        return None
+    adjusted = float(home_score) + float(home_spread)
+    if adjusted > float(away_score):
+        return 1
+    if adjusted < float(away_score):
+        return 0
+    return 2
+
+def update_results_and_settle(game_date_us: str):
+    """
+    讀 DB 裡該日期 games，若 scoreboard 顯示 final，就更新比分與 cover
+    """
+    status_map = get_scoreboard_status_map(game_date_us)
+    if not status_map:
+        return 0
+
+    conn = pg_conn()
+    updated = 0
+    now_tw = datetime.now(tw_tz).strftime("%Y-%m-%d %H:%M:%S")
+
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT game_id, away_abbr, home_abbr, home_spread FROM games WHERE game_date_us=%s",
+                (game_date_us,),
+            )
+            rows = cur.fetchall()
+
+            for game_id, away_abbr, home_abbr, home_spread in rows:
+                key = (away_abbr, home_abbr)
+                if key not in status_map:
+                    continue
+                s = status_map[key]
+                status = s["status"]
+                away_score = s["away_score"]
+                home_score = s["home_score"]
+
+                cover = None
+                settled_at = None
+                if status == "final" and home_score is not None and away_score is not None:
+                    cover = settle_cover(home_score, away_score, home_spread)
+                    settled_at = now_tw
+
+                cur.execute(
+                    """
+                    UPDATE games SET
+                      status=%s,
+                      away_score=%s,
+                      home_score=%s,
+                      cover=COALESCE(%s, cover),
+                      settled_at_tw=COALESCE(%s, settled_at_tw),
+                      updated_at_tw=%s
+                    WHERE game_id=%s
+                    """,
+                    (status, away_score, home_score, cover, settled_at, now_tw, game_id),
+                )
+                updated += 1
+
+        conn.commit()
+        return updated
+    finally:
+        conn.close()
+
+# =========================================================
+# 3) 賽程抓取（先決定目標日期，再拉賽程）
 # =========================================================
 def get_target_scoreboard() -> tuple[str, pd.DataFrame]:
     now_us = datetime.now(us_east_tz)
@@ -268,7 +369,7 @@ def get_target_scoreboard() -> tuple[str, pd.DataFrame]:
     return target_date_us, sb
 
 # =========================================================
-# 5) 球員資料（全聯盟）— cache
+# 4) 球員資料（全聯盟）— cache
 # =========================================================
 @st.cache_data(ttl=3600)
 def get_player_stats(season: str = "2025-26") -> pd.DataFrame:
@@ -297,7 +398,7 @@ def get_player_stats(season: str = "2025-26") -> pd.DataFrame:
     return ps
 
 # =========================================================
-# 6) 傷病報告（ESPN）— cache（含 IS_Q）
+# 5) 傷病報告（ESPN）— cache（更保守判讀）
 # =========================================================
 @st.cache_data(ttl=900)
 def get_injuries() -> pd.DataFrame:
@@ -369,7 +470,6 @@ def get_injuries() -> pd.DataFrame:
                         "原因": raw_reason,
                         "球隊": t_abbr,
                         "IS_OUT": bool(is_out),
-                        "IS_Q": bool(is_q),
                     }
                 )
     except Exception:
@@ -378,7 +478,7 @@ def get_injuries() -> pd.DataFrame:
     return pd.DataFrame(inj_list)
 
 # =========================================================
-# 7) 隊伍 Context — cache
+# 6) 隊伍 Context（只針對「今日有賽程」隊伍）— cache
 # =========================================================
 @st.cache_data(ttl=3600)
 def get_team_context(team_ids: list[int], game_date_us: str, season: str = "2025-26") -> dict:
@@ -408,7 +508,7 @@ def get_team_context(team_ids: list[int], game_date_us: str, season: str = "2025
     return ctx
 
 # =========================================================
-# 8) Odds API（Pinnacle）抓盤口/賠率 — cache
+# 7) Odds API（Pinnacle）抓盤口/賠率 — cache
 # =========================================================
 @st.cache_data(ttl=900)
 def get_pinnacle_odds_for_date(game_date_us: str) -> dict:
@@ -511,90 +611,38 @@ def get_pinnacle_odds_for_date(game_date_us: str) -> dict:
     return out
 
 # =========================================================
-# 9) UI 初始化 + 校準/回測面板
+# 8) UI 初始化（保留原本配置 + 強制更新按鈕）
 # =========================================================
-st.set_page_config(page_title=f"NBA Edge {APP_VERSION}", layout="wide")
+st.set_page_config(page_title="NBA Edge v16.0 + Supabase", layout="wide")
 
-h1, h2 = st.columns([0.78, 0.22])
+# NEW: 建表（只要 secrets 正確，這裡會自動建立 games table）
+try:
+    db_init()
+except Exception as e:
+    st.error(f"❌ Supabase DB 初始化失敗：{e}")
+    st.stop()
+
+h1, h2 = st.columns([0.8, 0.2])
 with h1:
     now_tw_str = datetime.now(tw_tz).strftime("%m/%d %H:%M")
     st.title("🏀 NBA Edge 數據預測系統")
-    st.caption(f"版本：{APP_VERSION}｜台灣現在時間：{now_tw_str}")
+    st.caption(f"台灣現在時間：{now_tw_str}")
 with h2:
     if st.button("🔄 強制更新（傷病/盤口/數據）"):
         st.cache_data.clear()
         st.rerun()
-    with st.popover("💡 判讀指南（含回測校準）"):
+    with st.popover("💡 判讀指南"):
         st.markdown(
             "**點數優勢**：模型預測分差與盤口的差距（點數）。\n\n"
-            "**過盤機率（校準）**：先用常態 CDF(f_edge/sigma) 估，再用 Platt scaling（可選）校準。\n\n"
-            "**盤口優勢**：過盤機率（校準） - 損益兩平機率。\n\n"
-            "**期望報酬**：以過盤機率（校準）估算的長期期望。\n\n"
-            "**回測資料格式（CSV）**：\n"
-            "- 必要欄位：`f_edge`、`cover`\n"
-            "- `cover`：主隊是否過盤（1=過盤, 0=沒過）\n"
-            "- `f_edge`：你當時算的（base_diff + 主隊盤口）\n\n"
-            "**Top picks 規則不變**：候選池只用 Pinnacle 真盤；排序用你手動輸入的盤口/賠率重算。"
+            "**盤口優勢**：過盤機率 - 損益兩平機率（%）。\n\n"
+            "**期望報酬**：以過盤機率估算的長期期望（%）。\n\n"
+            "**Top picks（你選 2）**：\n"
+            "- 只用 Pinnacle 有抓到 spreads 的場次當候選池（避免假盤）\n"
+            "- 但排序/EV/edge_value 用你手動輸入的盤口/賠率重新計算\n\n"
+            "**提醒**：若你看到某場主隊盤口=0、賠率=1.90 且來源顯示 Fallback，代表沒有真盤資料，那場不會進 Top picks。\n\n"
+            "**DB**：會自動把今日賽程（含模型/盤口）寫入 Supabase；你手動改運彩盤口也會寫回；可按「結算」更新比分/cover。"
         )
 
-# 側邊欄：校準/回測
-with st.sidebar:
-    st.header("🧪 校準 / 回測")
-    st.caption("上傳你的歷史樣本 CSV，自動 fit sigma + Platt scaling（可選）")
-    calib_file = st.file_uploader("上傳回測 CSV（含 f_edge, cover）", type=["csv"])
-
-    use_sigma_fit = st.toggle("啟用 sigma 擬合", value=True)
-    use_platt_fit = st.toggle("啟用 Platt scaling（需要較大樣本）", value=True)
-
-    st.divider()
-    st.subheader("⚙️ 校準參數（預設/上限）")
-    sigma_min = st.number_input("sigma 搜尋下限", 5.0, 30.0, 7.0, 0.5)
-    sigma_max = st.number_input("sigma 搜尋上限", 5.0, 40.0, 20.0, 0.5)
-    sigma_step = st.number_input("sigma 步長", 0.05, 2.0, 0.25, 0.05)
-
-    st.caption("提醒：若樣本 < 50，不做 sigma fit；樣本 < 200，不做 Platt fit（避免過度擬合）。")
-
-# 讀取校準資料 & 擬合
-fit_sigma = {"ok": False, "sigma": SIGMA_BASE, "n": 0, "best_nll": None}
-fit_pl = {"ok": False, "a": 0.0, "b": 1.0, "n": 0, "nll": None}
-
-calib_df = pd.DataFrame()
-if calib_file is not None:
-    try:
-        calib_df = pd.read_csv(calib_file)
-    except Exception:
-        calib_df = pd.DataFrame()
-
-if (not calib_df.empty) and use_sigma_fit:
-    fit_sigma = fit_sigma_by_grid(
-        calib_df, fcol="f_edge", ycol="cover",
-        sigma_min=float(sigma_min), sigma_max=float(sigma_max), sigma_step=float(sigma_step)
-    )
-
-sigma_fit_value = fit_sigma["sigma"] if fit_sigma["ok"] else SIGMA_BASE
-
-if (not calib_df.empty) and use_platt_fit:
-    fit_pl = fit_platt(calib_df, sigma=sigma_fit_value, fcol="f_edge", ycol="cover")
-
-# 顯示校準結果
-with st.sidebar:
-    st.subheader("📌 校準結果")
-    if calib_file is None:
-        st.info("尚未上傳回測資料：使用預設 sigma 與不套用 Platt（a=0,b=1）。")
-    else:
-        if fit_sigma["ok"]:
-            st.success(f"sigma 擬合成功：{fit_sigma['sigma']:.2f}（n={fit_sigma['n']}，NLL={fit_sigma['best_nll']:.4f}）")
-        else:
-            st.warning(f"sigma 未擬合（n={fit_sigma['n']}）：改用預設 {SIGMA_BASE:.1f}")
-
-        if fit_pl["ok"]:
-            st.success(f"Platt 擬合成功：a={fit_pl['a']:.3f}, b={fit_pl['b']:.3f}（n={fit_pl['n']}，NLL={fit_pl['nll']:.4f}）")
-        else:
-            st.warning(f"Platt 未擬合（n={fit_pl['n']}）：不套用（a=0,b=1）")
-
-# =========================================================
-# 10) 抓今日資料
-# =========================================================
 with st.spinner("⚡ 正在同步美東數據中心..."):
     target_date_us, sb = get_target_scoreboard()
     ps_db = get_player_stats(season="2025-26")
@@ -620,12 +668,12 @@ today_team_ids = sorted(set(sb_filtered["HOME_TEAM_ID"].tolist() + sb_filtered["
 ctx_db = get_team_context(today_team_ids, game_date_us=target_date_us, season="2025-26")
 
 if inj_db.empty:
-    st.warning("⚠️ ESPN 傷病名單抓不到：系統將自動更保守（sigma↑）。")
+    st.warning("⚠️ 傷病名單目前抓不到（ESPN 可能改版或暫時阻擋），推薦將不會排除傷兵。")
 
 pinnacle_map = get_pinnacle_odds_for_date(target_date_us)
 
 # =========================================================
-# 11) 主計算：每場 base_diff（保留你的核心公式）
+# 9) 主計算：建立每場 pkg + base_diff（保留你的核心公式）
 # =========================================================
 all_games_data = []
 
@@ -637,7 +685,7 @@ for _, row in sb_filtered.iterrows():
         ctx = ctx_db.get(tid, {"b2b": False, "recent_w": 0.5})
 
         t_inj = inj_db[inj_db["球隊"] == abbr] if not inj_db.empty else pd.DataFrame()
-        out_list = t_inj[t_inj.get("IS_OUT", False)]["NORM"].tolist() if not t_inj.empty else []
+        out_list = t_inj[t_inj["IS_OUT"]]["NORM"].tolist() if not t_inj.empty else []
 
         if not ps_db.empty and "TEAM_ID" in ps_db.columns and "NORM" in ps_db.columns:
             active = (
@@ -648,9 +696,6 @@ for _, row in sb_filtered.iterrows():
         else:
             active = pd.DataFrame()
 
-        n_out = int(t_inj["IS_OUT"].sum()) if (not t_inj.empty and "IS_OUT" in t_inj.columns) else 0
-        n_q   = int(t_inj["IS_Q"].sum()) if (not t_inj.empty and "IS_Q" in t_inj.columns) else 0
-
         return {
             "pts": float(active["PTS"].sum()) if not active.empty and "PTS" in active.columns else 0.0,
             "impact": float(active["IMPACT"].mean()) if not active.empty and "IMPACT" in active.columns else 0.0,
@@ -658,8 +703,6 @@ for _, row in sb_filtered.iterrows():
             "inj": t_inj,
             "b2b": bool(ctx["b2b"]),
             "recent_w": float(ctx["recent_w"]),
-            "n_out": n_out,
-            "n_q": n_q,
         }
 
     h_p, a_p = build_pkg(h_id, h_abbr), build_pkg(a_id, a_abbr)
@@ -698,7 +741,7 @@ for _, row in sb_filtered.iterrows():
     )
 
 # =========================================================
-# 12) 挑場規則：候選池=真盤；排序=你手動輸入
+# 10) 指標計算
 # =========================================================
 EDGE_THRESHOLD = 0.05
 MAX_PICKS = 3
@@ -731,40 +774,9 @@ def get_market_inputs_for_game(g):
 
     return float(sp), float(oh), float(oa), src, manual
 
-def compute_sigma_for_game(g) -> float:
-    """
-    比賽層級 sigma：用「回測擬合 sigma」當 base，
-    再依資訊不確定性（inj empty / Q / OUT）加成。
-    """
-    base_sigma = sigma_fit_value if (fit_sigma["ok"] and use_sigma_fit) else SIGMA_BASE
-
-    if inj_db.empty:
-        sigma = max(SIGMA_NO_INJ, base_sigma)
-        return float(min(SIGMA_CAP, sigma))
-
-    h = g["h_pkg"]
-    a = g["a_pkg"]
-    n_out = int(h.get("n_out", 0) + a.get("n_out", 0))
-    n_q   = int(h.get("n_q", 0) + a.get("n_q", 0))
-
-    sigma = float(base_sigma) + (n_q * SIGMA_PER_Q) + (n_out * SIGMA_PER_OUT)
-    sigma = min(SIGMA_CAP, sigma)
-    return float(sigma)
-
 def compute_metrics(g, home_spread_input, home_odds, away_odds):
-    # f_edge：模型點差（home vs away） + 主隊盤口（主讓負、主受讓正）
     f_edge = g["base_diff"] + home_spread_input
-
-    sigma = compute_sigma_for_game(g)
-    p_raw = calc_cover_prob_raw(f_edge, sigma)
-
-    # Platt scaling（若成功擬合且啟用）
-    if fit_pl["ok"] and use_platt_fit:
-        cover_prob = apply_platt(p_raw, fit_pl["a"], fit_pl["b"])
-        cal_tag = "Platt"
-    else:
-        cover_prob = p_raw
-        cal_tag = "RawCDF"
+    cover_prob = calc_cover_prob(f_edge)
 
     pick_team = g["h_cn"] if f_edge > 0 else g["a_cn"]
     odds = home_odds if f_edge > 0 else away_odds
@@ -776,10 +788,7 @@ def compute_metrics(g, home_spread_input, home_odds, away_odds):
     return {
         "f_edge": float(f_edge),
         "edge_points": float(abs(f_edge)),
-        "sigma": float(sigma),
-        "cal_tag": cal_tag,
         "cover_prob": float(cover_prob),
-        "p_raw": float(p_raw),
         "implied_prob": float(implied_prob),
         "edge_value": float(edge_value),
         "ev": float(ev),
@@ -788,7 +797,51 @@ def compute_metrics(g, home_spread_input, home_odds, away_odds):
     }
 
 # =========================================================
-# 13) 🔥 今日推薦
+# NEW) 自動寫入 DB：把今日賽程先建檔（預設 Pinnacle / fallback）
+# =========================================================
+try:
+    auto_rows = []
+    for g in all_games_data:
+        sp = float(g["pin_home_sp"])
+        oh = float(g["pin_home_od"])
+        oa = float(g["pin_away_od"])
+        src = "Pinnacle ✅" if g["pin_ok"] else "Fallback ⚠️"
+        m = compute_metrics(g, sp, oh, oa)
+
+        auto_rows.append({
+            "game_id": g["game_id"],
+            "game_date_us": target_date_us,
+            "season": "2025-26",
+            "away_abbr": g["a_abbr"],
+            "home_abbr": g["h_abbr"],
+            "away_name": g["a_cn"],
+            "home_name": g["h_cn"],
+
+            "home_spread": sp,
+            "home_odds": oh,
+            "away_odds": oa,
+            "line_source": src,
+
+            "base_diff": float(g["base_diff"]),
+            "f_edge": float(m["f_edge"]),
+            "cover_prob": float(m["cover_prob"]),
+            "implied_prob": float(m["implied_prob"]),
+            "edge_value": float(m["edge_value"]),
+            "ev": float(m["ev"]),
+            "pick_team": str(m["pick_team"]),
+
+            "status": "scheduled",
+            "away_score": None,
+            "home_score": None,
+            "cover": None,
+            "settled_at_tw": None,
+        })
+    bulk_upsert(auto_rows)
+except Exception as e:
+    st.warning(f"⚠️ DB 自動建檔失敗（不影響前端運作）：{e}")
+
+# =========================================================
+# 11) 🔥 今日最能買（候選池=真盤；排序=你輸入）
 # =========================================================
 pool_games = all_games_data[:MAX_GAMES_FOR_PICK]
 
@@ -832,7 +885,7 @@ else:
                 st.caption(f"盤口來源：{item['src']}（候選池=真盤；排序=你輸入的盤口/賠率）")
 
                 st.write(
-                    f"過盤機率（{item['cal_tag']}）：**{item['cover_prob']*100:.1f}%** | "
+                    f"過盤機率：**{item['cover_prob']*100:.1f}%** | "
                     f"損益兩平：**{item['implied_prob']*100:.1f}%**"
                 )
                 st.metric("盤口優勢", f"{item['edge_value']*100:+.1f}%")
@@ -840,17 +893,25 @@ else:
                     f"主隊盤口：**{item['home_spread_input']:+.1f}** | "
                     f"主賠：**{item['home_odds']:.2f}** | 客賠：**{item['away_odds']:.2f}**"
                 )
-                st.write(
-                    f"點數優勢：**{item['edge_points']:.1f}** | "
-                    f"sigma：**{item['sigma']:.2f}** | "
-                    f"raw：**{item['p_raw']*100:.1f}%** | "
-                    f"期望報酬：**{item['ev']*100:+.1f}%**"
-                )
+                st.write(f"點數優勢：**{item['edge_points']:.1f}** | 期望報酬：**{item['ev']*100:+.1f}%**")
+
+# NEW) 結算按鈕：更新比分/cover 寫入 DB
+st.divider()
+cA, cB = st.columns([0.55, 0.45])
+with cA:
+    if st.button("🧾 更新賽果 / 結算（Final 後寫入 cover）"):
+        try:
+            n = update_results_and_settle(target_date_us)
+            st.success(f"已掃描並更新 {n} 筆（非 Final 的 cover 會維持空值）")
+        except Exception as e:
+            st.error(f"結算失敗：{e}")
+with cB:
+    st.caption("cover 定義：home_score + home_spread vs away_score；相等為 push(2)")
 
 st.divider()
 
 # =========================================================
-# 14) 🎯 全部場次與實時計算
+# 12) 🎯 全部場次與實時計算（保留原 UI；預設帶 Pinnacle）
 # =========================================================
 st.header("🎯 全部場次與實時計算")
 
@@ -901,12 +962,8 @@ for i in range(0, len(all_games_data), 3):
 
                 m = compute_metrics(g, float(u_sp), float(u_oh), float(u_oa))
 
-                st.caption(f"盤口來源：{src}｜機率模式：{m['cal_tag']}（raw={m['p_raw']*100:.1f}%）")
-                st.write(
-                    f"過盤機率：**{m['cover_prob']*100:.1f}%** | "
-                    f"點數優勢：**{m['edge_points']:.1f}** | "
-                    f"sigma：**{m['sigma']:.2f}**"
-                )
+                st.caption(f"盤口來源：{src}（Top picks 候選池只用 Pinnacle ✅）")
+                st.write(f"過盤機率：**{m['cover_prob']*100:.1f}%** | 點數優勢：**{m['edge_points']:.1f}**")
                 st.write(f"盤口優勢：**{m['edge_value']*100:+.1f}%** | 期望報酬：**{m['ev']*100:+.1f}%**")
 
                 if g["pin_ok"] and m["edge_value"] > EDGE_THRESHOLD:
@@ -914,8 +971,36 @@ for i in range(0, len(all_games_data), 3):
                 else:
                     st.info(f"建議：{m['pick_team']}")
 
+                # NEW) 寫回 DB：你手動輸入的盤口/賠率才是回測的「真實市場盤」
+                try:
+                    upsert_game_row({
+                        "game_id": gid,
+                        "game_date_us": target_date_us,
+                        "season": "2025-26",
+                        "away_abbr": g["a_abbr"],
+                        "home_abbr": g["h_abbr"],
+                        "away_name": g["a_cn"],
+                        "home_name": g["h_cn"],
+
+                        "home_spread": float(u_sp),
+                        "home_odds": float(u_oh),
+                        "away_odds": float(u_oa),
+                        "line_source": src,
+
+                        "base_diff": float(g["base_diff"]),
+                        "f_edge": float(m["f_edge"]),
+                        "cover_prob": float(m["cover_prob"]),
+                        "implied_prob": float(m["implied_prob"]),
+                        "edge_value": float(m["edge_value"]),
+                        "ev": float(m["ev"]),
+                        "pick_team": str(m["pick_team"]),
+                    })
+                except Exception:
+                    # 不要讓 DB 問題把 UI 卡死
+                    pass
+
 # =========================================================
-# 15) 🔍 深度查詢
+# 13) 🔍 深度查詢（保留原 UI）
 # =========================================================
 st.divider()
 st.header("🔍 深度數據查詢")
@@ -929,15 +1014,6 @@ if sel:
         f"{'🚨 客隊背靠背' if curr['a_pkg']['b2b'] else '✅ 客隊體能正常'} | "
         f"{'🚨 主隊背靠背' if curr['h_pkg']['b2b'] else '✅ 主隊體能正常'}"
     )
-
-    # 顯示該場的 sigma/校準狀態
-    sigma_dbg = compute_sigma_for_game(curr)
-    p_dbg = calc_cover_prob_raw(curr["base_diff"] + curr["pin_home_sp"], sigma_dbg)
-    if fit_pl["ok"] and use_platt_fit:
-        p_dbg2 = apply_platt(p_dbg, fit_pl["a"], fit_pl["b"])
-        st.caption(f"（Debug）sigma={sigma_dbg:.2f}｜raw={p_dbg*100:.1f}%｜platt={p_dbg2*100:.1f}%")
-    else:
-        st.caption(f"（Debug）sigma={sigma_dbg:.2f}｜raw={p_dbg*100:.1f}%（未套用 Platt）")
 
     c1, c2 = st.columns(2)
     for col, pkg, side in zip([c1, c2], [curr["h_pkg"], curr["a_pkg"]], ["(主)", "(客)"]):
@@ -953,29 +1029,8 @@ if sel:
                 st.write("（球員資料不足或 API 暫時不可用）")
 
             if pkg["inj"] is not None and not pkg["inj"].empty:
-                show_inj_cols = [c for c in ["球員", "狀態", "原因"] if c in pkg["inj"].columns]
-                st.dataframe(pkg["inj"][show_inj_cols], hide_index=True)
-                st.caption(f"不確定性：OUT={pkg.get('n_out',0)} / Q={pkg.get('n_q',0)}（Q 會讓 sigma ↑ 更保守）")
+                st.dataframe(pkg["inj"][["球員", "狀態", "原因"]], hide_index=True)
             else:
                 st.write("✅ 無傷病報告")
 
-st.caption(
-    f"（基礎參數：SIGMA_BASE={SIGMA_BASE:.1f}；inj缺失→sigma≥{SIGMA_NO_INJ:.1f}；"
-    f"Q 每人 +{SIGMA_PER_Q:.1f}；OUT 每人 +{SIGMA_PER_OUT:.1f}；"
-    f"sigma cap={SIGMA_CAP:.1f}；硬性截斷 {int(PROB_FLOOR*100)}%~{int(PROB_CEIL*100)}%）"
-)
-
-# =========================================================
-# 16) （可選）回測資料模板下載提示（不生成檔案，直接示範欄位）
-# =========================================================
-with st.expander("📄 回測 CSV 欄位模板（你可以照這個格式累積資料）"):
-    st.markdown(
-        "- `date`：比賽日期（可選）\n"
-        "- `matchup`：對戰（可選）\n"
-        "- `f_edge`：你當天算出來的 `base_diff + 主隊盤口`\n"
-        "- `cover`：主隊是否過盤（1=過盤, 0=沒過）\n"
-        "\n"
-        "最少只需要 `f_edge, cover` 兩欄就能校準。\n"
-        "\n"
-        "建議做法：每次你下注/觀察時，把該場的 f_edge 記下來，等賽果出來填 cover，累積到 200+ 場再開 Platt。"
-    )
+st.caption(f"（機率曲線參數：prob_scale={PROB_SCALE:.1f}；硬性截斷：{int(PROB_FLOOR*100)}%~{int(PROB_CEIL*100)}%）")
