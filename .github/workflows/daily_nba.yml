@@ -1,0 +1,44 @@
+name: nba-daily-sync-and-settle
+
+on:
+  schedule:
+    - cron: "30 10 * * *"  # UTC 10:30 = Asia/Taipei 18:30
+  workflow_dispatch: {}
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install nba_api pandas psycopg2-binary pytz requests
+
+      - name: Sync games + odds snapshot into DB
+        env:
+          SUPABASE_HOST: ${{ secrets.SUPABASE_HOST }}
+          SUPABASE_DB: ${{ secrets.SUPABASE_DB }}
+          SUPABASE_USER: ${{ secrets.SUPABASE_USER }}
+          SUPABASE_PASSWORD: ${{ secrets.SUPABASE_PASSWORD }}
+          SUPABASE_PORT: ${{ secrets.SUPABASE_PORT }}
+          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+          NBA_SEASON: "2025-26"
+        run: |
+          python jobs/sync_daily.py
+
+      - name: Settle results (scores + cover)
+        env:
+          SUPABASE_HOST: ${{ secrets.SUPABASE_HOST }}
+          SUPABASE_DB: ${{ secrets.SUPABASE_DB }}
+          SUPABASE_USER: ${{ secrets.SUPABASE_USER }}
+          SUPABASE_PASSWORD: ${{ secrets.SUPABASE_PASSWORD }}
+          SUPABASE_PORT: ${{ secrets.SUPABASE_PORT }}
+        run: |
+          python jobs/settle_daily.py
