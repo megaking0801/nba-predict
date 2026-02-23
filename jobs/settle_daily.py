@@ -3,8 +3,10 @@ from datetime import datetime, timedelta
 import pytz
 import pandas as pd
 import psycopg2
+import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
-from nba_api.stats.library.http import NBAStatsHTTP
 from nba_api.stats.static import teams as static_teams
 
 tw_tz = pytz.timezone("Asia/Taipei")
@@ -37,6 +39,9 @@ def nba_headers():
         "Host": "stats.nba.com",
         "Connection": "keep-alive",
         "Accept": "application/json, text/plain, */*",
+        "Accept-Encoding": "gzip, deflate, br",
+        "Cache-Control": "no-cache",
+        "Pragma": "no-cache",
         "x-nba-stats-token": "true",
         "x-nba-stats-origin": "stats",
         "Origin": "https://www.nba.com",
@@ -49,34 +54,43 @@ def nba_headers():
         "Accept-Language": "en-US,en;q=0.9",
     }
 
-def fetch_scoreboardv3_df(game_date_us: str, retries: int = 5, timeout: int = 25) -> pd.DataFrame:
-    http = NBAStatsHTTP()
+def make_session() -> requests.Session:
+    s = requests.Session()
+    retry = Retry(
+        total=7,
+        connect=7,
+        read=7,
+        backoff_factor=1.2,
+        status_forcelist=(429, 500, 502, 503, 504),
+        allowed_methods=("GET",),
+        raise_on_status=False,
+    )
+    adapter = HTTPAdapter(max_retries=retry, pool_connections=10, pool_maxsize=10)
+    s.mount("https://", adapter)
+    s.mount("http://", adapter)
+    return s
+
+def fetch_scoreboardv3_df(session: requests.Session, game_date_us: str) -> pd.DataFrame:
     params = {"GameDate": game_date_us, "LeagueID": "00"}
-    last_err = None
+    timeout = (10, 60)
+    time.sleep(0.4 + random.random() * 0.8)
 
-    for i in range(retries + 1):
-        try:
-            if i > 0:
-                time.sleep((2 ** (i - 1)) + random.random() * 0.7)
+    try:
+        r = session.get(SCOREBOARD_V3_URL, params=params, headers=nba_headers(), timeout=timeout)
+        if r.status_code != 200:
+            print(f"[WARN] scoreboard status={r.status_code} date={game_date_us}")
+            return pd.DataFrame()
 
-            resp = http.send_api_request(
-                endpoint=SCOREBOARD_V3_URL,
-                parameters=params,
-                headers=nba_headers(),
-                timeout=timeout,
-            )
-            data = resp.get_dict()
-            rs0 = data["resultSets"][0]
-            df = pd.DataFrame(rs0["rowSet"], columns=rs0["headers"])
-            if df.empty or "HOME_TEAM_ID" not in df.columns:
-                return pd.DataFrame()
-            df = df[df["HOME_TEAM_ID"].isin(VALID_TEAM_IDS)].copy()
-            return df
-        except Exception as e:
-            last_err = e
-
-    print(f"[WARN] scoreboard fetch failed for {game_date_us}: {last_err}")
-    return pd.DataFrame()
+        data = r.json()
+        rs0 = data["resultSets"][0]
+        df = pd.DataFrame(rs0["rowSet"], columns=rs0["headers"])
+        if df.empty or "HOME_TEAM_ID" not in df.columns:
+            return pd.DataFrame()
+        df = df[df["HOME_TEAM_ID"].isin(VALID_TEAM_IDS)].copy()
+        return df
+    except Exception as e:
+        print(f"[WARN] scoreboard fetch failed for {game_date_us}: {e}")
+        return pd.DataFrame()
 
 def derive_us_token_from_row(row: pd.Series, fallback_us_mmddyyyy: str) -> str:
     date_est = row.get("GAME_DATE_EST", None)
@@ -88,7 +102,6 @@ def derive_us_token_from_row(row: pd.Series, fallback_us_mmddyyyy: str) -> str:
             game_date_us = fallback_us_mmddyyyy
     else:
         game_date_us = fallback_us_mmddyyyy
-
     return datetime.strptime(game_date_us, "%m/%d/%Y").strftime("%m%d%Y")
 
 def settle_cover(home_score: int, away_score: int, home_spread: float):
@@ -108,6 +121,7 @@ def main():
         today_us.strftime("%m/%d/%Y"),
     ]
 
+    session = make_session()
     conn = pg_conn()
     updated = 0
     now_tw = datetime.now(tw_tz).strftime("%Y-%m-%d %H:%M:%S")
@@ -115,7 +129,7 @@ def main():
     try:
         with conn.cursor() as cur:
             for d in targets:
-                df = fetch_scoreboardv3_df(d, retries=5, timeout=25)
+                df = fetch_scoreboardv3_df(session, d)
                 if df.empty:
                     print(f"[WARN] settle empty scoreboard for {d}")
                     continue
