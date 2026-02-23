@@ -10,12 +10,18 @@ from urllib3.util.retry import Retry
 
 from nba_api.stats.static import teams as static_teams
 
+# -------------------------
+# TZ
+# -------------------------
 tw_tz = pytz.timezone("Asia/Taipei")
 us_east_tz = pytz.timezone("US/Eastern")
 
+# -------------------------
+# Teams
+# -------------------------
 ALL_TEAMS = static_teams.get_teams()
-VALID_TEAM_IDS = set(t["id"] for t in ALL_TEAMS)
-ID_MAP = {t["id"]: t["abbreviation"] for t in ALL_TEAMS}
+VALID_TEAM_IDS = set(int(t["id"]) for t in ALL_TEAMS)
+ID_MAP = {int(t["id"]): t["abbreviation"] for t in ALL_TEAMS}
 
 TEAM_MAP = {
     "ATL": ["Atlanta Hawks", "老鷹"], "BKN": ["Brooklyn Nets", "籃網"], "BOS": ["Boston Celtics", "塞爾提克"],
@@ -66,7 +72,11 @@ ODDS_TEAMNAME_TO_ABBR = {
     "washington wizards": "WAS",
 }
 
+# -------------------------
+# Endpoints
+# -------------------------
 SCOREBOARD_V3_URL = "https://stats.nba.com/stats/scoreboardv3"
+CDN_SCOREBOARD_URL_TMPL = "https://cdn.nba.com/static/json/liveData/scoreboard/scoreboard_{yyyymmdd}.json"
 
 # -------------------------
 # DB
@@ -172,9 +182,9 @@ def bulk_upsert(rows: list[dict]) -> int:
     return len(rows)
 
 # -------------------------
-# HTTP (robust)
+# HTTP
 # -------------------------
-def nba_headers():
+def stats_headers():
     return {
         "Host": "stats.nba.com",
         "Connection": "keep-alive",
@@ -194,13 +204,22 @@ def nba_headers():
         "Accept-Language": "en-US,en;q=0.9",
     }
 
+def cdn_headers():
+    return {
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Encoding": "gzip, deflate, br",
+        "Cache-Control": "no-cache",
+        "Pragma": "no-cache",
+        "User-Agent": "Mozilla/5.0",
+    }
+
 def make_session() -> requests.Session:
     s = requests.Session()
     retry = Retry(
-        total=7,
-        connect=7,
-        read=7,
-        backoff_factor=1.2,
+        total=2,
+        connect=2,
+        read=2,
+        backoff_factor=0.6,
         status_forcelist=(429, 500, 502, 503, 504),
         allowed_methods=("GET",),
         raise_on_status=False,
@@ -210,56 +229,196 @@ def make_session() -> requests.Session:
     s.mount("http://", adapter)
     return s
 
-def fetch_scoreboardv3_df(session: requests.Session, game_date_us: str) -> pd.DataFrame:
-    params = {"GameDate": game_date_us, "LeagueID": "00"}
+# -------------------------
+# Date helpers
+# -------------------------
+def mmddyyyy_to_yyyymmdd(mmddyyyy: str) -> str:
+    dt = datetime.strptime(mmddyyyy, "%m/%d/%Y")
+    return dt.strftime("%Y%m%d")
 
-    # timeout=(connect, read)
-    timeout = (10, 60)
+def derive_tw_date_from_us_mmddyyyy(mmddyyyy: str) -> str:
+    # noon EST -> TW date (avoid midnight boundary)
+    dt_noon_est = us_east_tz.localize(datetime.strptime(mmddyyyy, "%m/%d/%Y") + timedelta(hours=12))
+    return dt_noon_est.astimezone(tw_tz).strftime("%Y-%m-%d")
 
-    # 多一點 jitter，降低被擋/被限速
-    time.sleep(0.4 + random.random() * 0.8)
-
+def tw_date_from_utc_iso(utc_iso: str) -> str | None:
+    # e.g. "2026-02-22T00:30:00Z"
     try:
-        r = session.get(SCOREBOARD_V3_URL, params=params, headers=nba_headers(), timeout=timeout)
-        if r.status_code != 200:
-            print(f"[WARN] scoreboard status={r.status_code} date={game_date_us}")
-            return pd.DataFrame()
-
-        data = r.json()
-        rs0 = data["resultSets"][0]
-        df = pd.DataFrame(rs0["rowSet"], columns=rs0["headers"])
-        if df.empty or "HOME_TEAM_ID" not in df.columns:
-            return pd.DataFrame()
-        df = df[df["HOME_TEAM_ID"].isin(VALID_TEAM_IDS)].copy()
-        return df
-    except Exception as e:
-        print(f"[WARN] scoreboard fetch failed for {game_date_us}: {e}")
-        return pd.DataFrame()
-
-def derive_dates_from_row(row: pd.Series, fallback_us_mmddyyyy: str):
-    """
-    保證不會 NULL：
-      - 優先用 GAME_DATE_EST (YYYY-MM-DD) -> MM/DD/YYYY
-      - 否則用 fallback
-      - TW 日期用 美東日期 +12:00 轉台灣取 date
-    """
-    date_est = row.get("GAME_DATE_EST", None)
-    if date_est:
-        try:
-            dt_est_date = datetime.strptime(str(date_est), "%Y-%m-%d").date()
-            game_date_us = dt_est_date.strftime("%m/%d/%Y")
-        except Exception:
-            game_date_us = fallback_us_mmddyyyy
-    else:
-        game_date_us = fallback_us_mmddyyyy
-
-    dt_noon_est = us_east_tz.localize(datetime.strptime(game_date_us, "%m/%d/%Y") + timedelta(hours=12))
-    game_date_tw = dt_noon_est.astimezone(tw_tz).strftime("%Y-%m-%d")
-    us_token = datetime.strptime(game_date_us, "%m/%d/%Y").strftime("%m%d%Y")
-    return game_date_us, game_date_tw, us_token
+        s = str(utc_iso).strip()
+        if not s:
+            return None
+        if s.endswith("Z"):
+            dt_utc = datetime.strptime(s, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=pytz.UTC)
+        else:
+            # try fractional seconds or timezone offset
+            dt_utc = datetime.fromisoformat(s)
+            if dt_utc.tzinfo is None:
+                dt_utc = dt_utc.replace(tzinfo=pytz.UTC)
+        return dt_utc.astimezone(tw_tz).strftime("%Y-%m-%d")
+    except Exception:
+        return None
 
 # -------------------------
-# Odds API
+# Fetch: stats scoreboardv3 -> normalized games
+# -------------------------
+def fetch_games_stats(session: requests.Session, game_date_us: str, max_seconds: int = 40) -> list[dict]:
+    start = time.time()
+    attempt = 0
+    params = {"GameDate": game_date_us, "LeagueID": "00"}
+
+    while True:
+        attempt += 1
+        if time.time() - start > max_seconds:
+            print(f"[WARN] stats giveup date={game_date_us} exceeded {max_seconds}s")
+            return []
+
+        time.sleep(0.2 + random.random() * 0.4)
+
+        try:
+            r = session.get(SCOREBOARD_V3_URL, params=params, headers=stats_headers(), timeout=(6, 18))
+            if r.status_code != 200:
+                print(f"[WARN] stats status={r.status_code} date={game_date_us} attempt={attempt}")
+                if r.status_code == 429:
+                    time.sleep(1.0 + random.random() * 1.0)
+                continue
+
+            data = r.json()
+            rs0 = data["resultSets"][0]
+            df = pd.DataFrame(rs0["rowSet"], columns=rs0["headers"])
+            if df.empty:
+                print(f"[WARN] stats empty df date={game_date_us}")
+                return []
+
+            out = []
+            for _, row in df.iterrows():
+                try:
+                    hid = int(row.get("HOME_TEAM_ID"))
+                    aid = int(row.get("VISITOR_TEAM_ID"))
+                    if hid not in VALID_TEAM_IDS or aid not in VALID_TEAM_IDS:
+                        continue
+                    home_abbr = ID_MAP.get(hid)
+                    away_abbr = ID_MAP.get(aid)
+                    if not home_abbr or not away_abbr:
+                        continue
+
+                    # status
+                    stxt = str(row.get("GAME_STATUS_TEXT", "")).lower()
+                    status = "final" if "final" in stxt else "scheduled"
+
+                    # date: prefer GAME_DATE_EST (YYYY-MM-DD) if exists
+                    date_est = row.get("GAME_DATE_EST", None)
+                    if date_est:
+                        try:
+                            dt_est = datetime.strptime(str(date_est), "%Y-%m-%d").date()
+                            game_date_us_eff = dt_est.strftime("%m/%d/%Y")
+                        except Exception:
+                            game_date_us_eff = game_date_us
+                    else:
+                        game_date_us_eff = game_date_us
+
+                    out.append({
+                        "source": "stats",
+                        "game_date_us": game_date_us_eff,
+                        "home_abbr": home_abbr,
+                        "away_abbr": away_abbr,
+                        "home_score": int(row.get("HOME_TEAM_SCORE") or 0) if status == "final" else None,
+                        "away_score": int(row.get("VISITOR_TEAM_SCORE") or 0) if status == "final" else None,
+                        "status": status,
+                        "gameTimeUTC": None,  # stats v3 in this minimal parse doesn't give us reliable UTC field
+                    })
+                except Exception:
+                    continue
+
+            print(f"[OK] stats date={game_date_us} games={len(out)} attempt={attempt}")
+            return out
+
+        except Exception as e:
+            print(f"[WARN] stats error date={game_date_us} attempt={attempt}: {e}")
+            continue
+
+# -------------------------
+# Fetch: CDN scoreboard -> normalized games
+# -------------------------
+def fetch_games_cdn(session: requests.Session, game_date_us: str, max_seconds: int = 25) -> list[dict]:
+    yyyymmdd = mmddyyyy_to_yyyymmdd(game_date_us)
+    url = CDN_SCOREBOARD_URL_TMPL.format(yyyymmdd=yyyymmdd)
+
+    start = time.time()
+    attempt = 0
+    while True:
+        attempt += 1
+        if time.time() - start > max_seconds:
+            print(f"[WARN] cdn giveup date={game_date_us} exceeded {max_seconds}s")
+            return []
+
+        time.sleep(0.15 + random.random() * 0.3)
+        try:
+            r = session.get(url, headers=cdn_headers(), timeout=(6, 18))
+            if r.status_code != 200:
+                print(f"[WARN] cdn status={r.status_code} date={game_date_us} attempt={attempt}")
+                if r.status_code == 429:
+                    time.sleep(1.0 + random.random())
+                continue
+
+            data = r.json()
+            games = (((data or {}).get("scoreboard") or {}).get("games")) or []
+            out = []
+            for g in games:
+                try:
+                    home = g.get("homeTeam", {}) or {}
+                    away = g.get("awayTeam", {}) or {}
+                    hid = int(home.get("teamId"))
+                    aid = int(away.get("teamId"))
+                    if hid not in VALID_TEAM_IDS or aid not in VALID_TEAM_IDS:
+                        continue
+                    home_abbr = ID_MAP.get(hid)
+                    away_abbr = ID_MAP.get(aid)
+                    if not home_abbr or not away_abbr:
+                        continue
+
+                    # status:
+                    # cdn: gameStatus=1 scheduled, 2 in-progress, 3 final (common)
+                    gs = int(g.get("gameStatus") or 0)
+                    status = "final" if gs == 3 else "scheduled"
+
+                    # score
+                    hs = int(home.get("score") or 0) if status == "final" else None
+                    a_s = int(away.get("score") or 0) if status == "final" else None
+
+                    out.append({
+                        "source": "cdn",
+                        "game_date_us": game_date_us,  # url is by US date
+                        "home_abbr": home_abbr,
+                        "away_abbr": away_abbr,
+                        "home_score": hs,
+                        "away_score": a_s,
+                        "status": status,
+                        "gameTimeUTC": g.get("gameTimeUTC", None),
+                    })
+                except Exception:
+                    continue
+
+            print(f"[OK] cdn date={game_date_us} games={len(out)} attempt={attempt}")
+            return out
+
+        except Exception as e:
+            print(f"[WARN] cdn error date={game_date_us} attempt={attempt}: {e}")
+            continue
+
+# -------------------------
+# Unified fetch with fallback
+# -------------------------
+def fetch_games(session: requests.Session, game_date_us: str) -> list[dict]:
+    # 1) try stats
+    g = fetch_games_stats(session, game_date_us)
+    if g:
+        return g
+    # 2) fallback cdn
+    g2 = fetch_games_cdn(session, game_date_us)
+    return g2
+
+# -------------------------
+# Odds API (Pinnacle spreads)
 # -------------------------
 def norm_name(s: str) -> str:
     if not isinstance(s, str):
@@ -394,36 +553,42 @@ def main():
     season = (os.environ.get("NBA_SEASON") or "2025-26").strip()
     db_init()
 
-    today_us = datetime.now(us_east_tz).date()
-    targets = [
-        (today_us - timedelta(days=1)).strftime("%m/%d/%Y"),
-        today_us.strftime("%m/%d/%Y"),
-        (today_us + timedelta(days=1)).strftime("%m/%d/%Y"),
-    ]
+    override = (os.environ.get("OVERRIDE_US_DATE") or "").strip()
+    if override:
+        targets = [override]
+    else:
+        today_us = datetime.now(us_east_tz).date()
+        targets = [
+            (today_us - timedelta(days=1)).strftime("%m/%d/%Y"),
+            today_us.strftime("%m/%d/%Y"),
+            (today_us + timedelta(days=1)).strftime("%m/%d/%Y"),
+        ]
 
     pin_map = get_pinnacle_odds_map()
     session = make_session()
 
     total = 0
     for d in targets:
-        df = fetch_scoreboardv3_df(session, d)
-        if df.empty:
-            print(f"[WARN] scoreboard empty for {d}")
+        games = fetch_games(session, d)
+        if not games:
+            print(f"[WARN] no games for {d} (both stats+cdn failed or empty)")
             continue
 
         rows = []
-        for _, r in df.iterrows():
-            hid = int(r["HOME_TEAM_ID"])
-            aid = int(r["VISITOR_TEAM_ID"])
-            home_abbr = ID_MAP.get(hid)
-            away_abbr = ID_MAP.get(aid)
-            if not home_abbr or not away_abbr:
-                continue
+        for g in games:
+            away_abbr = g["away_abbr"]
+            home_abbr = g["home_abbr"]
 
             home_cn = TEAM_NAME_CH.get(home_abbr, home_abbr)
             away_cn = TEAM_NAME_CH.get(away_abbr, away_abbr)
 
-            game_date_us, game_date_tw, us_token = derive_dates_from_row(r, fallback_us_mmddyyyy=d)
+            game_date_us = g["game_date_us"]
+            us_token = datetime.strptime(game_date_us, "%m/%d/%Y").strftime("%m%d%Y")
+
+            # TW date: prefer gameTimeUTC if present
+            tw_from_utc = tw_date_from_utc_iso(g.get("gameTimeUTC"))
+            game_date_tw = tw_from_utc or derive_tw_date_from_us_mmddyyyy(game_date_us)
+
             game_id = f"{away_abbr}_{home_abbr}_{us_token}"
 
             pin = pin_map.get((away_abbr, home_abbr))
@@ -436,9 +601,6 @@ def main():
                 sp, oh, oa, src = 0.0, 1.90, 1.90, "Fallback ⚠️"
 
             m = compute_metrics(0.0, sp, oh, oa, home_cn, away_cn)
-
-            stxt = str(r.get("GAME_STATUS_TEXT", "")).lower()
-            status = "final" if "final" in stxt else "scheduled"
 
             rows.append({
                 "game_id": game_id,
@@ -463,7 +625,7 @@ def main():
                 "ev": m["ev"],
                 "pick_team": m["pick_team"],
 
-                "status": status,
+                "status": g["status"],
                 "away_score": None,
                 "home_score": None,
                 "cover": None,
@@ -472,7 +634,7 @@ def main():
 
         n = bulk_upsert(rows)
         total += n
-        print(f"[OK] sync {d} rows={n}")
+        print(f"[OK] sync date={d} games={len(games)} upserted={n}")
 
     print(f"[OK] sync_total_rows={total}")
 
