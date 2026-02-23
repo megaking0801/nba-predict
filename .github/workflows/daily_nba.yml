@@ -2,6 +2,15 @@ name: daily_nba
 
 on:
   workflow_dispatch:
+    inputs:
+      run:
+        description: "Which steps to run? (sync|settle|train|all)"
+        required: true
+        default: "all"
+      verify_us_date:
+        description: "Optional: override US date (MM/DD/YYYY) for one-shot run; blank = auto targets"
+        required: false
+        default: ""
   schedule:
     # 台灣 18:30 (UTC+8) = UTC 10:30
     - cron: "30 10 * * *"
@@ -23,9 +32,10 @@ jobs:
       - name: Install deps
         run: |
           python -m pip install --upgrade pip
-          pip install pandas pytz requests nba_api psycopg2-binary scikit-learn
+          pip install pandas pytz requests psycopg2-binary scikit-learn nba_api
 
       - name: Sync games + odds snapshot into DB
+        if: ${{ github.event_name == 'schedule' || github.event.inputs.run == 'sync' || github.event.inputs.run == 'all' }}
         env:
           SUPABASE_HOST: ${{ secrets.SUPABASE_HOST }}
           SUPABASE_DB: ${{ secrets.SUPABASE_DB }}
@@ -34,20 +44,24 @@ jobs:
           SUPABASE_PORT: ${{ secrets.SUPABASE_PORT }}
           ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
           NBA_SEASON: "2025-26"
+          OVERRIDE_US_DATE: ${{ github.event.inputs.verify_us_date }}
         run: |
           python jobs/sync_daily.py
 
       - name: Settle results (scores + cover)
+        if: ${{ github.event_name == 'schedule' || github.event.inputs.run == 'settle' || github.event.inputs.run == 'all' }}
         env:
           SUPABASE_HOST: ${{ secrets.SUPABASE_HOST }}
           SUPABASE_DB: ${{ secrets.SUPABASE_DB }}
           SUPABASE_USER: ${{ secrets.SUPABASE_USER }}
           SUPABASE_PASSWORD: ${{ secrets.SUPABASE_PASSWORD }}
           SUPABASE_PORT: ${{ secrets.SUPABASE_PORT }}
+          OVERRIDE_US_DATE: ${{ github.event.inputs.verify_us_date }}
         run: |
           python jobs/settle_daily.py
 
       - name: Train calibrator (self-improving probability curve)
+        if: ${{ github.event_name == 'schedule' || github.event.inputs.run == 'train' || github.event.inputs.run == 'all' }}
         env:
           SUPABASE_HOST: ${{ secrets.SUPABASE_HOST }}
           SUPABASE_DB: ${{ secrets.SUPABASE_DB }}
