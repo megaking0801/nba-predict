@@ -1,4 +1,4 @@
-import os, json, base64, math
+import os, json, base64
 from datetime import datetime
 import pytz
 import pandas as pd
@@ -43,88 +43,39 @@ def ensure_model_registry():
     finally:
         conn.close()
 
-def brier_score(y_true, p):
-    # y_true can be 0/0.5/1; brier still meaningful
-    return float(((y_true - p) ** 2).mean())
-
-def log_loss(y_true, p, eps=1e-12):
-    # handle 0.5 label (push) by treating it as soft label
-    # logloss = -[y*log(p) + (1-y)*log(1-p)]
-    p = p.clip(eps, 1 - eps)
-    return float((-(y_true * p.apply(math.log) + (1 - y_true) * (1 - p).apply(math.log))).mean())
-
 def main():
     ensure_model_registry()
 
     conn = pg_conn()
     try:
         df = pd.read_sql("""
-            SELECT
-              game_date,
-              home_score,
-              away_score,
-              f_edge,
-              cover
+            SELECT p_raw, cover
             FROM games
             WHERE cover IS NOT NULL
-              AND f_edge IS NOT NULL
-              AND home_score IS NOT NULL
-              AND away_score IS NOT NULL
+              AND p_raw IS NOT NULL
         """, conn)
 
         n = len(df)
-        if n < 200:
-            print(f"[WARN] train skipped: not enough settled rows n={n} (<200)")
+        if n < 300:
+            print(f"[WARN] calibrator train skipped: not enough rows n={n} (<300)")
             return
 
         # cover: 1=home cover, 0=not, 2=push -> 0.5
-        y = df["cover"].astype(int).map(lambda c: 0.5 if c == 2 else (1.0 if c == 1 else 0.0)).astype(float)
-        x = df["f_edge"].astype(float)
+        y = df["cover"].map(lambda c: 0.5 if int(c) == 2 else (1.0 if int(c) == 1 else 0.0)).astype(float)
+        x = df["p_raw"].astype(float).clip(0.001, 0.999)
 
-        # time split (last 20% as validation)
-        df2 = df.assign(y=y, x=x).sort_values("game_date").reset_index(drop=True)
-        cut = int(len(df2) * 0.8)
-        train = df2.iloc[:cut]
-        valid = df2.iloc[cut:]
-
-        if len(valid) < 30:
-            # avoid meaningless validation
-            train = df2
-            valid = None
-
-        iso = IsotonicRegression(y_min=0.05, y_max=0.95, increasing=True, out_of_bounds="clip")
-        iso.fit(train["x"], train["y"])
-
-        # evaluation
-        train_p = pd.Series(iso.predict(train["x"]), index=train.index)
-        train_metrics = {
-            "brier": brier_score(train["y"], train_p),
-            "logloss": log_loss(train["y"], train_p),
-            "rows": int(len(train)),
-        }
-
-        valid_metrics = None
-        if valid is not None and len(valid) > 0:
-            valid_p = pd.Series(iso.predict(valid["x"]), index=valid.index)
-            valid_metrics = {
-                "brier": brier_score(valid["y"], valid_p),
-                "logloss": log_loss(valid["y"], valid_p),
-                "rows": int(len(valid)),
-                "cutoff_game_date": str(valid["game_date"].iloc[0]),
-            }
+        iso = IsotonicRegression(y_min=0.02, y_max=0.98, increasing=True, out_of_bounds="clip")
+        iso.fit(x, y)
 
         payload = base64.b64encode(pickle.dumps(iso)).decode("utf-8")
         now_tw = datetime.now(tw_tz).strftime("%Y-%m-%d %H:%M:%S")
 
         metrics = {
             "type": "isotonic",
-            "target": "home_cover_prob",
-            "note": "P(home_cover)=f(f_edge) calibrated from settled games",
+            "input": "p_raw",
+            "target": "P(home_cover)",
+            "rows": int(n),
             "push": "0.5",
-            "n_total": int(n),
-            "train": train_metrics,
-            "valid": valid_metrics,
-            "assumption": "increasing=True means larger f_edge -> higher P(home_cover)",
         }
 
         with conn.cursor() as cur:
@@ -147,7 +98,7 @@ def main():
             ))
 
         conn.commit()
-        print(f"[OK] trained calibrator rows={n} version={now_tw} train={train_metrics} valid={valid_metrics}")
+        print(f"[OK] trained calibrator rows={n} version={now_tw}")
 
     finally:
         conn.close()
