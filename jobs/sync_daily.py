@@ -2,37 +2,20 @@
 # -*- coding: utf-8 -*-
 
 """
-jobs/sync_daily.py (upgraded)
+jobs/sync_daily.py (stable + fast backfill)
 
-What it does:
-- Fetch NBA scoreboard (schedule/scores/status) from ESPN for a date window
-- Fetch spreads from The Odds API with multi-bookmaker fallback
-- Compute features (base_diff, f_edge) using nba_api + ESPN injuries + team context
-- Compute cover_prob using trained calibrator in model_registry if exists; else fallback logistic curve
-- Upsert into Supabase/Postgres public.games (schema-aligned, with COALESCE preserve logic)
+- ESPN scoreboard -> games list
+- Odds API spreads (multi-book) -> odds map
+- nba_api (player stats + team gamelog) + ESPN injuries -> base_diff
+- f_edge = base_diff + home_spread
+- cover_prob uses model_registry calibrator if exists; else fallback logistic
+- Upsert into Supabase/Postgres public.games
+- Past dates: if odds missing, send NULLs so DB preserves existing odds/features (COALESCE)
+- Today/future: if odds missing, write fallback odds
 
-Backfill:
-- BACKFILL_PAST_DAYS: e.g. "120" -> anchor day and previous 119 days
-- BACKFILL_FUTURE_DAYS: e.g. "7" -> anchor day and next 6 days
-- Anchor day defaults to US/Eastern "today", or OVERRIDE_US_DATE (MM/DD/YYYY)
-
-Important behavior:
-- For PAST dates: if odds not found, we DO NOT overwrite existing odds/features in DB
-  (we send NULLs and UPSERT uses COALESCE to preserve existing values)
-- For TODAY/FUTURE dates: if odds not found, we write fallback (0, 1.90, 1.90, "Fallback ⚠️")
-
-Env expected:
-- SUPABASE_HOST, SUPABASE_DB, SUPABASE_USER, SUPABASE_PASSWORD, SUPABASE_PORT
-- ODDS_API_KEY
-- NBA_SEASON (optional, default "2025-26")
-- OVERRIDE_US_DATE (optional, MM/DD/YYYY)
-- BACKFILL_PAST_DAYS (optional int, default 1)
-- BACKFILL_FUTURE_DAYS (optional int, default 1)
-- DRY_RUN=1 (optional)
-
-Notes:
-- Feature engineering is "current snapshot" (season-to-date stats) even for past dates.
-  This is NOT perfect historically, but it's consistent and lets you bootstrap training.
+Critical performance fix:
+- For past backfill, we DO NOT call teamgamelog unless we will compute base_diff.
+  This prevents API call explosion and GitHub Actions cancel due to timeout.
 """
 
 import os
@@ -57,9 +40,9 @@ from nba_api.stats.endpoints import leaguedashplayerstats, teamgamelog
 from nba_api.stats.static import teams as nba_teams
 
 
-# -----------------------------
+# =========================================================
 # Utilities
-# -----------------------------
+# =========================================================
 
 def norm_name(s: str) -> str:
     if not isinstance(s, str):
@@ -100,9 +83,9 @@ def today_tw_mmddyyyy() -> str:
         return (dt.datetime.utcnow() + dt.timedelta(hours=8)).strftime("%m/%d/%Y")
 
 
-# -----------------------------
+# =========================================================
 # Team mapping (Odds API -> Abbr)
-# -----------------------------
+# =========================================================
 
 ODDS_TEAMNAME_TO_ABBR: Dict[str, str] = {
     "atlanta hawks": "ATL",
@@ -142,13 +125,12 @@ ODDS_TEAMNAME_TO_ABBR: Dict[str, str] = {
 BOOK_KEY_ALIASES = {"pointsbet": "pointsbetus"}
 
 
-# -----------------------------
-# ESPN Fetch (scoreboard)
-# -----------------------------
+# =========================================================
+# ESPN scoreboard
+# =========================================================
 
 def fetch_espn_scoreboard(date_us: dt.date) -> List[dict]:
     """
-    Stable endpoint:
     https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard?dates=YYYYMMDD
     """
     ymd = date_us.strftime("%Y%m%d")
@@ -166,7 +148,7 @@ def fetch_espn_scoreboard(date_us: dt.date) -> List[dict]:
                 events = data.get("events") or []
                 print(f"[INFO] espn scoreboard ok url={url} games={len(events)}")
                 return events
-            print(f"[WARN] espn scoreboard status={r.status_code} url={url} body={r.text[:120]}")
+            print(f"[WARN] espn scoreboard status={r.status_code} url={url} body={r.text[:140]}")
             last_err = Exception(f"status={r.status_code} url={r.url}")
         except Exception as e:
             print(f"[WARN] espn scoreboard error url={url} err={e}")
@@ -180,7 +162,7 @@ def parse_espn_events(events: List[dict], date_us: dt.date) -> List[dict]:
     Output per game:
     - game_date_us (MM/DD/YYYY)
     - home_abbr, away_abbr
-    - home_name, away_name  (ESPN displayName)
+    - home_name, away_name
     - home_score, away_score (int or None)
     - status: scheduled | in_progress | final
     """
@@ -252,18 +234,13 @@ def parse_espn_events(events: List[dict], date_us: dt.date) -> List[dict]:
     return out
 
 
-# -----------------------------
-# Odds API Fetch (multi-book fallback)
-# -----------------------------
+# =========================================================
+# Odds API spreads
+# =========================================================
 
 def get_odds_map() -> Dict[Tuple[str, str], dict]:
     """
-    Map keyed by (away_abbr, home_abbr):
-      {
-        (away, home): {
-          home_spread, home_odds, away_odds, line_source
-        }
-      }
+    Map keyed by (away_abbr, home_abbr)
     """
     api_key = (os.environ.get("ODDS_API_KEY") or "").strip()
     if not api_key:
@@ -366,9 +343,9 @@ def get_odds_map() -> Dict[Tuple[str, str], dict]:
     return out
 
 
-# -----------------------------
-# DB
-# -----------------------------
+# =========================================================
+# DB connection + schema
+# =========================================================
 
 def db_connect():
     db_url = (os.environ.get("DATABASE_URL") or "").strip()
@@ -384,7 +361,7 @@ def db_connect():
     present = all([host, dbname, user, password, port])
     print(f"[INFO] DB_ENV_present={present} via={'SUPABASE_*' if present else 'none'}")
     if not present:
-        raise RuntimeError("DB connection env missing: set DATABASE_URL or SUPABASE_HOST/DB/USER/PASSWORD/PORT")
+        raise RuntimeError("DB env missing: set DATABASE_URL or SUPABASE_HOST/DB/USER/PASSWORD/PORT")
 
     return psycopg2.connect(
         host=host,
@@ -397,10 +374,6 @@ def db_connect():
 
 
 def ensure_schema():
-    """
-    Ensure public.games has required columns for ML pipeline.
-    Safe to run every time.
-    """
     ddl = """
     CREATE TABLE IF NOT EXISTS public.games (
         game_id TEXT PRIMARY KEY,
@@ -435,8 +408,16 @@ def ensure_schema():
         updated_at_tw TEXT,
         game_date_tw TEXT
     );
-
     CREATE INDEX IF NOT EXISTS idx_games_date_us ON public.games (game_date_us);
+
+    CREATE TABLE IF NOT EXISTS public.model_registry (
+      model_name TEXT PRIMARY KEY,
+      model_version TEXT,
+      payload_base64 TEXT,
+      trained_rows INT,
+      metrics JSONB,
+      created_at_tw TEXT
+    );
     """
     conn = db_connect()
     try:
@@ -444,7 +425,6 @@ def ensure_schema():
             with conn.cursor() as cur:
                 cur.execute(ddl)
 
-                # If table existed with fewer columns, add missing ones
                 alters = [
                     "ALTER TABLE public.games ADD COLUMN IF NOT EXISTS base_diff DOUBLE PRECISION",
                     "ALTER TABLE public.games ADD COLUMN IF NOT EXISTS f_edge DOUBLE PRECISION",
@@ -466,13 +446,12 @@ def ensure_schema():
         conn.close()
 
 
-def load_models(conn) -> Tuple[Optional[Any], Optional[Any]]:
+def load_models() -> Tuple[Optional[Any], Optional[Any]]:
     """
     Load base_model + calibrator from model_registry if present.
     Returns (base_model, calibrator)
     """
-    base_model = None
-    calibrator = None
+    conn = db_connect()
     try:
         df = pd.read_sql("""
             SELECT model_name, payload_base64
@@ -481,9 +460,12 @@ def load_models(conn) -> Tuple[Optional[Any], Optional[Any]]:
         if df.empty:
             return None, None
 
+        base_model = None
+        calibrator = None
+
         for _, r in df.iterrows():
-            name = str(r["model_name"])
-            payload = r["payload_base64"]
+            name = str(r.get("model_name", ""))
+            payload = r.get("payload_base64")
             if not payload:
                 continue
             obj = pickle.loads(base64.b64decode(payload))
@@ -492,18 +474,18 @@ def load_models(conn) -> Tuple[Optional[Any], Optional[Any]]:
             if name == "cover_prob_calibrator":
                 calibrator = obj
 
+        return base_model, calibrator
     except Exception:
         return None, None
+    finally:
+        conn.close()
 
-    return base_model, calibrator
 
-
-# -----------------------------
-# Feature Engineering (nba_api + ESPN injuries)
-# -----------------------------
+# =========================================================
+# nba_api data
+# =========================================================
 
 ALL_TEAMS = nba_teams.get_teams()
-ID_TO_ABBR = {int(t["id"]): t["abbreviation"] for t in ALL_TEAMS}
 ABBR_TO_ID = {t["abbreviation"]: int(t["id"]) for t in ALL_TEAMS}
 
 TEAM_MAP = {
@@ -531,6 +513,7 @@ def fetch_safe_df(endpoint_cls, retries: int = 2, sleep_s: float = 0.7, **kwargs
             else:
                 return pd.DataFrame()
 
+
 def get_player_stats(season: str) -> pd.DataFrame:
     ps = fetch_safe_df(
         leaguedashplayerstats.LeagueDashPlayerStats,
@@ -556,10 +539,11 @@ def get_player_stats(season: str) -> pd.DataFrame:
     ps["NORM"] = ps["PLAYER_NAME"].astype(str).map(norm_name)
     return ps
 
+
 def get_injuries() -> pd.DataFrame:
     """
-    Parse ESPN injury page. Best-effort.
-    Returns columns: NORM, IS_OUT, TEAM_ABBR
+    ESPN injuries page best-effort parse.
+    Returns columns: NORM, TEAM_ABBR, IS_OUT
     """
     inj_list = []
     try:
@@ -592,7 +576,6 @@ def get_injuries() -> pd.DataFrame:
 
                 raw_player = cols[0].get_text(" ", strip=True)
                 raw_player = re.sub(r"\s+(PG|SG|SF|PF|C|G|F)\s*$", "", raw_player, flags=re.I).strip()
-
                 row_text = " | ".join([c.get_text(" ", strip=True) for c in cols]).lower()
 
                 out_kw = ["out", "ruled out", "will not play", "inactive", "suspended"]
@@ -608,13 +591,14 @@ def get_injuries() -> pd.DataFrame:
 
     return pd.DataFrame(inj_list)
 
+
 def get_team_context(team_ids: List[int], game_date_us: str, season: str) -> Dict[int, dict]:
     """
-    For each team id, use TeamGameLog to compute:
-    - b2b: if last game date == previous day
-    - recent_w: last 5 pre-game win rate
+    TeamGameLog -> b2b + recent_w (pre-game last 5)
+    PERFORMANCE FIX:
+    - GAME_DATE format is "%b %d, %Y" so parsing is fast and no warning.
     """
-    ctx = {}
+    ctx: Dict[int, dict] = {}
     game_day = dt.datetime.strptime(game_date_us, "%m/%d/%Y").date()
     prev_day = game_day - dt.timedelta(days=1)
 
@@ -624,7 +608,14 @@ def get_team_context(team_ids: List[int], game_date_us: str, season: str) -> Dic
 
         if not log.empty and "GAME_DATE" in log.columns and "WL" in log.columns:
             log = log.head(15).copy()
-            log["GAME_DATE"] = pd.to_datetime(log["GAME_DATE"], errors="coerce").dt.date
+
+            # ✅ FIX: specify format to avoid slow dateutil parsing + warning
+            log["GAME_DATE"] = pd.to_datetime(
+                log["GAME_DATE"],
+                format="%b %d, %Y",
+                errors="coerce"
+            ).dt.date
+
             log = log.dropna(subset=["GAME_DATE"])
 
             prior = log[log["GAME_DATE"] < game_day].sort_values("GAME_DATE", ascending=False)
@@ -636,6 +627,7 @@ def get_team_context(team_ids: List[int], game_date_us: str, season: str) -> Dic
                     recent_w = (last5["WL"] == "W").mean()
 
         ctx[tid] = {"b2b": bool(is_b2b), "recent_w": float(recent_w)}
+
     return ctx
 
 
@@ -649,7 +641,7 @@ def compute_base_diff(
     ctx_db: Dict[int, dict],
 ) -> Optional[float]:
     """
-    Clone your Streamlit formula:
+    Same as your Streamlit formula:
     base_diff = (h_pts - a_pts)*0.09 + (h_impact - a_impact)*3.8 + 2.5 + b2b_v + recent_v
     """
     hid = ABBR_TO_ID.get(home_abbr)
@@ -692,12 +684,11 @@ def compute_base_diff(
     return float(base_diff)
 
 
-# -----------------------------
+# =========================================================
 # Probability + EV
-# -----------------------------
+# =========================================================
 
-# Fallback mapping if calibrator not present
-PROB_SCALE = float((os.environ.get("PROB_SCALE") or "12").strip())   # same as UI default
+PROB_SCALE = float((os.environ.get("PROB_SCALE") or "12").strip())
 PROB_FLOOR = float((os.environ.get("PROB_FLOOR") or "0.12").strip())
 PROB_CEIL  = float((os.environ.get("PROB_CEIL") or "0.88").strip())
 
@@ -716,11 +707,6 @@ def compute_market_metrics(
     base_diff: Optional[float],
     calibrator: Optional[Any],
 ) -> Dict[str, Optional[float]]:
-    """
-    f_edge = base_diff + home_spread
-    cover_prob = calibrator(f_edge) if exists else fallback
-    pick_team: home if f_edge > 0 else away
-    """
     if base_diff is None or home_spread is None:
         return {
             "f_edge": None,
@@ -736,7 +722,6 @@ def compute_market_metrics(
 
     if calibrator is not None:
         try:
-            # isotonic regression supports predict on array-like
             p = float(calibrator.predict([f_edge])[0])
             p = max(0.0, min(1.0, p))
         except Exception:
@@ -745,22 +730,11 @@ def compute_market_metrics(
         p = fallback_cover_prob(f_edge)
 
     pick_home = (f_edge > 0)
+    odds_used = float(home_odds) if pick_home else float(away_odds)
 
-    odds_used = None
-    if pick_home:
-        odds_used = float(home_odds) if home_odds is not None else None
-    else:
-        odds_used = float(away_odds) if away_odds is not None else None
-
-    implied_prob = None
-    if odds_used is not None and odds_used > 0:
-        implied_prob = float(1.0 / odds_used)
-
-    edge_value = None
-    ev = None
-    if implied_prob is not None:
-        edge_value = float(p - implied_prob)
-        ev = float(p * odds_used - 1.0) if odds_used is not None else None
+    implied_prob = float(1.0 / odds_used) if odds_used and odds_used > 0 else None
+    edge_value = float(p - implied_prob) if implied_prob is not None else None
+    ev = float(p * odds_used - 1.0) if implied_prob is not None else None
 
     pick_team = home_abbr if pick_home else away_abbr
 
@@ -775,9 +749,9 @@ def compute_market_metrics(
     }
 
 
-# -----------------------------
+# =========================================================
 # UPSERT
-# -----------------------------
+# =========================================================
 
 UPSERT_SQL = """
 INSERT INTO public.games (
@@ -846,13 +820,11 @@ DO UPDATE SET
     away_name     = EXCLUDED.away_name,
     home_name     = EXCLUDED.home_name,
 
-    -- Preserve existing odds if EXCLUDED is NULL (past backfill)
     home_spread   = COALESCE(EXCLUDED.home_spread, public.games.home_spread),
     home_odds     = COALESCE(EXCLUDED.home_odds,   public.games.home_odds),
     away_odds     = COALESCE(EXCLUDED.away_odds,   public.games.away_odds),
     line_source   = COALESCE(EXCLUDED.line_source, public.games.line_source),
 
-    -- Preserve existing features if EXCLUDED is NULL (past backfill)
     base_diff     = COALESCE(EXCLUDED.base_diff,   public.games.base_diff),
     f_edge        = COALESCE(EXCLUDED.f_edge,      public.games.f_edge),
     cover_prob    = COALESCE(EXCLUDED.cover_prob,  public.games.cover_prob),
@@ -886,16 +858,15 @@ def upsert_games(rows: List[dict]) -> None:
         conn.close()
 
 
-# -----------------------------
+# =========================================================
 # Main
-# -----------------------------
+# =========================================================
 
 def main():
     print(f"[INFO] ODDS_API_KEY_present={bool((os.environ.get('ODDS_API_KEY') or '').strip())}")
 
     ensure_schema()
 
-    # Anchor date (US)
     override = (os.environ.get("OVERRIDE_US_DATE") or "").strip()
     if override:
         try:
@@ -905,17 +876,11 @@ def main():
     else:
         anchor_date_us = us_eastern_today()
 
-    print(f"[INFO] target_date_us={anchor_date_us.isoformat()}")
-
-    # Backfill windows
     def _int_env(name: str, default: int) -> int:
         raw = (os.environ.get(name) or "").strip()
         if not raw:
             return default
-        try:
-            return max(1, int(raw))
-        except ValueError:
-            raise RuntimeError(f"{name} must be an integer")
+        return max(1, int(raw))
 
     past_days = _int_env("BACKFILL_PAST_DAYS", 1)
     future_days = _int_env("BACKFILL_FUTURE_DAYS", 1)
@@ -924,34 +889,29 @@ def main():
     future_list = [anchor_date_us + dt.timedelta(days=i) for i in range(1, future_days)]
     date_list = past_list + future_list
 
-    print(f"[INFO] backfill_past_days={past_days} backfill_future_days={future_days}")
-    print(f"[INFO] dates={[d.isoformat() for d in date_list[:5]]} ... total={len(date_list)}")
-
     season = (os.environ.get("NBA_SEASON") or "2025-26").strip()
+
     ts_tw = now_tw_str()
     game_date_tw = today_tw_mmddyyyy()
 
-    # load models once
-    conn_for_models = db_connect()
-    try:
-        base_model, calibrator = load_models(conn_for_models)
-    finally:
-        conn_for_models.close()
-
+    # models
+    base_model, calibrator = load_models()
     print("[INFO] loading models...")
     print(f"[INFO] base_model={bool(base_model)}")
     print(f"[INFO] calibrator={bool(calibrator)}")
 
-    # Odds map once per run (market snapshot)
+    # odds snapshot
     odds_map = get_odds_map()
 
-    # Feature inputs snapshot once per run
+    # feature snapshot
     ps_db = get_player_stats(season=season)
     inj_db = get_injuries()
 
     total_rows = 0
+
     for d in date_list:
-        print(f"[INFO] ---- sync date_us={d.isoformat()} ----")
+        is_past = d < anchor_date_us
+        print(f"[INFO] ---- sync date_us={d.isoformat()} is_past={is_past} ----")
 
         try:
             events = fetch_espn_scoreboard(d)
@@ -961,19 +921,35 @@ def main():
             print(f"[ERROR] espn fetch failed for {d.isoformat()}: {e}")
             continue
 
-        # team context is date-specific
-        team_ids = []
-        for g in games:
-            hid = ABBR_TO_ID.get(g["home_abbr"])
-            aid = ABBR_TO_ID.get(g["away_abbr"])
-            if hid:
-                team_ids.append(hid)
-            if aid:
-                team_ids.append(aid)
-        team_ids = sorted(set(team_ids))
-        ctx_db = get_team_context(team_ids, game_date_us=d.strftime("%m/%d/%Y"), season=season) if team_ids else {}
+        if not games:
+            continue
 
-        is_past = d < anchor_date_us
+        # ✅ PERFORMANCE FIX:
+        # past days usually won't compute base_diff (no odds snapshot for past),
+        # so DO NOT call teamgamelog unless needed.
+        need_ctx = False
+        if not is_past:
+            need_ctx = True
+        else:
+            for gg in games:
+                if odds_map.get((gg["away_abbr"], gg["home_abbr"])) is not None:
+                    need_ctx = True
+                    break
+
+        ctx_db: Dict[int, dict] = {}
+        if need_ctx:
+            team_ids: List[int] = []
+            for gg in games:
+                hid = ABBR_TO_ID.get(gg["home_abbr"])
+                aid = ABBR_TO_ID.get(gg["away_abbr"])
+                if hid:
+                    team_ids.append(hid)
+                if aid:
+                    team_ids.append(aid)
+            team_ids = sorted(set(team_ids))
+            if team_ids:
+                ctx_db = get_team_context(team_ids, game_date_us=d.strftime("%m/%d/%Y"), season=season)
+
         rows: List[dict] = []
 
         for g in games:
@@ -992,8 +968,11 @@ def main():
                 else:
                     sp, oh, oa, src = 0.0, 1.90, 1.90, "Fallback ⚠️"
 
+            # compute features only when meaningful:
+            should_compute = (not is_past) or (sp is not None)
+
             base_diff = None
-            m = {
+            mm = {
                 "f_edge": None,
                 "cover_prob": None,
                 "implied_prob": None,
@@ -1002,10 +981,6 @@ def main():
                 "pick_team": None,
                 "odds_used": None,
             }
-
-            # For past: if odds missing (None) we won't compute features to avoid overwriting historical records.
-            # For today/future: always compute features (even fallback odds).
-            should_compute = (not is_past) or (sp is not None)
 
             if should_compute:
                 base_diff = compute_base_diff(
@@ -1017,7 +992,7 @@ def main():
                     inj_db=inj_db,
                     ctx_db=ctx_db,
                 )
-                m = compute_market_metrics(
+                mm = compute_market_metrics(
                     home_abbr=home_abbr,
                     away_abbr=away_abbr,
                     home_spread=sp,
@@ -1045,13 +1020,13 @@ def main():
                 "line_source": src,
 
                 "base_diff": base_diff,
-                "f_edge": m["f_edge"],
-                "cover_prob": m["cover_prob"],
-                "implied_prob": m["implied_prob"],
-                "edge_value": m["edge_value"],
-                "ev": m["ev"],
-                "pick_team": m["pick_team"],
-                "odds_used": m["odds_used"],
+                "f_edge": mm["f_edge"],
+                "cover_prob": mm["cover_prob"],
+                "implied_prob": mm["implied_prob"],
+                "edge_value": mm["edge_value"],
+                "ev": mm["ev"],
+                "pick_team": mm["pick_team"],
+                "odds_used": mm["odds_used"],
 
                 "status": g["status"],
                 "away_score": g["away_score"],
