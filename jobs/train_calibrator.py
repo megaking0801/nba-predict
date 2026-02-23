@@ -1,11 +1,10 @@
-import os, base64, json
+import os, json, base64
 from datetime import datetime
 import pytz
 import pandas as pd
 import psycopg2
-
-from sklearn.isotonic import IsotonicRegression
 import pickle
+from sklearn.isotonic import IsotonicRegression
 
 tw_tz = pytz.timezone("Asia/Taipei")
 
@@ -17,32 +16,54 @@ def pg_conn():
     port_raw = (os.environ.get("SUPABASE_PORT") or "").strip()
     port = int(port_raw) if port_raw.isdigit() else 5432
 
+    if not host or not user or not pw:
+        raise RuntimeError("Missing DB env vars. Check GitHub Actions secrets.")
+
     return psycopg2.connect(
         host=host, dbname=db, user=user, password=pw, port=port,
-        sslmode="require", connect_timeout=10
+        sslmode="require", connect_timeout=12
     )
 
-def main():
+def ensure_model_registry():
+    sql = """
+    CREATE TABLE IF NOT EXISTS model_registry (
+      model_name TEXT PRIMARY KEY,
+      model_version TEXT,
+      payload_base64 TEXT,
+      trained_rows INT,
+      metrics JSONB,
+      created_at_tw TEXT
+    );
+    """
     conn = pg_conn()
     try:
-        # 只拿已結算（final）的資料
-        df = pd.read_sql("""
-            select f_edge, cover
-            from games
-            where cover is not null
-              and f_edge is not null
-            """, conn)
+        with conn.cursor() as cur:
+            cur.execute(sql)
+        conn.commit()
+    finally:
+        conn.close()
 
-        if df.empty or len(df) < 200:
-            print(f"[WARN] not enough settled rows to train calibrator: n={len(df)}")
+def main():
+    ensure_model_registry()
+
+    conn = pg_conn()
+    try:
+        df = pd.read_sql("""
+            SELECT f_edge, cover
+            FROM games
+            WHERE cover IS NOT NULL
+              AND f_edge IS NOT NULL
+        """, conn)
+
+        n = len(df)
+        if n < 200:
+            print(f"[WARN] train skipped: not enough settled rows n={n} (<200)")
             return
 
-        # cover: 1=home cover, 0=not, 2=push
-        # 這裡把 push(2) 當 0.5（也可選擇丟掉 push）
+        # cover: 1=home cover, 0=not, 2=push -> 0.5
         y = df["cover"].map(lambda c: 0.5 if int(c) == 2 else (1.0 if int(c) == 1 else 0.0)).astype(float)
         x = df["f_edge"].astype(float)
 
-        # isotonic regression: 讓 P 隨 f_edge 單調增加
         iso = IsotonicRegression(y_min=0.05, y_max=0.95, increasing=True, out_of_bounds="clip")
         iso.fit(x, y)
 
@@ -50,31 +71,33 @@ def main():
         now_tw = datetime.now(tw_tz).strftime("%Y-%m-%d %H:%M:%S")
 
         metrics = {
-            "note": "IsotonicRegression calibrator: P(home_cover) = f(f_edge)",
-            "rows": int(len(df)),
-            "push_handling": "push=0.5",
+            "type": "isotonic",
+            "note": "P(home_cover)=f(f_edge) calibrated from settled games",
+            "rows": int(n),
+            "push": "0.5",
         }
 
         with conn.cursor() as cur:
             cur.execute("""
-                insert into model_registry (model_name, model_version, payload_base64, trained_rows, metrics, created_at_tw)
-                values (%s, %s, %s, %s, %s::jsonb, %s)
-                on conflict (model_name) do update set
-                  model_version=excluded.model_version,
-                  payload_base64=excluded.payload_base64,
-                  trained_rows=excluded.trained_rows,
-                  metrics=excluded.metrics,
-                  created_at_tw=excluded.created_at_tw
+                INSERT INTO model_registry (model_name, model_version, payload_base64, trained_rows, metrics, created_at_tw)
+                VALUES (%s, %s, %s, %s, %s::jsonb, %s)
+                ON CONFLICT (model_name) DO UPDATE SET
+                  model_version=EXCLUDED.model_version,
+                  payload_base64=EXCLUDED.payload_base64,
+                  trained_rows=EXCLUDED.trained_rows,
+                  metrics=EXCLUDED.metrics,
+                  created_at_tw=EXCLUDED.created_at_tw
             """, (
                 "cover_prob_calibrator",
-                now_tw,   # 用時間當版本
+                now_tw,
                 payload,
-                int(len(df)),
+                int(n),
                 json.dumps(metrics),
                 now_tw
             ))
+
         conn.commit()
-        print(f"[OK] trained calibrator rows={len(df)} version={now_tw}")
+        print(f"[OK] trained calibrator rows={n} version={now_tw}")
 
     finally:
         conn.close()
