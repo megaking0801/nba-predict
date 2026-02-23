@@ -410,10 +410,32 @@ DO UPDATE SET
 
 
 def db_connect():
+    # 1) Prefer DATABASE_URL if present
     db_url = (os.environ.get("DATABASE_URL") or "").strip()
-    if not db_url:
-        raise RuntimeError("DATABASE_URL missing")
-    return psycopg2.connect(db_url)
+    if db_url:
+        return psycopg2.connect(db_url)
+
+    # 2) Fallback: SUPABASE_* envs (your workflow uses these)
+    host = (os.environ.get("SUPABASE_HOST") or "").strip()
+    dbname = (os.environ.get("SUPABASE_DB") or "").strip()
+    user = (os.environ.get("SUPABASE_USER") or "").strip()
+    password = (os.environ.get("SUPABASE_PASSWORD") or "").strip()
+    port = (os.environ.get("SUPABASE_PORT") or "5432").strip()
+
+    present = all([host, dbname, user, password, port])
+    print(f"[INFO] DB_ENV_present={present} via={'SUPABASE_*' if present else 'none'}")
+
+    if not present:
+        raise RuntimeError("DB connection env missing: set DATABASE_URL or SUPABASE_HOST/DB/USER/PASSWORD/PORT")
+
+    return psycopg2.connect(
+        host=host,
+        dbname=dbname,
+        user=user,
+        password=password,
+        port=int(port),
+        sslmode="require",  # Supabase 通常需要 ssl
+    )
 
 
 def upsert_games(rows: List[dict]) -> None:
@@ -440,8 +462,17 @@ def main():
     print(f"[INFO] ODDS_API_KEY_present={bool((os.environ.get('ODDS_API_KEY') or '').strip())}")
 
     # Determine target US date
+    override = (os.environ.get("OVERRIDE_US_DATE") or "").strip()
     target = (os.environ.get("TARGET_DATE_US") or "").strip()
-    if target:
+
+    if override:
+        # workflow uses MM/DD/YYYY
+        try:
+            date_us = dt.datetime.strptime(override, "%m/%d/%Y").date()
+        except ValueError:
+            raise RuntimeError("OVERRIDE_US_DATE must be MM/DD/YYYY")
+    elif target:
+        # optional: YYYY-MM-DD
         try:
             date_us = dt.datetime.strptime(target, "%Y-%m-%d").date()
         except ValueError:
