@@ -13,10 +13,11 @@ tw_tz = pytz.timezone("Asia/Taipei")
 us_east_tz = pytz.timezone("US/Eastern")
 
 ALL_TEAMS = static_teams.get_teams()
-VALID_TEAM_IDS = set(t["id"] for t in ALL_TEAMS)
-ID_MAP = {t["id"]: t["abbreviation"] for t in ALL_TEAMS}
+VALID_TEAM_IDS = set(int(t["id"]) for t in ALL_TEAMS)
+ID_MAP = {int(t["id"]): t["abbreviation"] for t in ALL_TEAMS}
 
 SCOREBOARD_V3_URL = "https://stats.nba.com/stats/scoreboardv3"
+CDN_SCOREBOARD_URL_TMPL = "https://cdn.nba.com/static/json/liveData/scoreboard/scoreboard_{yyyymmdd}.json"
 
 def pg_conn():
     host = (os.environ.get("SUPABASE_HOST") or "").strip()
@@ -34,7 +35,7 @@ def pg_conn():
         sslmode="require", connect_timeout=12
     )
 
-def nba_headers():
+def stats_headers():
     return {
         "Host": "stats.nba.com",
         "Connection": "keep-alive",
@@ -54,13 +55,22 @@ def nba_headers():
         "Accept-Language": "en-US,en;q=0.9",
     }
 
+def cdn_headers():
+    return {
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Encoding": "gzip, deflate, br",
+        "Cache-Control": "no-cache",
+        "Pragma": "no-cache",
+        "User-Agent": "Mozilla/5.0",
+    }
+
 def make_session() -> requests.Session:
     s = requests.Session()
     retry = Retry(
-        total=7,
-        connect=7,
-        read=7,
-        backoff_factor=1.2,
+        total=2,
+        connect=2,
+        read=2,
+        backoff_factor=0.6,
         status_forcelist=(429, 500, 502, 503, 504),
         allowed_methods=("GET",),
         raise_on_status=False,
@@ -70,39 +80,147 @@ def make_session() -> requests.Session:
     s.mount("http://", adapter)
     return s
 
-def fetch_scoreboardv3_df(session: requests.Session, game_date_us: str) -> pd.DataFrame:
+def mmddyyyy_to_yyyymmdd(mmddyyyy: str) -> str:
+    dt = datetime.strptime(mmddyyyy, "%m/%d/%Y")
+    return dt.strftime("%Y%m%d")
+
+def fetch_games_stats(session: requests.Session, game_date_us: str, max_seconds: int = 40) -> list[dict]:
+    start = time.time()
+    attempt = 0
     params = {"GameDate": game_date_us, "LeagueID": "00"}
-    timeout = (10, 60)
-    time.sleep(0.4 + random.random() * 0.8)
 
-    try:
-        r = session.get(SCOREBOARD_V3_URL, params=params, headers=nba_headers(), timeout=timeout)
-        if r.status_code != 200:
-            print(f"[WARN] scoreboard status={r.status_code} date={game_date_us}")
-            return pd.DataFrame()
+    while True:
+        attempt += 1
+        if time.time() - start > max_seconds:
+            print(f"[WARN] stats giveup date={game_date_us} exceeded {max_seconds}s")
+            return []
 
-        data = r.json()
-        rs0 = data["resultSets"][0]
-        df = pd.DataFrame(rs0["rowSet"], columns=rs0["headers"])
-        if df.empty or "HOME_TEAM_ID" not in df.columns:
-            return pd.DataFrame()
-        df = df[df["HOME_TEAM_ID"].isin(VALID_TEAM_IDS)].copy()
-        return df
-    except Exception as e:
-        print(f"[WARN] scoreboard fetch failed for {game_date_us}: {e}")
-        return pd.DataFrame()
+        time.sleep(0.2 + random.random() * 0.4)
 
-def derive_us_token_from_row(row: pd.Series, fallback_us_mmddyyyy: str) -> str:
-    date_est = row.get("GAME_DATE_EST", None)
-    if date_est:
         try:
-            dt_est_date = datetime.strptime(str(date_est), "%Y-%m-%d").date()
-            game_date_us = dt_est_date.strftime("%m/%d/%Y")
-        except Exception:
-            game_date_us = fallback_us_mmddyyyy
-    else:
-        game_date_us = fallback_us_mmddyyyy
-    return datetime.strptime(game_date_us, "%m/%d/%Y").strftime("%m%d%Y")
+            r = session.get(SCOREBOARD_V3_URL, params=params, headers=stats_headers(), timeout=(6, 18))
+            if r.status_code != 200:
+                print(f"[WARN] stats status={r.status_code} date={game_date_us} attempt={attempt}")
+                if r.status_code == 429:
+                    time.sleep(1.0 + random.random())
+                continue
+
+            data = r.json()
+            rs0 = data["resultSets"][0]
+            df = pd.DataFrame(rs0["rowSet"], columns=rs0["headers"])
+            if df.empty:
+                return []
+
+            out = []
+            for _, row in df.iterrows():
+                try:
+                    stxt = str(row.get("GAME_STATUS_TEXT", "")).lower()
+                    if "final" not in stxt:
+                        continue
+
+                    hid = int(row.get("HOME_TEAM_ID"))
+                    aid = int(row.get("VISITOR_TEAM_ID"))
+                    if hid not in VALID_TEAM_IDS or aid not in VALID_TEAM_IDS:
+                        continue
+                    home_abbr = ID_MAP.get(hid)
+                    away_abbr = ID_MAP.get(aid)
+                    if not home_abbr or not away_abbr:
+                        continue
+
+                    # prefer GAME_DATE_EST if present
+                    date_est = row.get("GAME_DATE_EST", None)
+                    if date_est:
+                        try:
+                            dt_est = datetime.strptime(str(date_est), "%Y-%m-%d").date()
+                            game_date_us_eff = dt_est.strftime("%m/%d/%Y")
+                        except Exception:
+                            game_date_us_eff = game_date_us
+                    else:
+                        game_date_us_eff = game_date_us
+
+                    out.append({
+                        "source": "stats",
+                        "game_date_us": game_date_us_eff,
+                        "home_abbr": home_abbr,
+                        "away_abbr": away_abbr,
+                        "home_score": int(row.get("HOME_TEAM_SCORE") or 0),
+                        "away_score": int(row.get("VISITOR_TEAM_SCORE") or 0),
+                    })
+                except Exception:
+                    continue
+
+            print(f"[OK] stats settle date={game_date_us} finals={len(out)} attempt={attempt}")
+            return out
+
+        except Exception as e:
+            print(f"[WARN] stats error date={game_date_us} attempt={attempt}: {e}")
+            continue
+
+def fetch_games_cdn(session: requests.Session, game_date_us: str, max_seconds: int = 25) -> list[dict]:
+    yyyymmdd = mmddyyyy_to_yyyymmdd(game_date_us)
+    url = CDN_SCOREBOARD_URL_TMPL.format(yyyymmdd=yyyymmdd)
+
+    start = time.time()
+    attempt = 0
+    while True:
+        attempt += 1
+        if time.time() - start > max_seconds:
+            print(f"[WARN] cdn giveup date={game_date_us} exceeded {max_seconds}s")
+            return []
+
+        time.sleep(0.15 + random.random() * 0.3)
+        try:
+            r = session.get(url, headers=cdn_headers(), timeout=(6, 18))
+            if r.status_code != 200:
+                print(f"[WARN] cdn status={r.status_code} date={game_date_us} attempt={attempt}")
+                if r.status_code == 429:
+                    time.sleep(1.0 + random.random())
+                continue
+
+            data = r.json()
+            games = (((data or {}).get("scoreboard") or {}).get("games")) or []
+
+            out = []
+            for g in games:
+                try:
+                    gs = int(g.get("gameStatus") or 0)
+                    if gs != 3:
+                        continue
+
+                    home = g.get("homeTeam", {}) or {}
+                    away = g.get("awayTeam", {}) or {}
+                    hid = int(home.get("teamId"))
+                    aid = int(away.get("teamId"))
+                    if hid not in VALID_TEAM_IDS or aid not in VALID_TEAM_IDS:
+                        continue
+                    home_abbr = ID_MAP.get(hid)
+                    away_abbr = ID_MAP.get(aid)
+                    if not home_abbr or not away_abbr:
+                        continue
+
+                    out.append({
+                        "source": "cdn",
+                        "game_date_us": game_date_us,
+                        "home_abbr": home_abbr,
+                        "away_abbr": away_abbr,
+                        "home_score": int(home.get("score") or 0),
+                        "away_score": int(away.get("score") or 0),
+                    })
+                except Exception:
+                    continue
+
+            print(f"[OK] cdn settle date={game_date_us} finals={len(out)} attempt={attempt}")
+            return out
+
+        except Exception as e:
+            print(f"[WARN] cdn error date={game_date_us} attempt={attempt}: {e}")
+            continue
+
+def fetch_games(session: requests.Session, game_date_us: str) -> list[dict]:
+    g = fetch_games_stats(session, game_date_us)
+    if g:
+        return g
+    return fetch_games_cdn(session, game_date_us)
 
 def settle_cover(home_score: int, away_score: int, home_spread: float):
     if home_score is None or away_score is None or home_spread is None:
@@ -115,11 +233,15 @@ def settle_cover(home_score: int, away_score: int, home_spread: float):
     return 2
 
 def main():
-    today_us = datetime.now(us_east_tz).date()
-    targets = [
-        (today_us - timedelta(days=1)).strftime("%m/%d/%Y"),
-        today_us.strftime("%m/%d/%Y"),
-    ]
+    override = (os.environ.get("OVERRIDE_US_DATE") or "").strip()
+    if override:
+        targets = [override]
+    else:
+        today_us = datetime.now(us_east_tz).date()
+        targets = [
+            (today_us - timedelta(days=1)).strftime("%m/%d/%Y"),
+            today_us.strftime("%m/%d/%Y"),
+        ]
 
     session = make_session()
     conn = pg_conn()
@@ -129,28 +251,18 @@ def main():
     try:
         with conn.cursor() as cur:
             for d in targets:
-                df = fetch_scoreboardv3_df(session, d)
-                if df.empty:
-                    print(f"[WARN] settle empty scoreboard for {d}")
+                finals = fetch_games(session, d)
+                if not finals:
+                    print(f"[WARN] no finals for {d} (both stats+cdn failed or none final)")
                     continue
 
-                for _, r in df.iterrows():
-                    stxt = str(r.get("GAME_STATUS_TEXT", "")).lower()
-                    if "final" not in stxt:
-                        continue
+                for g in finals:
+                    game_date_us = g["game_date_us"]
+                    us_token = datetime.strptime(game_date_us, "%m/%d/%Y").strftime("%m%d%Y")
+                    game_id = f"{g['away_abbr']}_{g['home_abbr']}_{us_token}"
 
-                    hid = int(r["HOME_TEAM_ID"])
-                    aid = int(r["VISITOR_TEAM_ID"])
-                    home_abbr = ID_MAP.get(hid)
-                    away_abbr = ID_MAP.get(aid)
-                    if not home_abbr or not away_abbr:
-                        continue
-
-                    us_token = derive_us_token_from_row(r, fallback_us_mmddyyyy=d)
-                    game_id = f"{away_abbr}_{home_abbr}_{us_token}"
-
-                    home_score = int(r.get("HOME_TEAM_SCORE") or 0)
-                    away_score = int(r.get("VISITOR_TEAM_SCORE") or 0)
+                    home_score = int(g["home_score"])
+                    away_score = int(g["away_score"])
 
                     cur.execute("select home_spread from public.games where game_id=%s", (game_id,))
                     row_db = cur.fetchone()
