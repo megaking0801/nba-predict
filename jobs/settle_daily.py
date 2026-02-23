@@ -1,5 +1,5 @@
 import os, time, random
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import pytz
 import pandas as pd
 import psycopg2
@@ -78,6 +78,55 @@ def fetch_scoreboardv3_df(game_date_us: str, retries: int = 5, timeout: int = 25
     print(f"[WARN] scoreboard fetch failed for {game_date_us}: {last_err}")
     return pd.DataFrame()
 
+def _try_parse_iso_datetime(v):
+    if v is None:
+        return None
+    s = str(v).strip()
+    if not s:
+        return None
+    try:
+        s = s.replace("Z", "+00:00")
+        dt = datetime.fromisoformat(s)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+    except Exception:
+        return None
+
+def parse_game_start_utc(row: pd.Series):
+    for k in ["GAME_DATE_TIME_UTC", "GAME_DATETIME_UTC", "GAME_TIME_UTC", "GAME_DATE_UTC", "GAME_TIME_UTC_STRING"]:
+        if k in row:
+            dt = _try_parse_iso_datetime(row.get(k))
+            if dt:
+                return dt
+
+    for k in ["GAME_DATE_TIME_UTC_TS", "GAME_TIME_UTC_TS", "GAME_TIME_UTC_MILLIS", "GAME_DATE_TIME_UTC_MILLIS"]:
+        if k in row:
+            v = row.get(k)
+            try:
+                if v is None:
+                    continue
+                x = float(v)
+                if x > 10_000_000_000:
+                    dt = datetime.fromtimestamp(x / 1000.0, tz=timezone.utc)
+                else:
+                    dt = datetime.fromtimestamp(x, tz=timezone.utc)
+                return dt.astimezone(timezone.utc)
+            except Exception:
+                pass
+
+    d_est = row.get("GAME_DATE_EST", None)
+    t_est = row.get("GAME_TIME_EST", None)
+    if d_est and t_est:
+        try:
+            dt_est = datetime.strptime(f"{d_est} {t_est}", "%Y-%m-%d %I:%M %p")
+            dt_est = us_east_tz.localize(dt_est)
+            return dt_est.astimezone(timezone.utc)
+        except Exception:
+            pass
+
+    return None
+
 def settle_cover(home_score: int, away_score: int, home_spread: float):
     if home_score is None or away_score is None or home_spread is None:
         return None
@@ -119,7 +168,15 @@ def main():
                     if not home_abbr or not away_abbr:
                         continue
 
-                    game_id = f"{away_abbr}_{home_abbr}_{d.replace('/','')}"
+                    # ✅ 關鍵修正：game_id 用「該場比賽的美東日期 token」
+                    start_utc = parse_game_start_utc(r)
+                    if start_utc:
+                        game_date_us_token = start_utc.astimezone(us_east_tz).strftime("%m%d%Y")
+                    else:
+                        game_date_us_token = d.replace("/", "")
+
+                    game_id = f"{away_abbr}_{home_abbr}_{game_date_us_token}"
+
                     home_score = int(r.get("HOME_TEAM_SCORE") or 0)
                     away_score = int(r.get("VISITOR_TEAM_SCORE") or 0)
 
