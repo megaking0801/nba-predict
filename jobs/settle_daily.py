@@ -17,7 +17,7 @@ VALID_TEAM_IDS = set(int(t["id"]) for t in ALL_TEAMS)
 ID_MAP = {int(t["id"]): t["abbreviation"] for t in ALL_TEAMS}
 
 SCOREBOARD_V3_URL = "https://stats.nba.com/stats/scoreboardv3"
-CDN_SCOREBOARD_URL_TMPL = "https://cdn.nba.com/static/json/liveData/scoreboard/scoreboard_{yyyymmdd}.json"
+ESPN_SCOREBOARD_URL = "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard"
 
 def pg_conn():
     host = (os.environ.get("SUPABASE_HOST") or "").strip()
@@ -55,15 +55,6 @@ def stats_headers():
         "Accept-Language": "en-US,en;q=0.9",
     }
 
-def cdn_headers():
-    return {
-        "Accept": "application/json, text/plain, */*",
-        "Accept-Encoding": "gzip, deflate, br",
-        "Cache-Control": "no-cache",
-        "Pragma": "no-cache",
-        "User-Agent": "Mozilla/5.0",
-    }
-
 def make_session() -> requests.Session:
     s = requests.Session()
     retry = Retry(
@@ -81,10 +72,12 @@ def make_session() -> requests.Session:
     return s
 
 def mmddyyyy_to_yyyymmdd(mmddyyyy: str) -> str:
-    dt = datetime.strptime(mmddyyyy, "%m/%d/%Y")
-    return dt.strftime("%Y%m%d")
+    return datetime.strptime(mmddyyyy, "%m/%d/%Y").strftime("%Y%m%d")
 
-def fetch_games_stats(session: requests.Session, game_date_us: str, max_seconds: int = 40) -> list[dict]:
+# -------------------------
+# Fetch stats finals
+# -------------------------
+def fetch_finals_stats(session: requests.Session, game_date_us: str, max_seconds: int = 35) -> list[dict]:
     start = time.time()
     attempt = 0
     params = {"GameDate": game_date_us, "LeagueID": "00"}
@@ -96,7 +89,6 @@ def fetch_games_stats(session: requests.Session, game_date_us: str, max_seconds:
             return []
 
         time.sleep(0.2 + random.random() * 0.4)
-
         try:
             r = session.get(SCOREBOARD_V3_URL, params=params, headers=stats_headers(), timeout=(6, 18))
             if r.status_code != 200:
@@ -122,12 +114,12 @@ def fetch_games_stats(session: requests.Session, game_date_us: str, max_seconds:
                     aid = int(row.get("VISITOR_TEAM_ID"))
                     if hid not in VALID_TEAM_IDS or aid not in VALID_TEAM_IDS:
                         continue
+
                     home_abbr = ID_MAP.get(hid)
                     away_abbr = ID_MAP.get(aid)
                     if not home_abbr or not away_abbr:
                         continue
 
-                    # prefer GAME_DATE_EST if present
                     date_est = row.get("GAME_DATE_EST", None)
                     if date_est:
                         try:
@@ -156,71 +148,84 @@ def fetch_games_stats(session: requests.Session, game_date_us: str, max_seconds:
             print(f"[WARN] stats error date={game_date_us} attempt={attempt}: {e}")
             continue
 
-def fetch_games_cdn(session: requests.Session, game_date_us: str, max_seconds: int = 25) -> list[dict]:
+# -------------------------
+# Fetch ESPN finals
+# -------------------------
+def fetch_finals_espn(session: requests.Session, game_date_us: str, max_seconds: int = 18) -> list[dict]:
     yyyymmdd = mmddyyyy_to_yyyymmdd(game_date_us)
-    url = CDN_SCOREBOARD_URL_TMPL.format(yyyymmdd=yyyymmdd)
 
     start = time.time()
     attempt = 0
     while True:
         attempt += 1
         if time.time() - start > max_seconds:
-            print(f"[WARN] cdn giveup date={game_date_us} exceeded {max_seconds}s")
+            print(f"[WARN] espn giveup date={game_date_us} exceeded {max_seconds}s")
             return []
 
-        time.sleep(0.15 + random.random() * 0.3)
+        time.sleep(0.15 + random.random() * 0.25)
         try:
-            r = session.get(url, headers=cdn_headers(), timeout=(6, 18))
+            r = session.get(ESPN_SCOREBOARD_URL, params={"dates": yyyymmdd}, timeout=(6, 18))
             if r.status_code != 200:
-                print(f"[WARN] cdn status={r.status_code} date={game_date_us} attempt={attempt}")
-                if r.status_code == 429:
-                    time.sleep(1.0 + random.random())
+                print(f"[WARN] espn status={r.status_code} date={game_date_us} attempt={attempt}")
+                if r.status_code in (401, 403, 404):
+                    return []
                 continue
 
             data = r.json()
-            games = (((data or {}).get("scoreboard") or {}).get("games")) or []
-
+            events = data.get("events", []) or []
             out = []
-            for g in games:
+
+            for ev in events:
                 try:
-                    gs = int(g.get("gameStatus") or 0)
-                    if gs != 3:
+                    comps = ev.get("competitions", []) or []
+                    if not comps:
+                        continue
+                    c0 = comps[0]
+
+                    st = ((c0.get("status", {}) or {}).get("type", {}) or {}).get("name", "")
+                    if "final" not in str(st).lower():
                         continue
 
-                    home = g.get("homeTeam", {}) or {}
-                    away = g.get("awayTeam", {}) or {}
-                    hid = int(home.get("teamId"))
-                    aid = int(away.get("teamId"))
-                    if hid not in VALID_TEAM_IDS or aid not in VALID_TEAM_IDS:
+                    competitors = c0.get("competitors", []) or []
+                    if len(competitors) != 2:
                         continue
-                    home_abbr = ID_MAP.get(hid)
-                    away_abbr = ID_MAP.get(aid)
+
+                    home = next((x for x in competitors if x.get("homeAway") == "home"), None)
+                    away = next((x for x in competitors if x.get("homeAway") == "away"), None)
+                    if not home or not away:
+                        continue
+
+                    home_abbr = (home.get("team", {}) or {}).get("abbreviation")
+                    away_abbr = (away.get("team", {}) or {}).get("abbreviation")
                     if not home_abbr or not away_abbr:
                         continue
 
+                    hs = int(float(home.get("score") or 0))
+                    a_s = int(float(away.get("score") or 0))
+
                     out.append({
-                        "source": "cdn",
+                        "source": "espn",
                         "game_date_us": game_date_us,
                         "home_abbr": home_abbr,
                         "away_abbr": away_abbr,
-                        "home_score": int(home.get("score") or 0),
-                        "away_score": int(away.get("score") or 0),
+                        "home_score": hs,
+                        "away_score": a_s,
                     })
                 except Exception:
                     continue
 
-            print(f"[OK] cdn settle date={game_date_us} finals={len(out)} attempt={attempt}")
+            print(f"[OK] espn settle date={game_date_us} finals={len(out)} attempt={attempt}")
             return out
 
         except Exception as e:
-            print(f"[WARN] cdn error date={game_date_us} attempt={attempt}: {e}")
+            print(f"[WARN] espn error date={game_date_us} attempt={attempt}: {e}")
             continue
 
-def fetch_games(session: requests.Session, game_date_us: str) -> list[dict]:
-    g = fetch_games_stats(session, game_date_us)
+def fetch_finals(session: requests.Session, game_date_us: str) -> list[dict]:
+    g = fetch_finals_stats(session, game_date_us)
     if g:
         return g
-    return fetch_games_cdn(session, game_date_us)
+    return fetch_finals_espn(session, game_date_us)
 
 def settle_cover(home_score: int, away_score: int, home_spread: float):
     if home_score is None or away_score is None or home_spread is None:
@@ -251,9 +256,9 @@ def main():
     try:
         with conn.cursor() as cur:
             for d in targets:
-                finals = fetch_games(session, d)
+                finals = fetch_finals(session, d)
                 if not finals:
-                    print(f"[WARN] no finals for {d} (both stats+cdn failed or none final)")
+                    print(f"[WARN] no finals for {d} (stats failed and espn none final)")
                     continue
 
                 for g in finals:
