@@ -31,7 +31,7 @@ jobs:
       - name: Install deps
         run: |
           python -m pip install --upgrade pip
-          pip install pandas pytz requests psycopg2-binary scikit-learn nba_api
+          pip install pandas pytz requests psycopg2-binary scikit-learn nba_api beautifulsoup4 lxml
 
       # =====================
       # SYNC
