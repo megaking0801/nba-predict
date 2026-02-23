@@ -51,6 +51,8 @@ jobs:
           ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
           NBA_SEASON: "2025-26"
           OVERRIDE_US_DATE: ${{ github.event.inputs.verify_us_date }}
+          BACKFILL_PAST_DAYS: "7"
+          BACKFILL_FUTURE_DAYS: "7"
         run: |
           python jobs/sync_daily.py
 
