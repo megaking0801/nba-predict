@@ -4,7 +4,7 @@ import pytz
 import pandas as pd
 import psycopg2
 
-from nba_api.stats.library.http import NBAStatsHTTP  # ✅ 直接用底層 HTTP
+from nba_api.stats.library.http import NBAStatsHTTP
 from nba_api.stats.static import teams as static_teams
 
 tw_tz = pytz.timezone("Asia/Taipei")
@@ -24,33 +24,16 @@ def pg_conn():
     port_raw = (os.environ.get("SUPABASE_PORT") or "").strip()
     port = int(port_raw) if port_raw.isdigit() else 5432
 
+    if not host or not user or not pw:
+        raise RuntimeError("Missing DB env vars. Check GitHub Actions secrets.")
+
     return psycopg2.connect(
-        host=host,
-        dbname=db,
-        user=user,
-        password=pw,
-        port=port,
-        sslmode="require",
-        connect_timeout=10,
+        host=host, dbname=db, user=user, password=pw, port=port,
+        sslmode="require", connect_timeout=12
     )
 
-def settle_cover(home_score: int, away_score: int, home_spread: float):
-    if home_score is None or away_score is None or home_spread is None:
-        return None
-    adjusted = float(home_score) + float(home_spread)
-    if adjusted > float(away_score):
-        return 1
-    if adjusted < float(away_score):
-        return 0
-    return 2
-
-def fetch_scoreboardv3_df(game_date_us: str, retries: int = 4, timeout: int = 20) -> pd.DataFrame:
-    """
-    用底層 HTTP 自己控 timeout + retry + headers。
-    避免 GitHub Actions 偶發 stats.nba.com 逾時就整個 job 掛掉。
-    """
-    # stats.nba.com 對 headers 很敏感
-    headers = {
+def nba_headers():
+    return {
         "Host": "stats.nba.com",
         "Connection": "keep-alive",
         "Accept": "application/json, text/plain, */*",
@@ -66,47 +49,48 @@ def fetch_scoreboardv3_df(game_date_us: str, retries: int = 4, timeout: int = 20
         "Accept-Language": "en-US,en;q=0.9",
     }
 
-    params = {
-        "GameDate": game_date_us,
-        "LeagueID": "00",
-    }
-
+def fetch_scoreboardv3_df(game_date_us: str, retries: int = 5, timeout: int = 25) -> pd.DataFrame:
     http = NBAStatsHTTP()
+    params = {"GameDate": game_date_us, "LeagueID": "00"}
     last_err = None
 
     for i in range(retries + 1):
         try:
-            # 小抖動，降低被擋機率
             if i > 0:
-                time.sleep((2 ** (i - 1)) + random.random())
+                time.sleep((2 ** (i - 1)) + random.random() * 0.7)
 
             resp = http.send_api_request(
                 endpoint=SCOREBOARD_V3_URL,
                 parameters=params,
-                headers=headers,
-                timeout=timeout,  # ✅ 控制讀取 timeout
+                headers=nba_headers(),
+                timeout=timeout,
             )
             data = resp.get_dict()
-
             rs0 = data["resultSets"][0]
             df = pd.DataFrame(rs0["rowSet"], columns=rs0["headers"])
             if df.empty or "HOME_TEAM_ID" not in df.columns:
                 return pd.DataFrame()
-
             df = df[df["HOME_TEAM_ID"].isin(VALID_TEAM_IDS)].copy()
             return df
-
         except Exception as e:
             last_err = e
 
-    # 全部 retry 還是失敗：回空，不要讓 workflow 直接炸
-    print(f"[WARN] scoreboardv3 fetch failed for {game_date_us}: {last_err}")
+    print(f"[WARN] scoreboard fetch failed for {game_date_us}: {last_err}")
     return pd.DataFrame()
+
+def settle_cover(home_score: int, away_score: int, home_spread: float):
+    if home_score is None or away_score is None or home_spread is None:
+        return None
+    adjusted = float(home_score) + float(home_spread)
+    if adjusted > float(away_score):
+        return 1
+    if adjusted < float(away_score):
+        return 0
+    return 2
 
 def main():
     today_us = datetime.now(us_east_tz).date()
-    # ✅ 結算掃 US yesterday + US today（對台灣跨日最合理）
-    dates = [
+    targets = [
         (today_us - timedelta(days=1)).strftime("%m/%d/%Y"),
         today_us.strftime("%m/%d/%Y"),
     ]
@@ -117,36 +101,35 @@ def main():
 
     try:
         with conn.cursor() as cur:
-            for d in dates:
-                df = fetch_scoreboardv3_df(d, retries=4, timeout=20)
+            for d in targets:
+                df = fetch_scoreboardv3_df(d, retries=5, timeout=25)
                 if df.empty:
-                    print(f"[WARN] empty scoreboard for {d}")
+                    print(f"[WARN] settle empty scoreboard for {d}")
                     continue
 
                 for _, r in df.iterrows():
-                    # GAME_STATUS_TEXT: "Final" / "Final/OT" / "Q3" etc
-                    if "final" not in str(r.get("GAME_STATUS_TEXT", "")).lower():
+                    stxt = str(r.get("GAME_STATUS_TEXT", "")).lower()
+                    if "final" not in stxt:
                         continue
 
-                    h_abbr = ID_MAP.get(int(r["HOME_TEAM_ID"]))
-                    a_abbr = ID_MAP.get(int(r["VISITOR_TEAM_ID"]))
-                    if not h_abbr or not a_abbr:
+                    hid = int(r["HOME_TEAM_ID"])
+                    aid = int(r["VISITOR_TEAM_ID"])
+                    home_abbr = ID_MAP.get(hid)
+                    away_abbr = ID_MAP.get(aid)
+                    if not home_abbr or not away_abbr:
                         continue
 
-                    game_id = f"{a_abbr}_{h_abbr}_{d.replace('/','')}"
+                    game_id = f"{away_abbr}_{home_abbr}_{d.replace('/','')}"
                     home_score = int(r.get("HOME_TEAM_SCORE") or 0)
                     away_score = int(r.get("VISITOR_TEAM_SCORE") or 0)
 
-                    cur.execute(
-                        "SELECT home_spread FROM games WHERE game_id=%s",
-                        (game_id,),
-                    )
+                    # 取盤口來判斷 cover
+                    cur.execute("SELECT home_spread FROM games WHERE game_id=%s", (game_id,))
                     row = cur.fetchone()
                     if not row:
-                        # 代表你 DB 裡沒有這場（可能 sync 沒跑到那天）
                         continue
-
                     home_spread = row[0]
+
                     cover = settle_cover(home_score, away_score, home_spread)
                     if cover is None:
                         continue
@@ -167,8 +150,7 @@ def main():
                     updated += 1
 
         conn.commit()
-        print(f"[OK] settled updated_rows={updated} scan_dates={dates}")
-
+        print(f"[OK] settle_targets={targets} updated_rows={updated}")
     finally:
         conn.close()
 
