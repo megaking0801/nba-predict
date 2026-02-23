@@ -2,30 +2,39 @@
 # -*- coding: utf-8 -*-
 
 """
-sync_daily.py
-- Fetch NBA games (schedule + final scores) from ESPN
-- Fetch spreads odds from The Odds API with multi-bookmaker fallback
-- Upsert into Postgres (DATABASE_URL)
-- Debug logs for ODDS_API_KEY presence and odds mapping
+jobs/sync_daily.py
 
-Required env:
-- DATABASE_URL: Postgres connection string, e.g. postgres://user:pass@host:5432/dbname
-Optional env:
-- ODDS_API_KEY: The Odds API key
-- TARGET_DATE_US: YYYY-MM-DD (US date). If not provided, use US/Eastern "today"
-- DRY_RUN: "1" to skip DB write
+What it does:
+- Fetch NBA scoreboard (schedule/scores/status) from ESPN for a date window
+- Fetch spreads from The Odds API with multi-bookmaker fallback
+- Upsert into Supabase/Postgres public.games (schema-aligned)
+
+Backfill:
+- BACKFILL_PAST_DAYS: e.g. "7"  -> anchor day and previous 6 days
+- BACKFILL_FUTURE_DAYS: e.g. "7" -> anchor day and next 6 days
+- Anchor day defaults to US/Eastern "today", or OVERRIDE_US_DATE (MM/DD/YYYY)
+
+Important behavior:
+- For PAST dates: if odds not found, we DO NOT overwrite existing odds in DB
+  (we send NULLs and UPSERT uses COALESCE to preserve existing values)
+- For TODAY/FUTURE dates: if odds not found, we write fallback (0, 1.90, 1.90, "Fallback ⚠️")
+
+Env expected by your workflow:
+- SUPABASE_HOST, SUPABASE_DB, SUPABASE_USER, SUPABASE_PASSWORD, SUPABASE_PORT
+- ODDS_API_KEY
+- NBA_SEASON (optional)
+- OVERRIDE_US_DATE (optional, MM/DD/YYYY) from workflow input verify_us_date
+- BACKFILL_PAST_DAYS (optional int, default 1)
+- BACKFILL_FUTURE_DAYS (optional int, default 1)
+- DRY_RUN=1 (optional)
 """
 
 import os
 import re
-import json
-import time
 import datetime as dt
-from typing import Dict, Tuple, Optional, Any, List
+from typing import Dict, Tuple, Optional, List, Any
 
 import requests
-
-# psycopg2 is commonly available in GH actions python env; if you use psycopg (v3) or sqlalchemy, swap accordingly
 import psycopg2
 import psycopg2.extras
 
@@ -35,7 +44,6 @@ import psycopg2.extras
 # -----------------------------
 
 def norm_name(s: str) -> str:
-    """Normalize team/book names to stable keys."""
     if s is None:
         return ""
     s = s.strip().lower()
@@ -46,28 +54,37 @@ def norm_name(s: str) -> str:
 
 
 def us_eastern_today() -> dt.date:
-    """
-    Compute "today" in US/Eastern without external tz libs.
-    Good enough for NBA daily sync scheduling:
-    - During DST, Eastern is UTC-4; otherwise UTC-5.
-    If you want exact DST correctness, add zoneinfo (Python 3.9+) with America/New_York.
-    """
+    """Exact if zoneinfo available; else approximate UTC-5."""
     try:
         from zoneinfo import ZoneInfo
         now_et = dt.datetime.now(tz=ZoneInfo("America/New_York"))
         return now_et.date()
     except Exception:
-        # fallback: approximate using UTC-5
-        now_utc = dt.datetime.utcnow()
-        return (now_utc - dt.timedelta(hours=5)).date()
+        return (dt.datetime.utcnow() - dt.timedelta(hours=5)).date()
+
+
+def now_tw_str() -> str:
+    try:
+        from zoneinfo import ZoneInfo
+        tz = ZoneInfo("Asia/Taipei")
+        return dt.datetime.now(tz=tz).strftime("%Y-%m-%d %H:%M:%S")
+    except Exception:
+        return (dt.datetime.utcnow() + dt.timedelta(hours=8)).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def today_tw_mmddyyyy() -> str:
+    try:
+        from zoneinfo import ZoneInfo
+        tz = ZoneInfo("Asia/Taipei")
+        return dt.datetime.now(tz=tz).strftime("%m/%d/%Y")
+    except Exception:
+        return (dt.datetime.utcnow() + dt.timedelta(hours=8)).strftime("%m/%d/%Y")
 
 
 # -----------------------------
-# Team mapping
+# Team mapping (Odds API -> Abbr)
 # -----------------------------
-# ESPN uses abbreviations like "LAL", "BOS", etc.
-# Odds API uses full team names; we map them to abbr.
-# Expand this mapping if you see "mapped=0" even when odds api has games.
+
 ODDS_TEAMNAME_TO_ABBR: Dict[str, str] = {
     "atlanta hawks": "ATL",
     "boston celtics": "BOS",
@@ -103,35 +120,27 @@ ODDS_TEAMNAME_TO_ABBR: Dict[str, str] = {
     "washington wizards": "WAS",
 }
 
-# Some books keys differ; normalize them
-BOOK_KEY_ALIASES = {
-    "pointsbet": "pointsbetus",
-}
+BOOK_KEY_ALIASES = {"pointsbet": "pointsbetus"}
 
 
 # -----------------------------
-# ESPN Fetch
+# ESPN Fetch (scoreboard)
 # -----------------------------
 
 def fetch_espn_scoreboard(date_us: dt.date) -> List[dict]:
     """
-    ESPN scoreboard endpoint (stable):
+    Stable endpoint:
     https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard?dates=YYYYMMDD
-
-    We also try a couple of alternate hosts/paths as fallback to reduce 404 risk.
     """
     ymd = date_us.strftime("%Y%m%d")
-
     candidates = [
-        # ✅ Primary
         ("https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard", {"dates": ymd}),
-        # Some variants occasionally work in different networks
         ("https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard", {"dates": ymd, "limit": 300}),
         ("https://site.web.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard", {"dates": ymd}),
         ("https://site.web.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard", {"dates": ymd, "limit": 300}),
     ]
 
-    last_err = None
+    last_err: Optional[Exception] = None
     for url, params in candidates:
         try:
             r = requests.get(url, params=params, timeout=25)
@@ -140,36 +149,29 @@ def fetch_espn_scoreboard(date_us: dt.date) -> List[dict]:
                 events = data.get("events") or []
                 print(f"[INFO] espn scoreboard ok url={url} games={len(events)}")
                 return events
-
-            # Helpful debugging
             print(f"[WARN] espn scoreboard status={r.status_code} url={url} body={r.text[:120]}")
-            last_err = requests.exceptions.HTTPError(f"{r.status_code} for {r.url}")
+            last_err = Exception(f"status={r.status_code} url={r.url}")
         except Exception as e:
             print(f"[WARN] espn scoreboard error url={url} err={e}")
             last_err = e
 
-    # If all failed
     raise RuntimeError(f"espn scoreboard failed after fallbacks: {last_err}")
 
 
 def parse_espn_events(events: List[dict], date_us: dt.date) -> List[dict]:
     """
-    Convert ESPN events into a normalized game list.
-
-    Output fields:
+    Output per game:
     - game_date_us (MM/DD/YYYY)
-    - start_time_utc (iso string) if available
     - home_abbr, away_abbr
-    - home_score, away_score (None if not final)
-    - status ("scheduled"|"in_progress"|"final")
-    - espn_event_id
+    - home_name, away_name  (ESPN displayName)
+    - home_score, away_score (int or None)
+    - status: scheduled | in_progress | final
     """
-    out = []
+    out: List[dict] = []
     game_date_str = date_us.strftime("%m/%d/%Y")
 
     for ev in events:
         try:
-            ev_id = str(ev.get("id") or "")
             competitions = ev.get("competitions") or []
             if not competitions:
                 continue
@@ -185,14 +187,17 @@ def parse_espn_events(events: List[dict], date_us: dt.date) -> List[dict]:
 
             home_team = home.get("team") or {}
             away_team = away.get("team") or {}
+
             home_abbr = home_team.get("abbreviation")
             away_abbr = away_team.get("abbreviation")
             if not home_abbr or not away_abbr:
                 continue
 
-            # status
+            home_name = home_team.get("displayName") or home_team.get("shortDisplayName") or home_abbr
+            away_name = away_team.get("displayName") or away_team.get("shortDisplayName") or away_abbr
+
             st = (comp.get("status") or {}).get("type") or {}
-            state = (st.get("state") or "").lower()  # "pre", "in", "post"
+            state = (st.get("state") or "").lower()  # pre|in|post
             completed = bool(st.get("completed"))
 
             if completed or state == "post":
@@ -202,32 +207,27 @@ def parse_espn_events(events: List[dict], date_us: dt.date) -> List[dict]:
             else:
                 status = "scheduled"
 
-            # scores
             home_score = None
             away_score = None
-            try:
-                if status in ("final", "in_progress"):
-                    home_score = int(home.get("score")) if home.get("score") is not None else None
-                    away_score = int(away.get("score")) if away.get("score") is not None else None
-            except Exception:
-                home_score = None
-                away_score = None
-
-            start_time_utc = None
-            # ESPN provides date in ISO with timezone in some fields
-            # Often comp["date"] is ISO string
-            if comp.get("date"):
-                start_time_utc = comp["date"]
+            if status in ("final", "in_progress"):
+                try:
+                    if home.get("score") is not None:
+                        home_score = int(home.get("score"))
+                    if away.get("score") is not None:
+                        away_score = int(away.get("score"))
+                except Exception:
+                    home_score = None
+                    away_score = None
 
             out.append({
                 "game_date_us": game_date_str,
-                "start_time_utc": start_time_utc,
                 "home_abbr": home_abbr,
                 "away_abbr": away_abbr,
+                "home_name": home_name,
+                "away_name": away_name,
                 "home_score": home_score,
                 "away_score": away_score,
                 "status": status,
-                "espn_event_id": ev_id,
             })
         except Exception:
             continue
@@ -241,15 +241,12 @@ def parse_espn_events(events: List[dict], date_us: dt.date) -> List[dict]:
 
 def get_odds_map() -> Dict[Tuple[str, str], dict]:
     """
-    Returns map keyed by (away_abbr, home_abbr):
-    {
-      (away_abbr, home_abbr): {
-        "home_spread": float,
-        "home_odds": float,
-        "away_odds": float,
-        "line_source": "OddsAPI:<bookkey>",
+    Map keyed by (away_abbr, home_abbr):
+      {
+        (away, home): {
+          home_spread, home_odds, away_odds, line_source
+        }
       }
-    }
     """
     api_key = (os.environ.get("ODDS_API_KEY") or "").strip()
     if not api_key:
@@ -257,7 +254,6 @@ def get_odds_map() -> Dict[Tuple[str, str], dict]:
         return {}
 
     url = "https://api.the-odds-api.com/v4/sports/basketball_nba/odds"
-
     wanted_books = ["pinnacle", "draftkings", "fanduel", "betmgm", "caesars", "pointsbetus"]
     params = {
         "apiKey": api_key,
@@ -279,16 +275,11 @@ def get_odds_map() -> Dict[Tuple[str, str], dict]:
         print(f"[WARN] odds api error: {e}")
         return {}
 
-    out: Dict[Tuple[str, str], dict] = {}
-
     def _norm_book_key(k: str) -> str:
         nk = norm_name(k)
         return BOOK_KEY_ALIASES.get(nk, nk)
 
     def pick_best_market(bookmakers: list) -> Tuple[Optional[str], Optional[dict]]:
-        """
-        Prefer wanted_books order, pick first book that has markets->spreads.
-        """
         if not bookmakers:
             return None, None
 
@@ -298,18 +289,19 @@ def get_odds_map() -> Dict[Tuple[str, str], dict]:
             b = key_to_b.get(bk)
             if not b:
                 continue
-            for m in b.get("markets", []) or []:
+            for m in (b.get("markets") or []):
                 if m.get("key") == "spreads":
                     return bk, m
 
-        # fallback: any bookmaker with spreads
         for b in bookmakers:
-            for m in b.get("markets", []) or []:
+            for m in (b.get("markets") or []):
                 if m.get("key") == "spreads":
                     bk_guess = _norm_book_key(b.get("key", "")) or norm_name(b.get("title", ""))
                     return bk_guess or "unknown", m
 
         return None, None
+
+    out: Dict[Tuple[str, str], dict] = {}
 
     for g in data:
         try:
@@ -321,7 +313,7 @@ def get_odds_map() -> Dict[Tuple[str, str], dict]:
             if not home_abbr or not away_abbr:
                 continue
 
-            bk_key, spreads = pick_best_market(g.get("bookmakers", []) or [])
+            bk_key, spreads = pick_best_market(g.get("bookmakers") or [])
             if not spreads:
                 continue
 
@@ -329,15 +321,12 @@ def get_odds_map() -> Dict[Tuple[str, str], dict]:
             home_odds = None
             away_odds = None
 
-            for o in spreads.get("outcomes", []) or []:
+            for o in (spreads.get("outcomes") or []):
                 nm = norm_name(o.get("name", ""))
                 pt = o.get("point", None)
                 pr = o.get("price", None)
                 if pt is None or pr is None:
                     continue
-
-                # point is usually from the team perspective.
-                # We'll store "home_spread" as the home team's point value.
                 if nm == home_name:
                     home_spread = float(pt)
                     home_odds = float(pr)
@@ -361,9 +350,37 @@ def get_odds_map() -> Dict[Tuple[str, str], dict]:
 
 
 # -----------------------------
-# DB Upsert
+# DB
 # -----------------------------
 
+def db_connect():
+    # Prefer DATABASE_URL if you ever add it
+    db_url = (os.environ.get("DATABASE_URL") or "").strip()
+    if db_url:
+        return psycopg2.connect(db_url)
+
+    host = (os.environ.get("SUPABASE_HOST") or "").strip()
+    dbname = (os.environ.get("SUPABASE_DB") or "").strip()
+    user = (os.environ.get("SUPABASE_USER") or "").strip()
+    password = (os.environ.get("SUPABASE_PASSWORD") or "").strip()
+    port = (os.environ.get("SUPABASE_PORT") or "5432").strip()
+
+    present = all([host, dbname, user, password, port])
+    print(f"[INFO] DB_ENV_present={present} via={'SUPABASE_*' if present else 'none'}")
+    if not present:
+        raise RuntimeError("DB connection env missing: set DATABASE_URL or SUPABASE_HOST/DB/USER/PASSWORD/PORT")
+
+    return psycopg2.connect(
+        host=host,
+        dbname=dbname,
+        user=user,
+        password=password,
+        port=int(port),
+        sslmode="require",
+    )
+
+
+# Schema-aligned UPSERT (your columns) + ON CONFLICT(game_id) + COALESCE preserve logic
 UPSERT_SQL = """
 INSERT INTO public.games (
     game_id,
@@ -404,54 +421,30 @@ INSERT INTO public.games (
 )
 ON CONFLICT (game_id)
 DO UPDATE SET
-    game_date_us   = EXCLUDED.game_date_us,
-    season         = EXCLUDED.season,
-    away_abbr      = EXCLUDED.away_abbr,
-    home_abbr      = EXCLUDED.home_abbr,
-    away_name      = EXCLUDED.away_name,
-    home_name      = EXCLUDED.home_name,
-    home_spread    = EXCLUDED.home_spread,
-    home_odds      = EXCLUDED.home_odds,
-    away_odds      = EXCLUDED.away_odds,
-    line_source    = EXCLUDED.line_source,
-    status         = EXCLUDED.status,
-    away_score     = EXCLUDED.away_score,
-    home_score     = EXCLUDED.home_score,
-    updated_at_tw  = EXCLUDED.updated_at_tw,
-    game_date_tw   = EXCLUDED.game_date_tw;
+    game_date_us  = EXCLUDED.game_date_us,
+    season        = EXCLUDED.season,
+    away_abbr     = EXCLUDED.away_abbr,
+    home_abbr     = EXCLUDED.home_abbr,
+    away_name     = EXCLUDED.away_name,
+    home_name     = EXCLUDED.home_name,
+
+    -- Preserve existing odds if EXCLUDED is NULL (useful for past backfill when odds not available)
+    home_spread   = COALESCE(EXCLUDED.home_spread, public.games.home_spread),
+    home_odds     = COALESCE(EXCLUDED.home_odds,   public.games.home_odds),
+    away_odds     = COALESCE(EXCLUDED.away_odds,   public.games.away_odds),
+    line_source   = COALESCE(EXCLUDED.line_source, public.games.line_source),
+
+    status        = EXCLUDED.status,
+    away_score    = EXCLUDED.away_score,
+    home_score    = EXCLUDED.home_score,
+
+    updated_at_tw = EXCLUDED.updated_at_tw,
+    game_date_tw  = EXCLUDED.game_date_tw;
 """
-
-def db_connect():
-    # 1) Prefer DATABASE_URL if present
-    db_url = (os.environ.get("DATABASE_URL") or "").strip()
-    if db_url:
-        return psycopg2.connect(db_url)
-
-    # 2) Fallback: SUPABASE_* envs (your workflow uses these)
-    host = (os.environ.get("SUPABASE_HOST") or "").strip()
-    dbname = (os.environ.get("SUPABASE_DB") or "").strip()
-    user = (os.environ.get("SUPABASE_USER") or "").strip()
-    password = (os.environ.get("SUPABASE_PASSWORD") or "").strip()
-    port = (os.environ.get("SUPABASE_PORT") or "5432").strip()
-
-    present = all([host, dbname, user, password, port])
-    print(f"[INFO] DB_ENV_present={present} via={'SUPABASE_*' if present else 'none'}")
-
-    if not present:
-        raise RuntimeError("DB connection env missing: set DATABASE_URL or SUPABASE_HOST/DB/USER/PASSWORD/PORT")
-
-    return psycopg2.connect(
-        host=host,
-        dbname=dbname,
-        user=user,
-        password=password,
-        port=int(port),
-        sslmode="require",  # Supabase 通常需要 ssl
-    )
 
 
 def upsert_games(rows: List[dict]) -> None:
-    if os.environ.get("DRY_RUN", "").strip() == "1":
+    if (os.environ.get("DRY_RUN") or "").strip() == "1":
         print(f"[DRY_RUN] skip db upsert rows={len(rows)}")
         return
 
@@ -470,122 +463,116 @@ def upsert_games(rows: List[dict]) -> None:
 # -----------------------------
 
 def main():
-    # ---- Safe env presence logs ----
+    # Safe env presence logs
     print(f"[INFO] ODDS_API_KEY_present={bool((os.environ.get('ODDS_API_KEY') or '').strip())}")
 
-    # DB env presence (DATABASE_URL or SUPABASE_*)
-    db_url_present = bool((os.environ.get("DATABASE_URL") or "").strip())
-    sup_present = all([
-        bool((os.environ.get("SUPABASE_HOST") or "").strip()),
-        bool((os.environ.get("SUPABASE_DB") or "").strip()),
-        bool((os.environ.get("SUPABASE_USER") or "").strip()),
-        bool((os.environ.get("SUPABASE_PASSWORD") or "").strip()),
-        bool((os.environ.get("SUPABASE_PORT") or "").strip()),
-    ])
-    print(f"[INFO] DB_ENV_present={bool(db_url_present or sup_present)} via={'DATABASE_URL' if db_url_present else ('SUPABASE_*' if sup_present else 'none')}")
-
-    # ---- Determine target US date ----
-    override = (os.environ.get("OVERRIDE_US_DATE") or "").strip()   # workflow: MM/DD/YYYY
-    target = (os.environ.get("TARGET_DATE_US") or "").strip()       # optional: YYYY-MM-DD
-
+    # Anchor date (US)
+    override = (os.environ.get("OVERRIDE_US_DATE") or "").strip()   # MM/DD/YYYY from workflow input
     if override:
         try:
-            date_us = dt.datetime.strptime(override, "%m/%d/%Y").date()
+            anchor_date_us = dt.datetime.strptime(override, "%m/%d/%Y").date()
         except ValueError:
             raise RuntimeError("OVERRIDE_US_DATE must be MM/DD/YYYY")
-    elif target:
-        try:
-            date_us = dt.datetime.strptime(target, "%Y-%m-%d").date()
-        except ValueError:
-            raise RuntimeError("TARGET_DATE_US must be YYYY-MM-DD")
     else:
-        date_us = us_eastern_today()
+        anchor_date_us = us_eastern_today()
 
-    print(f"[INFO] target_date_us={date_us.isoformat()}")
+    print(f"[INFO] target_date_us={anchor_date_us.isoformat()}")
 
-    # ---- Fetch ESPN games ----
-    try:
-        events = fetch_espn_scoreboard(date_us)
-        games = parse_espn_events(events, date_us)
-        print(f"[INFO] espn games={len(games)}")
-    except Exception as e:
-        print(f"[ERROR] espn fetch failed: {e}")
-        raise
+    # Backfill windows
+    def _int_env(name: str, default: int) -> int:
+        raw = (os.environ.get(name) or "").strip()
+        if not raw:
+            return default
+        try:
+            return max(1, int(raw))
+        except ValueError:
+            raise RuntimeError(f"{name} must be an integer")
 
-    # ---- Fetch odds map ----
-    odds_map = get_odds_map()
+    past_days = _int_env("BACKFILL_PAST_DAYS", 1)      # include anchor day
+    future_days = _int_env("BACKFILL_FUTURE_DAYS", 1)  # include anchor day
 
-    # ---- Taiwan time helpers ----
-    try:
-        from zoneinfo import ZoneInfo
-        TZ_TW = ZoneInfo("Asia/Taipei")
-    except Exception:
-        TZ_TW = None
+    # Build date list: past (anchor to anchor-(past-1)), plus future (anchor+1 to anchor+(future-1))
+    past_list = [anchor_date_us - dt.timedelta(days=i) for i in range(past_days)]
+    future_list = [anchor_date_us + dt.timedelta(days=i) for i in range(1, future_days)]
+    date_list = past_list + future_list
 
-    def now_tw_str() -> str:
-        if TZ_TW:
-            return dt.datetime.now(tz=TZ_TW).strftime("%Y-%m-%d %H:%M:%S")
-        return (dt.datetime.utcnow() + dt.timedelta(hours=8)).strftime("%Y-%m-%d %H:%M:%S")
-
-    # Your DB has game_date_tw as text. We'll set it to "MM/DD/YYYY" at sync time.
-    def today_tw_mmddyyyy() -> str:
-        if TZ_TW:
-            return dt.datetime.now(tz=TZ_TW).strftime("%m/%d/%Y")
-        return (dt.datetime.utcnow() + dt.timedelta(hours=8)).strftime("%m/%d/%Y")
+    print(f"[INFO] backfill_past_days={past_days} backfill_future_days={future_days}")
+    print(f"[INFO] dates={[d.isoformat() for d in date_list]}")
 
     season = (os.environ.get("NBA_SEASON") or "2025-26").strip()
     ts_tw = now_tw_str()
     game_date_tw = today_tw_mmddyyyy()
 
-    # ---- Merge & build rows for DB ----
-    rows = []
-    for g in games:
-        away_abbr = g["away_abbr"]
-        home_abbr = g["home_abbr"]
+    # Odds map (current market snapshot) once per run
+    odds_map = get_odds_map()
 
-        # If you later enhance parse_espn_events to include display names, swap these
-        away_name = away_abbr
-        home_name = home_abbr
+    total_rows = 0
+    for d in date_list:
+        print(f"[INFO] ---- sync date_us={d.isoformat()} ----")
 
-        od = odds_map.get((away_abbr, home_abbr))
-        if od:
-            sp = float(od["home_spread"])
-            oh = float(od["home_odds"])
-            oa = float(od["away_odds"])
-            src = od["line_source"]
-        else:
-            sp, oh, oa, src = 0.0, 1.90, 1.90, "Fallback ⚠️"
+        # ESPN for each date
+        try:
+            events = fetch_espn_scoreboard(d)
+            games = parse_espn_events(events, d)
+            print(f"[INFO] espn games={len(games)}")
+        except Exception as e:
+            print(f"[ERROR] espn fetch failed for {d.isoformat()}: {e}")
+            continue
 
-        # Deterministic id per date+matchup
-        game_id = f"{date_us.strftime('%Y%m%d')}_{away_abbr}_{home_abbr}"
+        rows: List[dict] = []
 
-        row = {
-            "game_id": game_id,
-            "game_date_us": g["game_date_us"],   # MM/DD/YYYY (matches your schema)
-            "season": season,
+        # Rule:
+        # - For past dates (< anchor): if odds not found -> set NULL so DB keeps existing odds
+        # - For anchor/today/future (>= anchor): if odds not found -> set fallback values
+        is_past = d < anchor_date_us
 
-            "away_abbr": away_abbr,
-            "home_abbr": home_abbr,
-            "away_name": away_name,
-            "home_name": home_name,
+        for g in games:
+            away_abbr = g["away_abbr"]
+            home_abbr = g["home_abbr"]
 
-            "home_spread": sp,
-            "home_odds": oh,
-            "away_odds": oa,
-            "line_source": src,
+            od = odds_map.get((away_abbr, home_abbr))
+            if od:
+                sp = float(od["home_spread"])
+                oh = float(od["home_odds"])
+                oa = float(od["away_odds"])
+                src = od["line_source"]
+            else:
+                if is_past:
+                    sp, oh, oa, src = None, None, None, None   # preserve existing
+                else:
+                    sp, oh, oa, src = 0.0, 1.90, 1.90, "Fallback ⚠️"
 
-            "status": g["status"],
-            "away_score": g["away_score"],
-            "home_score": g["home_score"],
+            game_id = f"{d.strftime('%Y%m%d')}_{away_abbr}_{home_abbr}"
 
-            "created_at_tw": ts_tw,
-            "updated_at_tw": ts_tw,
-            "game_date_tw": game_date_tw,
-        }
-        rows.append(row)
+            rows.append({
+                "game_id": game_id,
+                "game_date_us": g["game_date_us"],   # MM/DD/YYYY
+                "season": season,
 
-    # ---- Upsert ----
-    upsert_games(rows)
+                "away_abbr": away_abbr,
+                "home_abbr": home_abbr,
+                "away_name": g.get("away_name") or away_abbr,
+                "home_name": g.get("home_name") or home_abbr,
+
+                "home_spread": sp,
+                "home_odds": oh,
+                "away_odds": oa,
+                "line_source": src,
+
+                "status": g["status"],
+                "away_score": g["away_score"],
+                "home_score": g["home_score"],
+
+                "created_at_tw": ts_tw,
+                "updated_at_tw": ts_tw,
+                "game_date_tw": game_date_tw,
+            })
+
+        if rows:
+            upsert_games(rows)
+            total_rows += len(rows)
+
+    print(f"[INFO] backfill done total_rows={total_rows}")
 
 
 if __name__ == "__main__":
