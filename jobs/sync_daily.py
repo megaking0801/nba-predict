@@ -5,19 +5,14 @@ import pandas as pd
 import psycopg2
 from psycopg2.extras import execute_values
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
-from nba_api.stats.library.http import NBAStatsHTTP
 from nba_api.stats.static import teams as static_teams
 
-# -------------------------
-# TZ
-# -------------------------
 tw_tz = pytz.timezone("Asia/Taipei")
 us_east_tz = pytz.timezone("US/Eastern")
 
-# -------------------------
-# Teams
-# -------------------------
 ALL_TEAMS = static_teams.get_teams()
 VALID_TEAM_IDS = set(t["id"] for t in ALL_TEAMS)
 ID_MAP = {t["id"]: t["abbreviation"] for t in ALL_TEAMS}
@@ -177,13 +172,16 @@ def bulk_upsert(rows: list[dict]) -> int:
     return len(rows)
 
 # -------------------------
-# NBA fetch
+# HTTP (robust)
 # -------------------------
 def nba_headers():
     return {
         "Host": "stats.nba.com",
         "Connection": "keep-alive",
         "Accept": "application/json, text/plain, */*",
+        "Accept-Encoding": "gzip, deflate, br",
+        "Cache-Control": "no-cache",
+        "Pragma": "no-cache",
         "x-nba-stats-token": "true",
         "x-nba-stats-origin": "stats",
         "Origin": "https://www.nba.com",
@@ -196,49 +194,57 @@ def nba_headers():
         "Accept-Language": "en-US,en;q=0.9",
     }
 
-def fetch_scoreboardv3_df(game_date_us: str, retries: int = 5, timeout: int = 25) -> pd.DataFrame:
-    http = NBAStatsHTTP()
+def make_session() -> requests.Session:
+    s = requests.Session()
+    retry = Retry(
+        total=7,
+        connect=7,
+        read=7,
+        backoff_factor=1.2,
+        status_forcelist=(429, 500, 502, 503, 504),
+        allowed_methods=("GET",),
+        raise_on_status=False,
+    )
+    adapter = HTTPAdapter(max_retries=retry, pool_connections=10, pool_maxsize=10)
+    s.mount("https://", adapter)
+    s.mount("http://", adapter)
+    return s
+
+def fetch_scoreboardv3_df(session: requests.Session, game_date_us: str) -> pd.DataFrame:
     params = {"GameDate": game_date_us, "LeagueID": "00"}
-    last_err = None
 
-    for i in range(retries + 1):
-        try:
-            if i > 0:
-                time.sleep((2 ** (i - 1)) + random.random() * 0.7)
+    # timeout=(connect, read)
+    timeout = (10, 60)
 
-            resp = http.send_api_request(
-                endpoint=SCOREBOARD_V3_URL,
-                parameters=params,
-                headers=nba_headers(),
-                timeout=timeout,
-            )
-            data = resp.get_dict()
-            rs0 = data["resultSets"][0]
-            df = pd.DataFrame(rs0["rowSet"], columns=rs0["headers"])
-            if df.empty or "HOME_TEAM_ID" not in df.columns:
-                return pd.DataFrame()
-            df = df[df["HOME_TEAM_ID"].isin(VALID_TEAM_IDS)].copy()
-            return df
-        except Exception as e:
-            last_err = e
+    # 多一點 jitter，降低被擋/被限速
+    time.sleep(0.4 + random.random() * 0.8)
 
-    print(f"[WARN] scoreboard fetch failed for {game_date_us}: {last_err}")
-    return pd.DataFrame()
+    try:
+        r = session.get(SCOREBOARD_V3_URL, params=params, headers=nba_headers(), timeout=timeout)
+        if r.status_code != 200:
+            print(f"[WARN] scoreboard status={r.status_code} date={game_date_us}")
+            return pd.DataFrame()
+
+        data = r.json()
+        rs0 = data["resultSets"][0]
+        df = pd.DataFrame(rs0["rowSet"], columns=rs0["headers"])
+        if df.empty or "HOME_TEAM_ID" not in df.columns:
+            return pd.DataFrame()
+        df = df[df["HOME_TEAM_ID"].isin(VALID_TEAM_IDS)].copy()
+        return df
+    except Exception as e:
+        print(f"[WARN] scoreboard fetch failed for {game_date_us}: {e}")
+        return pd.DataFrame()
 
 def derive_dates_from_row(row: pd.Series, fallback_us_mmddyyyy: str):
     """
-    保證回傳：
-      - game_date_us: MM/DD/YYYY
-      - game_date_tw: YYYY-MM-DD
-      - us_token:     MMDDYYYY (for game_id)
-    做法：
-      1) 優先用 GAME_DATE_EST (YYYY-MM-DD) -> 轉成 MM/DD/YYYY
-      2) 否則用 fallback_us_mmddyyyy (呼叫 scoreboard 時的 GameDate)
-      3) 轉台灣日期：用「美東日期 + 12:00」轉台灣取 date（避免 00:00 邊界）
+    保證不會 NULL：
+      - 優先用 GAME_DATE_EST (YYYY-MM-DD) -> MM/DD/YYYY
+      - 否則用 fallback
+      - TW 日期用 美東日期 +12:00 轉台灣取 date
     """
     date_est = row.get("GAME_DATE_EST", None)
     if date_est:
-        # GAME_DATE_EST 通常是 '2026-02-21'
         try:
             dt_est_date = datetime.strptime(str(date_est), "%Y-%m-%d").date()
             game_date_us = dt_est_date.strftime("%m/%d/%Y")
@@ -247,14 +253,13 @@ def derive_dates_from_row(row: pd.Series, fallback_us_mmddyyyy: str):
     else:
         game_date_us = fallback_us_mmddyyyy
 
-    # noon in US/Eastern
     dt_noon_est = us_east_tz.localize(datetime.strptime(game_date_us, "%m/%d/%Y") + timedelta(hours=12))
     game_date_tw = dt_noon_est.astimezone(tw_tz).strftime("%Y-%m-%d")
     us_token = datetime.strptime(game_date_us, "%m/%d/%Y").strftime("%m%d%Y")
     return game_date_us, game_date_tw, us_token
 
 # -------------------------
-# Odds API (Pinnacle spreads)
+# Odds API
 # -------------------------
 def norm_name(s: str) -> str:
     if not isinstance(s, str):
@@ -349,7 +354,7 @@ def get_pinnacle_odds_map() -> dict:
     return out
 
 # -------------------------
-# Metrics
+# Metrics (baseline)
 # -------------------------
 PROB_SCALE = 12.0
 PROB_FLOOR = 0.12
@@ -397,10 +402,11 @@ def main():
     ]
 
     pin_map = get_pinnacle_odds_map()
-    total = 0
+    session = make_session()
 
+    total = 0
     for d in targets:
-        df = fetch_scoreboardv3_df(d, retries=5, timeout=25)
+        df = fetch_scoreboardv3_df(session, d)
         if df.empty:
             print(f"[WARN] scoreboard empty for {d}")
             continue
@@ -417,9 +423,7 @@ def main():
             home_cn = TEAM_NAME_CH.get(home_abbr, home_abbr)
             away_cn = TEAM_NAME_CH.get(away_abbr, away_abbr)
 
-            # ✅ 保證不為 NULL 的日期推導
             game_date_us, game_date_tw, us_token = derive_dates_from_row(r, fallback_us_mmddyyyy=d)
-
             game_id = f"{away_abbr}_{home_abbr}_{us_token}"
 
             pin = pin_map.get((away_abbr, home_abbr))
