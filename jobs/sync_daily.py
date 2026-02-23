@@ -402,22 +402,24 @@ INSERT INTO public.games (
     %(updated_at_tw)s,
     %(game_date_tw)s
 )
-ON CONFLICT (game_date_us, away_abbr, home_abbr)
+ON CONFLICT (game_id)
 DO UPDATE SET
-    season        = EXCLUDED.season,
-    away_name     = EXCLUDED.away_name,
-    home_name     = EXCLUDED.home_name,
-    home_spread   = EXCLUDED.home_spread,
-    home_odds     = EXCLUDED.home_odds,
-    away_odds     = EXCLUDED.away_odds,
-    line_source   = EXCLUDED.line_source,
-    status        = EXCLUDED.status,
-    away_score    = EXCLUDED.away_score,
-    home_score    = EXCLUDED.home_score,
-    updated_at_tw = EXCLUDED.updated_at_tw,
-    game_date_tw  = EXCLUDED.game_date_tw;
+    game_date_us   = EXCLUDED.game_date_us,
+    season         = EXCLUDED.season,
+    away_abbr      = EXCLUDED.away_abbr,
+    home_abbr      = EXCLUDED.home_abbr,
+    away_name      = EXCLUDED.away_name,
+    home_name      = EXCLUDED.home_name,
+    home_spread    = EXCLUDED.home_spread,
+    home_odds      = EXCLUDED.home_odds,
+    away_odds      = EXCLUDED.away_odds,
+    line_source    = EXCLUDED.line_source,
+    status         = EXCLUDED.status,
+    away_score     = EXCLUDED.away_score,
+    home_score     = EXCLUDED.home_score,
+    updated_at_tw  = EXCLUDED.updated_at_tw,
+    game_date_tw   = EXCLUDED.game_date_tw;
 """
-
 
 def db_connect():
     # 1) Prefer DATABASE_URL if present
