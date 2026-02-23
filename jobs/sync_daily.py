@@ -2,29 +2,59 @@
 # -*- coding: utf-8 -*-
 
 """
-jobs/sync_daily.py
+jobs/sync_daily.py (upgraded)
 
-- Fetch NBA scoreboard from ESPN for date window (past/future)
-- Fetch spreads from The Odds API (multi-book fallback)
-- Upsert into Supabase/Postgres public.games (schema-aligned)
-- NEW: Load models from model_registry and write p_raw / p_cal
+What it does:
+- Fetch NBA scoreboard (schedule/scores/status) from ESPN for a date window
+- Fetch spreads from The Odds API with multi-bookmaker fallback
+- Compute features (base_diff, f_edge) using nba_api + ESPN injuries + team context
+- Compute cover_prob using trained calibrator in model_registry if exists; else fallback logistic curve
+- Upsert into Supabase/Postgres public.games (schema-aligned, with COALESCE preserve logic)
 
-Backfill behavior:
-- PAST dates: if odds missing -> do NOT overwrite existing odds (NULL + COALESCE)
-- TODAY/FUTURE: if odds missing -> write fallback (0,1.90,1.90,"Fallback ⚠️")
+Backfill:
+- BACKFILL_PAST_DAYS: e.g. "120" -> anchor day and previous 119 days
+- BACKFILL_FUTURE_DAYS: e.g. "7" -> anchor day and next 6 days
+- Anchor day defaults to US/Eastern "today", or OVERRIDE_US_DATE (MM/DD/YYYY)
+
+Important behavior:
+- For PAST dates: if odds not found, we DO NOT overwrite existing odds/features in DB
+  (we send NULLs and UPSERT uses COALESCE to preserve existing values)
+- For TODAY/FUTURE dates: if odds not found, we write fallback (0, 1.90, 1.90, "Fallback ⚠️")
+
+Env expected:
+- SUPABASE_HOST, SUPABASE_DB, SUPABASE_USER, SUPABASE_PASSWORD, SUPABASE_PORT
+- ODDS_API_KEY
+- NBA_SEASON (optional, default "2025-26")
+- OVERRIDE_US_DATE (optional, MM/DD/YYYY)
+- BACKFILL_PAST_DAYS (optional int, default 1)
+- BACKFILL_FUTURE_DAYS (optional int, default 1)
+- DRY_RUN=1 (optional)
+
+Notes:
+- Feature engineering is "current snapshot" (season-to-date stats) even for past dates.
+  This is NOT perfect historically, but it's consistent and lets you bootstrap training.
 """
 
 import os
 import re
+import json
+import math
+import time
+import base64
+import pickle
+import unicodedata
 import datetime as dt
-from typing import Dict, Tuple, Optional, List
+from typing import Dict, Tuple, Optional, List, Any
 
 import requests
 import psycopg2
 import psycopg2.extras
-import pickle
-import base64
 import pandas as pd
+
+from bs4 import BeautifulSoup
+
+from nba_api.stats.endpoints import leaguedashplayerstats, teamgamelog
+from nba_api.stats.static import teams as nba_teams
 
 
 # -----------------------------
@@ -32,11 +62,13 @@ import pandas as pd
 # -----------------------------
 
 def norm_name(s: str) -> str:
-    if s is None:
+    if not isinstance(s, str):
         return ""
-    s = s.strip().lower()
-    s = s.replace("&", "and")
-    s = re.sub(r"[^a-z0-9\s]", "", s)
+    s = unicodedata.normalize("NFKD", s)
+    s = "".join(ch for ch in s if not unicodedata.combining(ch))
+    s = s.lower()
+    s = re.sub(r"\b(jr|sr|ii|iii|iv|v)\b", "", s)
+    s = re.sub(r"[^a-z\s]", " ", s)
     s = re.sub(r"\s+", " ", s).strip()
     return s
 
@@ -115,11 +147,13 @@ BOOK_KEY_ALIASES = {"pointsbet": "pointsbetus"}
 # -----------------------------
 
 def fetch_espn_scoreboard(date_us: dt.date) -> List[dict]:
+    """
+    Stable endpoint:
+    https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard?dates=YYYYMMDD
+    """
     ymd = date_us.strftime("%Y%m%d")
     candidates = [
-        ("https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard", {"dates": ymd}),
         ("https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard", {"dates": ymd, "limit": 300}),
-        ("https://site.web.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard", {"dates": ymd}),
         ("https://site.web.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard", {"dates": ymd, "limit": 300}),
     ]
 
@@ -142,6 +176,14 @@ def fetch_espn_scoreboard(date_us: dt.date) -> List[dict]:
 
 
 def parse_espn_events(events: List[dict], date_us: dt.date) -> List[dict]:
+    """
+    Output per game:
+    - game_date_us (MM/DD/YYYY)
+    - home_abbr, away_abbr
+    - home_name, away_name  (ESPN displayName)
+    - home_score, away_score (int or None)
+    - status: scheduled | in_progress | final
+    """
     out: List[dict] = []
     game_date_str = date_us.strftime("%m/%d/%Y")
 
@@ -172,7 +214,7 @@ def parse_espn_events(events: List[dict], date_us: dt.date) -> List[dict]:
             away_name = away_team.get("displayName") or away_team.get("shortDisplayName") or away_abbr
 
             st = (comp.get("status") or {}).get("type") or {}
-            state = (st.get("state") or "").lower()
+            state = (st.get("state") or "").lower()  # pre|in|post
             completed = bool(st.get("completed"))
 
             if completed or state == "post":
@@ -215,6 +257,14 @@ def parse_espn_events(events: List[dict], date_us: dt.date) -> List[dict]:
 # -----------------------------
 
 def get_odds_map() -> Dict[Tuple[str, str], dict]:
+    """
+    Map keyed by (away_abbr, home_abbr):
+      {
+        (away, home): {
+          home_spread, home_odds, away_odds, line_source
+        }
+      }
+    """
     api_key = (os.environ.get("ODDS_API_KEY") or "").strip()
     if not api_key:
         print("[WARN] ODDS_API_KEY missing -> odds disabled")
@@ -334,7 +384,7 @@ def db_connect():
     present = all([host, dbname, user, password, port])
     print(f"[INFO] DB_ENV_present={present} via={'SUPABASE_*' if present else 'none'}")
     if not present:
-        raise RuntimeError("DB connection env missing")
+        raise RuntimeError("DB connection env missing: set DATABASE_URL or SUPABASE_HOST/DB/USER/PASSWORD/PORT")
 
     return psycopg2.connect(
         host=host,
@@ -346,25 +396,389 @@ def db_connect():
     )
 
 
-def load_model(model_name: str):
-    """Load pickled model payload from model_registry; return None if missing."""
+def ensure_schema():
+    """
+    Ensure public.games has required columns for ML pipeline.
+    Safe to run every time.
+    """
+    ddl = """
+    CREATE TABLE IF NOT EXISTS public.games (
+        game_id TEXT PRIMARY KEY,
+        game_date_us TEXT,
+        season TEXT,
+        away_abbr TEXT,
+        home_abbr TEXT,
+        away_name TEXT,
+        home_name TEXT,
+
+        home_spread DOUBLE PRECISION,
+        home_odds DOUBLE PRECISION,
+        away_odds DOUBLE PRECISION,
+        line_source TEXT,
+
+        base_diff DOUBLE PRECISION,
+        f_edge DOUBLE PRECISION,
+        cover_prob DOUBLE PRECISION,
+        implied_prob DOUBLE PRECISION,
+        edge_value DOUBLE PRECISION,
+        ev DOUBLE PRECISION,
+        pick_team TEXT,
+        odds_used DOUBLE PRECISION,
+
+        status TEXT,
+        away_score INTEGER,
+        home_score INTEGER,
+        cover INTEGER,
+        settled_at_tw TEXT,
+
+        created_at_tw TEXT,
+        updated_at_tw TEXT,
+        game_date_tw TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_games_date_us ON public.games (game_date_us);
+    """
     conn = db_connect()
     try:
-        with conn.cursor() as cur:
-            cur.execute("SELECT payload_base64 FROM model_registry WHERE model_name=%s", (model_name,))
-            row = cur.fetchone()
-            if not row:
-                return None
-            return pickle.loads(base64.b64decode(row[0]))
-    except Exception as e:
-        print(f"[WARN] load_model failed name={model_name} err={e}")
-        return None
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute(ddl)
+
+                # If table existed with fewer columns, add missing ones
+                alters = [
+                    "ALTER TABLE public.games ADD COLUMN IF NOT EXISTS base_diff DOUBLE PRECISION",
+                    "ALTER TABLE public.games ADD COLUMN IF NOT EXISTS f_edge DOUBLE PRECISION",
+                    "ALTER TABLE public.games ADD COLUMN IF NOT EXISTS cover_prob DOUBLE PRECISION",
+                    "ALTER TABLE public.games ADD COLUMN IF NOT EXISTS implied_prob DOUBLE PRECISION",
+                    "ALTER TABLE public.games ADD COLUMN IF NOT EXISTS edge_value DOUBLE PRECISION",
+                    "ALTER TABLE public.games ADD COLUMN IF NOT EXISTS ev DOUBLE PRECISION",
+                    "ALTER TABLE public.games ADD COLUMN IF NOT EXISTS pick_team TEXT",
+                    "ALTER TABLE public.games ADD COLUMN IF NOT EXISTS odds_used DOUBLE PRECISION",
+                    "ALTER TABLE public.games ADD COLUMN IF NOT EXISTS cover INTEGER",
+                    "ALTER TABLE public.games ADD COLUMN IF NOT EXISTS settled_at_tw TEXT",
+                    "ALTER TABLE public.games ADD COLUMN IF NOT EXISTS game_date_tw TEXT",
+                ]
+                for a in alters:
+                    cur.execute(a)
+
+        print("[INFO] schema ensured")
     finally:
         conn.close()
 
 
-# Schema-aligned UPSERT + preserve logic for odds (COALESCE)
-# NEW: add p_raw, p_cal (these will just overwrite if present)
+def load_models(conn) -> Tuple[Optional[Any], Optional[Any]]:
+    """
+    Load base_model + calibrator from model_registry if present.
+    Returns (base_model, calibrator)
+    """
+    base_model = None
+    calibrator = None
+    try:
+        df = pd.read_sql("""
+            SELECT model_name, payload_base64
+            FROM public.model_registry
+        """, conn)
+        if df.empty:
+            return None, None
+
+        for _, r in df.iterrows():
+            name = str(r["model_name"])
+            payload = r["payload_base64"]
+            if not payload:
+                continue
+            obj = pickle.loads(base64.b64decode(payload))
+            if name == "cover_base_model":
+                base_model = obj
+            if name == "cover_prob_calibrator":
+                calibrator = obj
+
+    except Exception:
+        return None, None
+
+    return base_model, calibrator
+
+
+# -----------------------------
+# Feature Engineering (nba_api + ESPN injuries)
+# -----------------------------
+
+ALL_TEAMS = nba_teams.get_teams()
+ID_TO_ABBR = {int(t["id"]): t["abbreviation"] for t in ALL_TEAMS}
+ABBR_TO_ID = {t["abbreviation"]: int(t["id"]) for t in ALL_TEAMS}
+
+TEAM_MAP = {
+    "ATL": ["Atlanta Hawks"], "BKN": ["Brooklyn Nets"], "BOS": ["Boston Celtics"],
+    "CHA": ["Charlotte Hornets"], "CHI": ["Chicago Bulls"], "CLE": ["Cleveland Cavaliers"],
+    "DAL": ["Dallas Mavericks"], "DEN": ["Denver Nuggets"], "DET": ["Detroit Pistons"],
+    "GSW": ["Golden State Warriors"], "HOU": ["Houston Rockets"], "IND": ["Indiana Pacers"],
+    "LAC": ["LA Clippers"], "LAL": ["Los Angeles Lakers"], "MEM": ["Memphis Grizzlies"],
+    "MIA": ["Miami Heat"], "MIL": ["Milwaukee Bucks"], "MIN": ["Minnesota Timberwolves"],
+    "NOP": ["New Orleans Pelicans"], "NYK": ["New York Knicks"], "OKC": ["Oklahoma City Thunder"],
+    "ORL": ["Orlando Magic"], "PHI": ["Philadelphia 76ers"], "PHX": ["Phoenix Suns"],
+    "POR": ["Portland Trail Blazers"], "SAC": ["Sacramento Kings"], "SAS": ["San Antonio Spurs"],
+    "TOR": ["Toronto Raptors"], "UTA": ["Utah Jazz"], "WAS": ["Washington Wizards"],
+}
+
+def fetch_safe_df(endpoint_cls, retries: int = 2, sleep_s: float = 0.7, **kwargs) -> pd.DataFrame:
+    for attempt in range(retries + 1):
+        try:
+            d = endpoint_cls(**kwargs).get_dict()
+            rs = d["resultSets"][0]
+            return pd.DataFrame(rs["rowSet"], columns=rs["headers"])
+        except Exception:
+            if attempt < retries:
+                time.sleep(sleep_s * (attempt + 1))
+            else:
+                return pd.DataFrame()
+
+def get_player_stats(season: str) -> pd.DataFrame:
+    ps = fetch_safe_df(
+        leaguedashplayerstats.LeagueDashPlayerStats,
+        season=season,
+        per_mode_detailed="PerGame",
+    )
+    if ps.empty or "TEAM_ID" not in ps.columns or "PLAYER_NAME" not in ps.columns:
+        return pd.DataFrame(columns=["PLAYER_NAME", "TEAM_ID", "PTS", "IMPACT", "NORM", "GP", "MIN"])
+
+    for c in ["GP", "MIN", "PTS", "REB", "AST", "STL", "BLK", "TOV"]:
+        if c not in ps.columns:
+            ps[c] = 0
+
+    ps = ps[(ps["GP"] >= 5) & (ps["MIN"] >= 10)].copy()
+
+    ps["IMPACT"] = (
+        ps["PTS"]
+        + ps["REB"] * 1.1
+        + ps["AST"] * 1.5
+        + (ps["STL"] + ps["BLK"]) * 2
+        - ps["TOV"] * 2
+    )
+    ps["NORM"] = ps["PLAYER_NAME"].astype(str).map(norm_name)
+    return ps
+
+def get_injuries() -> pd.DataFrame:
+    """
+    Parse ESPN injury page. Best-effort.
+    Returns columns: NORM, IS_OUT, TEAM_ABBR
+    """
+    inj_list = []
+    try:
+        url = "https://www.espn.com/nba/injuries"
+        headers = {"User-Agent": "Mozilla/5.0"}
+        resp = requests.get(url, headers=headers, timeout=20)
+        resp.raise_for_status()
+        soup = BeautifulSoup(resp.text, "html.parser")
+
+        tables = soup.select(".ResponsiveTable") or soup.select("section")
+        for table in tables:
+            title_el = table.select_one(".Table__Title") or table.find(["h2", "h3"])
+            if not title_el:
+                continue
+            t_name = title_el.get_text(strip=True).lower()
+
+            t_abbr = None
+            for abbr, info in TEAM_MAP.items():
+                if info[0].lower() in t_name:
+                    t_abbr = abbr
+                    break
+            if not t_abbr:
+                continue
+
+            rows = table.select("tbody tr") if table.select("tbody tr") else table.select("tr")
+            for r in rows:
+                cols = r.select("td")
+                if len(cols) < 2:
+                    continue
+
+                raw_player = cols[0].get_text(" ", strip=True)
+                raw_player = re.sub(r"\s+(PG|SG|SF|PF|C|G|F)\s*$", "", raw_player, flags=re.I).strip()
+
+                row_text = " | ".join([c.get_text(" ", strip=True) for c in cols]).lower()
+
+                out_kw = ["out", "ruled out", "will not play", "inactive", "suspended"]
+                is_out = any(k in row_text for k in out_kw)
+
+                inj_list.append({
+                    "NORM": norm_name(raw_player),
+                    "TEAM_ABBR": t_abbr,
+                    "IS_OUT": bool(is_out),
+                })
+    except Exception:
+        pass
+
+    return pd.DataFrame(inj_list)
+
+def get_team_context(team_ids: List[int], game_date_us: str, season: str) -> Dict[int, dict]:
+    """
+    For each team id, use TeamGameLog to compute:
+    - b2b: if last game date == previous day
+    - recent_w: last 5 pre-game win rate
+    """
+    ctx = {}
+    game_day = dt.datetime.strptime(game_date_us, "%m/%d/%Y").date()
+    prev_day = game_day - dt.timedelta(days=1)
+
+    for tid in team_ids:
+        log = fetch_safe_df(teamgamelog.TeamGameLog, team_id=tid, season=season)
+        is_b2b, recent_w = False, 0.5
+
+        if not log.empty and "GAME_DATE" in log.columns and "WL" in log.columns:
+            log = log.head(15).copy()
+            log["GAME_DATE"] = pd.to_datetime(log["GAME_DATE"], errors="coerce").dt.date
+            log = log.dropna(subset=["GAME_DATE"])
+
+            prior = log[log["GAME_DATE"] < game_day].sort_values("GAME_DATE", ascending=False)
+            if not prior.empty:
+                last_game_date = prior.iloc[0]["GAME_DATE"]
+                is_b2b = (last_game_date == prev_day)
+                last5 = prior.head(5)
+                if len(last5) > 0:
+                    recent_w = (last5["WL"] == "W").mean()
+
+        ctx[tid] = {"b2b": bool(is_b2b), "recent_w": float(recent_w)}
+    return ctx
+
+
+def compute_base_diff(
+    home_abbr: str,
+    away_abbr: str,
+    game_date_us: str,
+    season: str,
+    ps_db: pd.DataFrame,
+    inj_db: pd.DataFrame,
+    ctx_db: Dict[int, dict],
+) -> Optional[float]:
+    """
+    Clone your Streamlit formula:
+    base_diff = (h_pts - a_pts)*0.09 + (h_impact - a_impact)*3.8 + 2.5 + b2b_v + recent_v
+    """
+    hid = ABBR_TO_ID.get(home_abbr)
+    aid = ABBR_TO_ID.get(away_abbr)
+    if not hid or not aid:
+        return None
+
+    def build_pkg(tid: int, abbr: str):
+        ctx = ctx_db.get(tid, {"b2b": False, "recent_w": 0.5})
+
+        t_inj = inj_db[inj_db["TEAM_ABBR"] == abbr] if not inj_db.empty else pd.DataFrame()
+        out_list = t_inj[t_inj["IS_OUT"]]["NORM"].tolist() if not t_inj.empty else []
+
+        if not ps_db.empty and "TEAM_ID" in ps_db.columns and "NORM" in ps_db.columns:
+            active = (
+                ps_db[(ps_db["TEAM_ID"] == tid) & (~ps_db["NORM"].isin(out_list))]
+                .sort_values("IMPACT", ascending=False)
+                .copy()
+            )
+        else:
+            active = pd.DataFrame()
+
+        pts_sum = float(active["PTS"].sum()) if (not active.empty and "PTS" in active.columns) else 0.0
+        impact_mean = float(active["IMPACT"].mean()) if (not active.empty and "IMPACT" in active.columns) else 0.0
+
+        return {
+            "pts": pts_sum,
+            "impact": impact_mean,
+            "b2b": bool(ctx["b2b"]),
+            "recent_w": float(ctx["recent_w"]),
+        }
+
+    h_p = build_pkg(hid, home_abbr)
+    a_p = build_pkg(aid, away_abbr)
+
+    b2b_v = (-2.5 if h_p["b2b"] else 0) - (-2.5 if a_p["b2b"] else 0)
+    recent_v = (h_p["recent_w"] - a_p["recent_w"]) * 5
+
+    base_diff = (h_p["pts"] - a_p["pts"]) * 0.09 + (h_p["impact"] - a_p["impact"]) * 3.8 + 2.5 + b2b_v + recent_v
+    return float(base_diff)
+
+
+# -----------------------------
+# Probability + EV
+# -----------------------------
+
+# Fallback mapping if calibrator not present
+PROB_SCALE = float((os.environ.get("PROB_SCALE") or "12").strip())   # same as UI default
+PROB_FLOOR = float((os.environ.get("PROB_FLOOR") or "0.12").strip())
+PROB_CEIL  = float((os.environ.get("PROB_CEIL") or "0.88").strip())
+
+def fallback_cover_prob(edge_points_signed: float) -> float:
+    x = abs(edge_points_signed) / max(1e-9, PROB_SCALE)
+    p = 1.0 / (1.0 + math.exp(-x))
+    p = max(PROB_FLOOR, min(PROB_CEIL, p))
+    return float(p)
+
+def compute_market_metrics(
+    home_abbr: str,
+    away_abbr: str,
+    home_spread: Optional[float],
+    home_odds: Optional[float],
+    away_odds: Optional[float],
+    base_diff: Optional[float],
+    calibrator: Optional[Any],
+) -> Dict[str, Optional[float]]:
+    """
+    f_edge = base_diff + home_spread
+    cover_prob = calibrator(f_edge) if exists else fallback
+    pick_team: home if f_edge > 0 else away
+    """
+    if base_diff is None or home_spread is None:
+        return {
+            "f_edge": None,
+            "cover_prob": None,
+            "implied_prob": None,
+            "edge_value": None,
+            "ev": None,
+            "pick_team": None,
+            "odds_used": None,
+        }
+
+    f_edge = float(base_diff) + float(home_spread)
+
+    if calibrator is not None:
+        try:
+            # isotonic regression supports predict on array-like
+            p = float(calibrator.predict([f_edge])[0])
+            p = max(0.0, min(1.0, p))
+        except Exception:
+            p = fallback_cover_prob(f_edge)
+    else:
+        p = fallback_cover_prob(f_edge)
+
+    pick_home = (f_edge > 0)
+
+    odds_used = None
+    if pick_home:
+        odds_used = float(home_odds) if home_odds is not None else None
+    else:
+        odds_used = float(away_odds) if away_odds is not None else None
+
+    implied_prob = None
+    if odds_used is not None and odds_used > 0:
+        implied_prob = float(1.0 / odds_used)
+
+    edge_value = None
+    ev = None
+    if implied_prob is not None:
+        edge_value = float(p - implied_prob)
+        ev = float(p * odds_used - 1.0) if odds_used is not None else None
+
+    pick_team = home_abbr if pick_home else away_abbr
+
+    return {
+        "f_edge": float(f_edge),
+        "cover_prob": float(p),
+        "implied_prob": implied_prob,
+        "edge_value": edge_value,
+        "ev": ev,
+        "pick_team": pick_team,
+        "odds_used": odds_used,
+    }
+
+
+# -----------------------------
+# UPSERT
+# -----------------------------
+
 UPSERT_SQL = """
 INSERT INTO public.games (
     game_id,
@@ -378,11 +792,19 @@ INSERT INTO public.games (
     home_odds,
     away_odds,
     line_source,
+
+    base_diff,
+    f_edge,
+    cover_prob,
+    implied_prob,
+    edge_value,
+    ev,
+    pick_team,
+    odds_used,
+
     status,
     away_score,
     home_score,
-    p_raw,
-    p_cal,
     created_at_tw,
     updated_at_tw,
     game_date_tw
@@ -398,11 +820,19 @@ INSERT INTO public.games (
     %(home_odds)s,
     %(away_odds)s,
     %(line_source)s,
+
+    %(base_diff)s,
+    %(f_edge)s,
+    %(cover_prob)s,
+    %(implied_prob)s,
+    %(edge_value)s,
+    %(ev)s,
+    %(pick_team)s,
+    %(odds_used)s,
+
     %(status)s,
     %(away_score)s,
     %(home_score)s,
-    %(p_raw)s,
-    %(p_cal)s,
     %(created_at_tw)s,
     %(updated_at_tw)s,
     %(game_date_tw)s
@@ -416,17 +846,25 @@ DO UPDATE SET
     away_name     = EXCLUDED.away_name,
     home_name     = EXCLUDED.home_name,
 
+    -- Preserve existing odds if EXCLUDED is NULL (past backfill)
     home_spread   = COALESCE(EXCLUDED.home_spread, public.games.home_spread),
     home_odds     = COALESCE(EXCLUDED.home_odds,   public.games.home_odds),
     away_odds     = COALESCE(EXCLUDED.away_odds,   public.games.away_odds),
     line_source   = COALESCE(EXCLUDED.line_source, public.games.line_source),
 
+    -- Preserve existing features if EXCLUDED is NULL (past backfill)
+    base_diff     = COALESCE(EXCLUDED.base_diff,   public.games.base_diff),
+    f_edge        = COALESCE(EXCLUDED.f_edge,      public.games.f_edge),
+    cover_prob    = COALESCE(EXCLUDED.cover_prob,  public.games.cover_prob),
+    implied_prob  = COALESCE(EXCLUDED.implied_prob,public.games.implied_prob),
+    edge_value    = COALESCE(EXCLUDED.edge_value,  public.games.edge_value),
+    ev            = COALESCE(EXCLUDED.ev,          public.games.ev),
+    pick_team     = COALESCE(EXCLUDED.pick_team,   public.games.pick_team),
+    odds_used     = COALESCE(EXCLUDED.odds_used,   public.games.odds_used),
+
     status        = EXCLUDED.status,
     away_score    = EXCLUDED.away_score,
     home_score    = EXCLUDED.home_score,
-
-    p_raw         = EXCLUDED.p_raw,
-    p_cal         = EXCLUDED.p_cal,
 
     updated_at_tw = EXCLUDED.updated_at_tw,
     game_date_tw  = EXCLUDED.game_date_tw;
@@ -442,7 +880,7 @@ def upsert_games(rows: List[dict]) -> None:
     try:
         with conn:
             with conn.cursor() as cur:
-                psycopg2.extras.execute_batch(cur, UPSERT_SQL, rows, page_size=100)
+                psycopg2.extras.execute_batch(cur, UPSERT_SQL, rows, page_size=200)
         print(f"[INFO] db upsert ok rows={len(rows)}")
     finally:
         conn.close()
@@ -455,17 +893,29 @@ def upsert_games(rows: List[dict]) -> None:
 def main():
     print(f"[INFO] ODDS_API_KEY_present={bool((os.environ.get('ODDS_API_KEY') or '').strip())}")
 
+    ensure_schema()
+
+    # Anchor date (US)
     override = (os.environ.get("OVERRIDE_US_DATE") or "").strip()
     if override:
-        anchor_date_us = dt.datetime.strptime(override, "%m/%d/%Y").date()
+        try:
+            anchor_date_us = dt.datetime.strptime(override, "%m/%d/%Y").date()
+        except ValueError:
+            raise RuntimeError("OVERRIDE_US_DATE must be MM/DD/YYYY")
     else:
         anchor_date_us = us_eastern_today()
 
+    print(f"[INFO] target_date_us={anchor_date_us.isoformat()}")
+
+    # Backfill windows
     def _int_env(name: str, default: int) -> int:
         raw = (os.environ.get(name) or "").strip()
         if not raw:
             return default
-        return max(1, int(raw))
+        try:
+            return max(1, int(raw))
+        except ValueError:
+            raise RuntimeError(f"{name} must be an integer")
 
     past_days = _int_env("BACKFILL_PAST_DAYS", 1)
     future_days = _int_env("BACKFILL_FUTURE_DAYS", 1)
@@ -474,23 +924,30 @@ def main():
     future_list = [anchor_date_us + dt.timedelta(days=i) for i in range(1, future_days)]
     date_list = past_list + future_list
 
-    print(f"[INFO] target_date_us={anchor_date_us.isoformat()}")
     print(f"[INFO] backfill_past_days={past_days} backfill_future_days={future_days}")
-    print(f"[INFO] dates={[d.isoformat() for d in date_list[:5]]}... total={len(date_list)}")
+    print(f"[INFO] dates={[d.isoformat() for d in date_list[:5]]} ... total={len(date_list)}")
 
     season = (os.environ.get("NBA_SEASON") or "2025-26").strip()
     ts_tw = now_tw_str()
     game_date_tw = today_tw_mmddyyyy()
 
-    # Load models (may be None at first)
-    print("[INFO] loading models...")
-    base_model = load_model("cover_base_model")
-    calibrator = load_model("cover_prob_calibrator")
-    print(f"[INFO] base_model_loaded={base_model is not None}")
-    print(f"[INFO] calibrator_loaded={calibrator is not None}")
+    # load models once
+    conn_for_models = db_connect()
+    try:
+        base_model, calibrator = load_models(conn_for_models)
+    finally:
+        conn_for_models.close()
 
-    # Odds map once per run (snapshot)
+    print("[INFO] loading models...")
+    print(f"[INFO] base_model={bool(base_model)}")
+    print(f"[INFO] calibrator={bool(calibrator)}")
+
+    # Odds map once per run (market snapshot)
     odds_map = get_odds_map()
+
+    # Feature inputs snapshot once per run
+    ps_db = get_player_stats(season=season)
+    inj_db = get_injuries()
 
     total_rows = 0
     for d in date_list:
@@ -503,6 +960,18 @@ def main():
         except Exception as e:
             print(f"[ERROR] espn fetch failed for {d.isoformat()}: {e}")
             continue
+
+        # team context is date-specific
+        team_ids = []
+        for g in games:
+            hid = ABBR_TO_ID.get(g["home_abbr"])
+            aid = ABBR_TO_ID.get(g["away_abbr"])
+            if hid:
+                team_ids.append(hid)
+            if aid:
+                team_ids.append(aid)
+        team_ids = sorted(set(team_ids))
+        ctx_db = get_team_context(team_ids, game_date_us=d.strftime("%m/%d/%Y"), season=season) if team_ids else {}
 
         is_past = d < anchor_date_us
         rows: List[dict] = []
@@ -523,23 +992,40 @@ def main():
                 else:
                     sp, oh, oa, src = 0.0, 1.90, 1.90, "Fallback ⚠️"
 
-            # --------- ML inference (minimal feature = home_spread only) ---------
-            p_raw = None
-            p_cal = None
+            base_diff = None
+            m = {
+                "f_edge": None,
+                "cover_prob": None,
+                "implied_prob": None,
+                "edge_value": None,
+                "ev": None,
+                "pick_team": None,
+                "odds_used": None,
+            }
 
-            if base_model is not None and sp is not None:
-                try:
-                    X = pd.DataFrame([{"home_spread": float(sp)}])
-                    p_raw = float(base_model.predict_proba(X)[0][1])
-                except Exception:
-                    p_raw = None
+            # For past: if odds missing (None) we won't compute features to avoid overwriting historical records.
+            # For today/future: always compute features (even fallback odds).
+            should_compute = (not is_past) or (sp is not None)
 
-            if calibrator is not None and p_raw is not None:
-                try:
-                    p_cal = float(calibrator.predict([p_raw])[0])
-                except Exception:
-                    p_cal = None
-            # -------------------------------------------------------------------
+            if should_compute:
+                base_diff = compute_base_diff(
+                    home_abbr=home_abbr,
+                    away_abbr=away_abbr,
+                    game_date_us=g["game_date_us"],
+                    season=season,
+                    ps_db=ps_db,
+                    inj_db=inj_db,
+                    ctx_db=ctx_db,
+                )
+                m = compute_market_metrics(
+                    home_abbr=home_abbr,
+                    away_abbr=away_abbr,
+                    home_spread=sp,
+                    home_odds=oh,
+                    away_odds=oa,
+                    base_diff=base_diff,
+                    calibrator=calibrator,
+                )
 
             game_id = f"{d.strftime('%Y%m%d')}_{away_abbr}_{home_abbr}"
 
@@ -558,12 +1044,18 @@ def main():
                 "away_odds": oa,
                 "line_source": src,
 
+                "base_diff": base_diff,
+                "f_edge": m["f_edge"],
+                "cover_prob": m["cover_prob"],
+                "implied_prob": m["implied_prob"],
+                "edge_value": m["edge_value"],
+                "ev": m["ev"],
+                "pick_team": m["pick_team"],
+                "odds_used": m["odds_used"],
+
                 "status": g["status"],
                 "away_score": g["away_score"],
                 "home_score": g["home_score"],
-
-                "p_raw": p_raw,
-                "p_cal": p_cal,
 
                 "created_at_tw": ts_tw,
                 "updated_at_tw": ts_tw,
@@ -574,7 +1066,7 @@ def main():
             upsert_games(rows)
             total_rows += len(rows)
 
-    print(f"[INFO] backfill done total_rows={total_rows}")
+    print(f"[OK] sync complete rows={total_rows}")
 
 
 if __name__ == "__main__":
