@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       run:
-        description: "sync | settle | train_base | train_cal | train_all | sync_settle | sync_train_all | settle_train_all | all"
+        description: "sync | settle | train | sync_settle | settle_train | sync_train | all"
         required: true
         default: "all"
       verify_us_date:
@@ -17,7 +17,7 @@ on:
 jobs:
   nba:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 45
 
     steps:
       - name: Checkout
@@ -40,7 +40,7 @@ jobs:
         if: ${{ github.event_name == 'schedule' ||
                 github.event.inputs.run == 'sync' ||
                 github.event.inputs.run == 'sync_settle' ||
-                github.event.inputs.run == 'sync_train_all' ||
+                github.event.inputs.run == 'sync_train' ||
                 github.event.inputs.run == 'all' }}
         env:
           SUPABASE_HOST: ${{ secrets.SUPABASE_HOST }}
@@ -53,6 +53,10 @@ jobs:
           OVERRIDE_US_DATE: ${{ github.event.inputs.verify_us_date }}
           BACKFILL_PAST_DAYS: "120"
           BACKFILL_FUTURE_DAYS: "7"
+          # Optional tuning (matches your UI defaults)
+          PROB_SCALE: "12"
+          PROB_FLOOR: "0.12"
+          PROB_CEIL: "0.88"
         run: |
           python jobs/sync_daily.py
 
@@ -63,7 +67,7 @@ jobs:
         if: ${{ github.event_name == 'schedule' ||
                 github.event.inputs.run == 'settle' ||
                 github.event.inputs.run == 'sync_settle' ||
-                github.event.inputs.run == 'settle_train_all' ||
+                github.event.inputs.run == 'settle_train' ||
                 github.event.inputs.run == 'all' }}
         env:
           SUPABASE_HOST: ${{ secrets.SUPABASE_HOST }}
@@ -76,35 +80,13 @@ jobs:
           python jobs/settle_daily.py
 
       # =====================
-      # TRAIN (BASE MODEL)
-      # =====================
-      - name: Train base model
-        if: ${{ github.event_name == 'schedule' ||
-                github.event.inputs.run == 'train_base' ||
-                github.event.inputs.run == 'train_all' ||
-                github.event.inputs.run == 'train' ||
-                github.event.inputs.run == 'sync_train_all' ||
-                github.event.inputs.run == 'settle_train_all' ||
-                github.event.inputs.run == 'all' }}
-        env:
-          SUPABASE_HOST: ${{ secrets.SUPABASE_HOST }}
-          SUPABASE_DB: ${{ secrets.SUPABASE_DB }}
-          SUPABASE_USER: ${{ secrets.SUPABASE_USER }}
-          SUPABASE_PASSWORD: ${{ secrets.SUPABASE_PASSWORD }}
-          SUPABASE_PORT: ${{ secrets.SUPABASE_PORT }}
-        run: |
-          python jobs/train_base_model.py
-
-      # =====================
-      # TRAIN (CALIBRATOR)
+      # TRAIN (calibrator)
       # =====================
       - name: Train calibrator
         if: ${{ github.event_name == 'schedule' ||
-                github.event.inputs.run == 'train_cal' ||
-                github.event.inputs.run == 'train_all' ||
                 github.event.inputs.run == 'train' ||
-                github.event.inputs.run == 'sync_train_all' ||
-                github.event.inputs.run == 'settle_train_all' ||
+                github.event.inputs.run == 'sync_train' ||
+                github.event.inputs.run == 'settle_train' ||
                 github.event.inputs.run == 'all' }}
         env:
           SUPABASE_HOST: ${{ secrets.SUPABASE_HOST }}
