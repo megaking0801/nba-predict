@@ -115,19 +115,41 @@ BOOK_KEY_ALIASES = {
 
 def fetch_espn_scoreboard(date_us: dt.date) -> List[dict]:
     """
-    ESPN scoreboard endpoint:
-    https://site.web.api.espn.com/apis/v2/sports/basketball/nba/scoreboard?dates=YYYYMMDD
-    Returns list of "events".
+    ESPN scoreboard endpoint (stable):
+    https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard?dates=YYYYMMDD
+
+    We also try a couple of alternate hosts/paths as fallback to reduce 404 risk.
     """
     ymd = date_us.strftime("%Y%m%d")
-    url = "https://site.web.api.espn.com/apis/v2/sports/basketball/nba/scoreboard"
-    params = {"dates": ymd, "limit": 300}
 
-    r = requests.get(url, params=params, timeout=25)
-    r.raise_for_status()
-    data = r.json()
-    events = data.get("events") or []
-    return events
+    candidates = [
+        # ✅ Primary
+        ("https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard", {"dates": ymd}),
+        # Some variants occasionally work in different networks
+        ("https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard", {"dates": ymd, "limit": 300}),
+        ("https://site.web.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard", {"dates": ymd}),
+        ("https://site.web.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard", {"dates": ymd, "limit": 300}),
+    ]
+
+    last_err = None
+    for url, params in candidates:
+        try:
+            r = requests.get(url, params=params, timeout=25)
+            if r.status_code == 200:
+                data = r.json()
+                events = data.get("events") or []
+                print(f"[INFO] espn scoreboard ok url={url} games={len(events)}")
+                return events
+
+            # Helpful debugging
+            print(f"[WARN] espn scoreboard status={r.status_code} url={url} body={r.text[:120]}")
+            last_err = requests.exceptions.HTTPError(f"{r.status_code} for {r.url}")
+        except Exception as e:
+            print(f"[WARN] espn scoreboard error url={url} err={e}")
+            last_err = e
+
+    # If all failed
+    raise RuntimeError(f"espn scoreboard failed after fallbacks: {last_err}")
 
 
 def parse_espn_events(events: List[dict], date_us: dt.date) -> List[dict]:
