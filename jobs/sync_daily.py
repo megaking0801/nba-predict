@@ -1,5 +1,5 @@
 import os, re, time, random
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 import pytz
 import pandas as pd
 import psycopg2
@@ -94,7 +94,7 @@ def pg_conn():
 
 def db_init():
     sql = """
-    CREATE TABLE IF NOT EXISTS games (
+    CREATE TABLE IF NOT EXISTS public.games (
         game_id TEXT PRIMARY KEY,
         game_date_us TEXT,
         game_date_tw TEXT,
@@ -127,8 +127,8 @@ def db_init():
         updated_at_tw TEXT
     );
 
-    CREATE INDEX IF NOT EXISTS idx_games_date_us ON games (game_date_us);
-    CREATE INDEX IF NOT EXISTS idx_games_date_tw ON games (game_date_tw);
+    CREATE INDEX IF NOT EXISTS idx_games_date_us ON public.games (game_date_us);
+    CREATE INDEX IF NOT EXISTS idx_games_date_tw ON public.games (game_date_tw);
     """
     conn = pg_conn()
     try:
@@ -161,7 +161,7 @@ def bulk_upsert(rows: list[dict]) -> int:
 
     updates = ",".join([f"{c}=EXCLUDED.{c}" for c in all_cols if c != "game_id"])
     sql = f"""
-    INSERT INTO games ({",".join(all_cols)})
+    INSERT INTO public.games ({",".join(all_cols)})
     VALUES %s
     ON CONFLICT (game_id) DO UPDATE SET
       {updates};
@@ -177,7 +177,7 @@ def bulk_upsert(rows: list[dict]) -> int:
     return len(rows)
 
 # -------------------------
-# NBA fetch (robust)
+# NBA fetch
 # -------------------------
 def nba_headers():
     return {
@@ -225,63 +225,33 @@ def fetch_scoreboardv3_df(game_date_us: str, retries: int = 5, timeout: int = 25
     print(f"[WARN] scoreboard fetch failed for {game_date_us}: {last_err}")
     return pd.DataFrame()
 
-def _try_parse_iso_datetime(v):
-    if v is None:
-        return None
-    s = str(v).strip()
-    if not s:
-        return None
-    try:
-        # e.g. "2026-02-22T00:30:00Z" or "2026-02-22T00:30:00+00:00"
-        s = s.replace("Z", "+00:00")
-        dt = datetime.fromisoformat(s)
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        return dt.astimezone(timezone.utc)
-    except Exception:
-        return None
-
-def parse_game_start_utc(row: pd.Series):
+def derive_dates_from_row(row: pd.Series, fallback_us_mmddyyyy: str):
     """
-    盡量從 scoreboardv3 的欄位取出「實際開打時間」，以便正確換算台灣日期。
-    欄位名依 nba stats 版本可能不同，所以做多 key 嘗試。
+    保證回傳：
+      - game_date_us: MM/DD/YYYY
+      - game_date_tw: YYYY-MM-DD
+      - us_token:     MMDDYYYY (for game_id)
+    做法：
+      1) 優先用 GAME_DATE_EST (YYYY-MM-DD) -> 轉成 MM/DD/YYYY
+      2) 否則用 fallback_us_mmddyyyy (呼叫 scoreboard 時的 GameDate)
+      3) 轉台灣日期：用「美東日期 + 12:00」轉台灣取 date（避免 00:00 邊界）
     """
-    # 常見 UTC datetime 欄位
-    for k in ["GAME_DATE_TIME_UTC", "GAME_DATETIME_UTC", "GAME_TIME_UTC", "GAME_DATE_UTC", "GAME_TIME_UTC_STRING"]:
-        if k in row:
-            dt = _try_parse_iso_datetime(row.get(k))
-            if dt:
-                return dt
-
-    # 有些回傳 epoch（秒或毫秒）
-    for k in ["GAME_DATE_TIME_UTC_TS", "GAME_TIME_UTC_TS", "GAME_TIME_UTC_MILLIS", "GAME_DATE_TIME_UTC_MILLIS"]:
-        if k in row:
-            v = row.get(k)
-            try:
-                if v is None:
-                    continue
-                x = float(v)
-                # 猜毫秒 vs 秒
-                if x > 10_000_000_000:  # 很可能是 ms
-                    dt = datetime.fromtimestamp(x / 1000.0, tz=timezone.utc)
-                else:
-                    dt = datetime.fromtimestamp(x, tz=timezone.utc)
-                return dt.astimezone(timezone.utc)
-            except Exception:
-                pass
-
-    # 後備：用 EST 日期+時間拼（如果有）
-    d_est = row.get("GAME_DATE_EST", None)
-    t_est = row.get("GAME_TIME_EST", None)
-    if d_est and t_est:
+    date_est = row.get("GAME_DATE_EST", None)
+    if date_est:
+        # GAME_DATE_EST 通常是 '2026-02-21'
         try:
-            dt_est = datetime.strptime(f"{d_est} {t_est}", "%Y-%m-%d %I:%M %p")
-            dt_est = us_east_tz.localize(dt_est)
-            return dt_est.astimezone(timezone.utc)
+            dt_est_date = datetime.strptime(str(date_est), "%Y-%m-%d").date()
+            game_date_us = dt_est_date.strftime("%m/%d/%Y")
         except Exception:
-            pass
+            game_date_us = fallback_us_mmddyyyy
+    else:
+        game_date_us = fallback_us_mmddyyyy
 
-    return None
+    # noon in US/Eastern
+    dt_noon_est = us_east_tz.localize(datetime.strptime(game_date_us, "%m/%d/%Y") + timedelta(hours=12))
+    game_date_tw = dt_noon_est.astimezone(tw_tz).strftime("%Y-%m-%d")
+    us_token = datetime.strptime(game_date_us, "%m/%d/%Y").strftime("%m%d%Y")
+    return game_date_us, game_date_tw, us_token
 
 # -------------------------
 # Odds API (Pinnacle spreads)
@@ -379,7 +349,7 @@ def get_pinnacle_odds_map() -> dict:
     return out
 
 # -------------------------
-# Metrics (job baseline; UI will overwrite with richer model later)
+# Metrics
 # -------------------------
 PROB_SCALE = 12.0
 PROB_FLOOR = 0.12
@@ -413,13 +383,12 @@ def compute_metrics(base_diff: float, home_spread: float, home_odds: float, away
     }
 
 # -------------------------
-# Main sync
+# Main
 # -------------------------
 def main():
     season = (os.environ.get("NBA_SEASON") or "2025-26").strip()
     db_init()
 
-    # ✅ 關鍵修正：抓 yesterday / today / tomorrow（美東）
     today_us = datetime.now(us_east_tz).date()
     targets = [
         (today_us - timedelta(days=1)).strftime("%m/%d/%Y"),
@@ -448,20 +417,10 @@ def main():
             home_cn = TEAM_NAME_CH.get(home_abbr, home_abbr)
             away_cn = TEAM_NAME_CH.get(away_abbr, away_abbr)
 
-            # ✅ 用每一場的開打時間換算 TW 日期 + US 日期（避免 date_tw 算錯）
-            start_utc = parse_game_start_utc(r)
-            if start_utc:
-                game_date_tw = start_utc.astimezone(tw_tz).strftime("%Y-%m-%d")
-                game_date_us = start_utc.astimezone(us_east_tz).strftime("%m/%d/%Y")
-                game_date_us_token = start_utc.astimezone(us_east_tz).strftime("%m%d%Y")
-            else:
-                # fallback（很少走到）
-                game_date_us = d
-                game_date_tw = us_east_tz.localize(datetime.strptime(d, "%m/%d/%Y")).astimezone(tw_tz).strftime("%Y-%m-%d")
-                game_date_us_token = d.replace("/", "")
+            # ✅ 保證不為 NULL 的日期推導
+            game_date_us, game_date_tw, us_token = derive_dates_from_row(r, fallback_us_mmddyyyy=d)
 
-            # ✅ game_id 改用該場的「美東日期 token」
-            game_id = f"{away_abbr}_{home_abbr}_{game_date_us_token}"
+            game_id = f"{away_abbr}_{home_abbr}_{us_token}"
 
             pin = pin_map.get((away_abbr, home_abbr))
             if pin:
@@ -472,10 +431,8 @@ def main():
             else:
                 sp, oh, oa, src = 0.0, 1.90, 1.90, "Fallback ⚠️"
 
-            # ✅ job 的 base_diff 先用 0.0（避免 job 太重）
             m = compute_metrics(0.0, sp, oh, oa, home_cn, away_cn)
 
-            # status 可以依 GAME_STATUS_TEXT 粗略判斷
             stxt = str(r.get("GAME_STATUS_TEXT", "")).lower()
             status = "final" if "final" in stxt else "scheduled"
 
