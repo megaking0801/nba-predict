@@ -4,15 +4,14 @@ on:
   workflow_dispatch:
     inputs:
       run:
-        description: "Which steps to run? (sync|settle|train|all)"
+        description: "sync | settle | train | sync_settle | settle_train | sync_train | all"
         required: true
         default: "all"
       verify_us_date:
-        description: "Optional: override US date (MM/DD/YYYY) for one-shot run; blank = auto targets"
+        description: "Optional: override US date (MM/DD/YYYY)"
         required: false
         default: ""
   schedule:
-    # 台灣 18:30 (UTC+8) = UTC 10:30
     - cron: "30 10 * * *"
 
 jobs:
@@ -34,8 +33,15 @@ jobs:
           python -m pip install --upgrade pip
           pip install pandas pytz requests psycopg2-binary scikit-learn nba_api
 
-      - name: Sync games + odds snapshot into DB
-        if: ${{ github.event_name == 'schedule' || github.event.inputs.run == 'sync' || github.event.inputs.run == 'all' }}
+      # =====================
+      # SYNC
+      # =====================
+      - name: Sync games
+        if: ${{ github.event_name == 'schedule' ||
+                github.event.inputs.run == 'sync' ||
+                github.event.inputs.run == 'sync_settle' ||
+                github.event.inputs.run == 'sync_train' ||
+                github.event.inputs.run == 'all' }}
         env:
           SUPABASE_HOST: ${{ secrets.SUPABASE_HOST }}
           SUPABASE_DB: ${{ secrets.SUPABASE_DB }}
@@ -48,8 +54,15 @@ jobs:
         run: |
           python jobs/sync_daily.py
 
-      - name: Settle results (scores + cover)
-        if: ${{ github.event_name == 'schedule' || github.event.inputs.run == 'settle' || github.event.inputs.run == 'all' }}
+      # =====================
+      # SETTLE
+      # =====================
+      - name: Settle results
+        if: ${{ github.event_name == 'schedule' ||
+                github.event.inputs.run == 'settle' ||
+                github.event.inputs.run == 'sync_settle' ||
+                github.event.inputs.run == 'settle_train' ||
+                github.event.inputs.run == 'all' }}
         env:
           SUPABASE_HOST: ${{ secrets.SUPABASE_HOST }}
           SUPABASE_DB: ${{ secrets.SUPABASE_DB }}
@@ -60,8 +73,15 @@ jobs:
         run: |
           python jobs/settle_daily.py
 
-      - name: Train calibrator (self-improving probability curve)
-        if: ${{ github.event_name == 'schedule' || github.event.inputs.run == 'train' || github.event.inputs.run == 'all' }}
+      # =====================
+      # TRAIN
+      # =====================
+      - name: Train calibrator
+        if: ${{ github.event_name == 'schedule' ||
+                github.event.inputs.run == 'train' ||
+                github.event.inputs.run == 'sync_train' ||
+                github.event.inputs.run == 'settle_train' ||
+                github.event.inputs.run == 'all' }}
         env:
           SUPABASE_HOST: ${{ secrets.SUPABASE_HOST }}
           SUPABASE_DB: ${{ secrets.SUPABASE_DB }}
