@@ -10,9 +10,9 @@ from bs4 import BeautifulSoup
 import psycopg2
 from psycopg2.extras import execute_values
 
-# ===== NEW: load calibrator from DB =====
-import json, base64, pickle
-from sklearn.isotonic import IsotonicRegression  # keep import to ensure pickle loads
+# ===== NEW: load models from DB =====
+import base64, pickle, json
+from sklearn.isotonic import IsotonicRegression  # keep import so pickle loads
 
 # =========================================================
 # 1) 核心配置（保留原 UI；強化邏輯與穩定性）
@@ -90,7 +90,6 @@ def norm_name(s: str) -> str:
     s = re.sub(r"\s+", " ", s).strip()
     return s
 
-
 def fetch_safe_df(endpoint, retries: int = 2, sleep_s: float = 0.6, **kwargs) -> pd.DataFrame:
     for attempt in range(retries + 1):
         try:
@@ -104,7 +103,7 @@ def fetch_safe_df(endpoint, retries: int = 2, sleep_s: float = 0.6, **kwargs) ->
                 return pd.DataFrame()
 
 # =========================================================
-# 2.1) 你原本的 fallback 機率映射（保守：12%~88%）
+# 2.1) fallback 機率映射（更保守：12%~88%）
 # =========================================================
 PROB_SCALE = 12.0
 PROB_FLOOR = 0.12
@@ -120,7 +119,7 @@ def calc_cover_prob(edge_points: float) -> float:
     return p
 
 # =========================================================
-# 2.2) NEW: Supabase(Postgres) DB：連線 / 建表 / upsert / bulk / 結算
+# NEW) Supabase(Postgres) DB：連線 / 建表 / upsert / bulk / 結算
 # =========================================================
 def pg_conn():
     host = st.secrets["SUPABASE_HOST"]
@@ -140,9 +139,6 @@ def pg_conn():
     )
 
 def ensure_model_registry():
-    """
-    讓 UI 端也能容錯：如果 model_registry 不存在就建立
-    """
     sql = """
     CREATE TABLE IF NOT EXISTS model_registry (
       model_name TEXT PRIMARY KEY,
@@ -162,6 +158,9 @@ def ensure_model_registry():
         conn.close()
 
 def db_init():
+    """
+    你的原本 games table + ✅ 新增 ML 需要欄位（ALTER IF NOT EXISTS）
+    """
     sql = """
     CREATE TABLE IF NOT EXISTS games (
         game_id TEXT PRIMARY KEY,
@@ -194,6 +193,17 @@ def db_init():
         created_at_tw TEXT,
         updated_at_tw TEXT
     );
+
+    -- ✅ NEW features (for base model learning)
+    ALTER TABLE games ADD COLUMN IF NOT EXISTS diff_pts DOUBLE PRECISION;
+    ALTER TABLE games ADD COLUMN IF NOT EXISTS diff_impact DOUBLE PRECISION;
+    ALTER TABLE games ADD COLUMN IF NOT EXISTS diff_recent_w DOUBLE PRECISION;
+    ALTER TABLE games ADD COLUMN IF NOT EXISTS diff_b2b DOUBLE PRECISION;
+    ALTER TABLE games ADD COLUMN IF NOT EXISTS pin_ok INTEGER;
+
+    -- ✅ NEW outputs
+    ALTER TABLE games ADD COLUMN IF NOT EXISTS p_raw DOUBLE PRECISION;
+    ALTER TABLE games ADD COLUMN IF NOT EXISTS p_cal DOUBLE PRECISION;
 
     CREATE INDEX IF NOT EXISTS idx_games_date ON games (game_date_us);
     """
@@ -376,13 +386,12 @@ def update_results_and_settle(game_date_us: str):
         conn.close()
 
 # =========================================================
-# 2.3) NEW: 從 DB 載入最新 calibrator（IsotonicRegression）
+# NEW) Load base model + calibrator from DB
 # =========================================================
 @st.cache_data(ttl=600)
-def load_cover_calibrator_from_db():
+def load_model_from_registry(model_name: str):
     """
-    從 model_registry 讀取 model_name='cover_prob_calibrator' 的最新模型
-    回傳： (iso_model_or_None, info_dict)
+    return: (model_or_None, info_dict)
     """
     try:
         ensure_model_registry()
@@ -394,7 +403,7 @@ def load_cover_calibrator_from_db():
                     FROM model_registry
                     WHERE model_name=%s
                     LIMIT 1
-                """, ("cover_prob_calibrator",))
+                """, (model_name,))
                 row = cur.fetchone()
         finally:
             conn.close()
@@ -406,34 +415,54 @@ def load_cover_calibrator_from_db():
         if not payload_b64:
             return None, {"ok": False, "reason": "empty_payload"}
 
-        iso = pickle.loads(base64.b64decode(payload_b64.encode("utf-8")))
+        model = pickle.loads(base64.b64decode(payload_b64.encode("utf-8")))
         info = {
             "ok": True,
+            "model_name": model_name,
             "model_version": model_version,
             "trained_rows": trained_rows,
             "created_at_tw": created_at_tw,
             "metrics": metrics if isinstance(metrics, dict) else None,
         }
-        return iso, info
-
+        return model, info
     except Exception as e:
         return None, {"ok": False, "reason": f"load_error: {e}"}
 
-def calibrated_cover_prob(f_edge: float, iso_model):
-    """
-    若 iso_model 存在：用 iso_model.predict
-    否則 fallback：calc_cover_prob
-    """
+def clamp01(x: float, lo: float = 0.001, hi: float = 0.999) -> float:
     try:
-        if iso_model is not None:
-            p = float(iso_model.predict([float(f_edge)])[0])
-            # 額外保險：clip 到合理範圍
-            if p < 0.01: p = 0.01
-            if p > 0.99: p = 0.99
-            return p
+        x = float(x)
     except Exception:
-        pass
-    return float(calc_cover_prob(float(f_edge)))
+        return lo
+    if x < lo: return lo
+    if x > hi: return hi
+    return x
+
+def predict_p_raw(base_model, feats: dict, fallback_edge: float) -> float:
+    """
+    base model exists => predict_proba
+    else => fallback sigmoid from f_edge
+    """
+    if base_model is not None:
+        try:
+            X = pd.DataFrame([feats])
+            p = float(base_model.predict_proba(X)[0, 1])
+            return clamp01(p)
+        except Exception:
+            pass
+    return clamp01(calc_cover_prob(fallback_edge))
+
+def calibrate_p(iso_model, p_raw: float) -> float:
+    """
+    calibrator exists => iso.predict
+    else => return p_raw
+    """
+    if iso_model is not None:
+        try:
+            p = float(iso_model.predict([float(p_raw)])[0])
+            return clamp01(p)
+        except Exception:
+            pass
+    return clamp01(p_raw)
 
 # =========================================================
 # 3) 賽程抓取（先決定目標日期，再拉賽程）
@@ -697,11 +726,11 @@ def get_pinnacle_odds_for_date(game_date_us: str) -> dict:
     return out
 
 # =========================================================
-# 8) UI 初始化
+# 8) UI 初始化（保留原本配置 + 強制更新按鈕）
 # =========================================================
-st.set_page_config(page_title="NBA Edge v16.0 + Supabase", layout="wide")
+st.set_page_config(page_title="NBA Edge v16.0 + Supabase + ML", layout="wide")
 
-# 建表
+# 建表（只要 secrets 正確，這裡會自動建立/升級 games table）
 try:
     db_init()
     ensure_model_registry()
@@ -709,10 +738,11 @@ except Exception as e:
     st.error(f"❌ Supabase DB 初始化失敗：{e}")
     st.stop()
 
-# NEW: 載入 calibrator（若有）
-iso_model, iso_info = load_cover_calibrator_from_db()
+# NEW: load models
+base_model, base_info = load_model_from_registry("cover_prob_base_model")
+iso_model, iso_info   = load_model_from_registry("cover_prob_calibrator")
 
-h1, h2 = st.columns([0.78, 0.22])
+h1, h2 = st.columns([0.8, 0.2])
 with h1:
     now_tw_str = datetime.now(tw_tz).strftime("%m/%d %H:%M")
     st.title("🏀 NBA Edge 數據預測系統")
@@ -721,22 +751,26 @@ with h2:
     if st.button("🔄 強制更新（傷病/盤口/數據/模型）"):
         st.cache_data.clear()
         st.rerun()
-
-    with st.popover("📌 模型狀態 / 判讀指南"):
-        if iso_info.get("ok"):
-            st.success(f"✅ 已載入 calibrator：version={iso_info.get('model_version')} rows={iso_info.get('trained_rows')}")
+    with st.popover("🧠 模型狀態 / 判讀指南"):
+        if base_info.get("ok"):
+            st.success(f"✅ Base model 已載入：{base_info.get('model_version')} | rows={base_info.get('trained_rows')}")
         else:
-            st.warning(f"⚠️ 尚未載入 calibrator（使用 fallback 機率曲線）。原因：{iso_info.get('reason')}")
+            st.warning(f"⚠️ Base model 未載入（改用 fallback sigmoid）。原因：{base_info.get('reason')}")
+
+        if iso_info.get("ok"):
+            st.success(f"✅ Calibrator 已載入：{iso_info.get('model_version')} | rows={iso_info.get('trained_rows')}")
+        else:
+            st.warning(f"⚠️ Calibrator 未載入（p_cal=p_raw）。原因：{iso_info.get('reason')}")
 
         st.markdown(
             "**點數優勢**：模型預測分差與盤口的差距（點數）。\n\n"
-            "**盤口優勢**：過盤機率 - 損益兩平機率（%）。\n\n"
+            "**盤口優勢**：過盤機率(校正後) - 損益兩平機率（%）。\n\n"
             "**期望報酬**：以過盤機率估算的長期期望（%）。\n\n"
-            "**Top picks（你選 2）**：\n"
-            "- 只用 Pinnacle 有抓到 spreads 的場次當候選池（避免假盤）\n"
-            "- 但排序/EV/edge_value 用你手動輸入的盤口/賠率重新計算\n\n"
-            "**提醒**：若你看到某場主隊盤口=0、賠率=1.90 且來源顯示 Fallback，代表沒有真盤資料，那場不會進 Top picks。\n\n"
-            "**DB**：會自動把今日賽程（含模型/盤口）寫入 Supabase；你手動改運彩盤口也會寫回；可按「結算」更新比分/cover。"
+            "**Top picks**：\n"
+            "- 候選池：只用 Pinnacle 真盤\n"
+            "- 排序：用你輸入的盤口/賠率重新計算（p_cal、EV、edge_value）\n\n"
+            "**DB**：每日自動寫入今日賽程；你手動改運彩會寫回；結算後 cover 進入訓練資料。\n\n"
+            "**模型學習**：Base model 用 DB 已結算資料訓練；Calibrator 校正 p_raw。\n"
         )
 
 with st.spinner("⚡ 正在同步美東數據中心..."):
@@ -769,7 +803,7 @@ if inj_db.empty:
 pinnacle_map = get_pinnacle_odds_for_date(target_date_us)
 
 # =========================================================
-# 9) 主計算：建立每場 pkg + base_diff
+# 9) 主計算：建立每場 pkg + base_diff（保留你的核心公式）
 # =========================================================
 all_games_data = []
 
@@ -803,6 +837,12 @@ for _, row in sb_filtered.iterrows():
 
     h_p, a_p = build_pkg(h_id, h_abbr), build_pkg(a_id, a_abbr)
 
+    # diffs (✅ will be stored for ML training)
+    diff_pts = float(h_p["pts"] - a_p["pts"])
+    diff_impact = float(h_p["impact"] - a_p["impact"])
+    diff_recent_w = float(h_p["recent_w"] - a_p["recent_w"])
+    diff_b2b = float((1.0 if h_p["b2b"] else 0.0) - (1.0 if a_p["b2b"] else 0.0))
+
     b2b_v = (-2.5 if h_p["b2b"] else 0) - (-2.5 if a_p["b2b"] else 0)
     recent_v = (h_p["recent_w"] - a_p["recent_w"]) * 5
 
@@ -830,18 +870,34 @@ for _, row in sb_filtered.iterrows():
             "h_abbr": h_abbr,
             "a_abbr": a_abbr,
             "pin_ok": pin_ok,
+            "pin_ok_int": 1 if pin_ok else 0,
             "pin_home_sp": pin_home_sp,
             "pin_home_od": pin_home_od,
             "pin_away_od": pin_away_od,
+            "diff_pts": diff_pts,
+            "diff_impact": diff_impact,
+            "diff_recent_w": diff_recent_w,
+            "diff_b2b": diff_b2b,
         }
     )
 
 # =========================================================
-# 10) 指標計算
+# 10) 指標計算（✅ 使用 Base model + Calibrator）
 # =========================================================
 EDGE_THRESHOLD = 0.05
 MAX_PICKS = 3
 MAX_GAMES_FOR_PICK = 10
+
+BASE_FEATURES = [
+    "home_spread",
+    "diff_pts",
+    "diff_impact",
+    "diff_recent_w",
+    "diff_b2b",
+    "pin_ok",
+    "base_diff",
+    "f_edge",
+]
 
 def safe_float(x, default):
     try:
@@ -870,28 +926,39 @@ def get_market_inputs_for_game(g):
 
     return float(sp), float(oh), float(oa), src, manual
 
-def compute_metrics(g, home_spread_input, home_odds, away_odds, iso_model):
+def compute_metrics(g, home_spread_input, home_odds, away_odds, base_model, iso_model):
     """
-    ✅ 改動重點：
-    - f_edge 一樣照你原本：base_diff + home_spread
-    - cover_prob 改為：優先用 calibrator(f_edge)，沒有才 fallback sigmoid
+    ✅ 核心：p_raw 由 base_model 產生，p_cal 由 calibrator 校正
     """
-    f_edge = g["base_diff"] + home_spread_input
+    f_edge = float(g["base_diff"] + home_spread_input)
 
-    # NEW: calibrated probability
-    cover_prob = calibrated_cover_prob(f_edge, iso_model)
+    feats = {
+        "home_spread": float(home_spread_input),
+        "diff_pts": float(g["diff_pts"]),
+        "diff_impact": float(g["diff_impact"]),
+        "diff_recent_w": float(g["diff_recent_w"]),
+        "diff_b2b": float(g["diff_b2b"]),
+        "pin_ok": float(g["pin_ok_int"]),
+        "base_diff": float(g["base_diff"]),
+        "f_edge": float(f_edge),
+    }
+
+    p_raw = predict_p_raw(base_model, feats, fallback_edge=f_edge)
+    p_cal = calibrate_p(iso_model, p_raw)
 
     pick_team = g["h_cn"] if f_edge > 0 else g["a_cn"]
     odds = home_odds if f_edge > 0 else away_odds
 
     implied_prob = 1.0 / odds if odds and odds > 0 else 1.0
-    edge_value = cover_prob - implied_prob
-    ev = (cover_prob * odds) - 1
+    edge_value = p_cal - implied_prob
+    ev = (p_cal * odds) - 1
 
     return {
         "f_edge": float(f_edge),
         "edge_points": float(abs(f_edge)),
-        "cover_prob": float(cover_prob),
+        "p_raw": float(p_raw),
+        "p_cal": float(p_cal),
+        "cover_prob": float(p_cal),  # UI 用校正後
         "implied_prob": float(implied_prob),
         "edge_value": float(edge_value),
         "ev": float(ev),
@@ -900,7 +967,7 @@ def compute_metrics(g, home_spread_input, home_odds, away_odds, iso_model):
     }
 
 # =========================================================
-# 11) 自動寫入 DB：把今日賽程先建檔
+# 11) 自動寫入 DB：把今日賽程先建檔（預設 Pinnacle / fallback）
 # =========================================================
 try:
     auto_rows = []
@@ -909,8 +976,7 @@ try:
         oh = float(g["pin_home_od"])
         oa = float(g["pin_away_od"])
         src = "Pinnacle ✅" if g["pin_ok"] else "Fallback ⚠️"
-
-        m = compute_metrics(g, sp, oh, oa, iso_model)
+        m = compute_metrics(g, sp, oh, oa, base_model, iso_model)
 
         auto_rows.append({
             "game_id": g["game_id"],
@@ -934,6 +1000,15 @@ try:
             "ev": float(m["ev"]),
             "pick_team": str(m["pick_team"]),
 
+            # ✅ ML features + outputs
+            "diff_pts": float(g["diff_pts"]),
+            "diff_impact": float(g["diff_impact"]),
+            "diff_recent_w": float(g["diff_recent_w"]),
+            "diff_b2b": float(g["diff_b2b"]),
+            "pin_ok": int(g["pin_ok_int"]),
+            "p_raw": float(m["p_raw"]),
+            "p_cal": float(m["p_cal"]),
+
             "status": "scheduled",
             "away_score": None,
             "home_score": None,
@@ -948,6 +1023,7 @@ except Exception as e:
 # 12) 🔥 今日最能買（候選池=真盤；排序=你輸入）
 # =========================================================
 st.header("🔥 今日過盤推薦 (Top 4)")
+
 pool_games = all_games_data[:MAX_GAMES_FOR_PICK]
 
 pick_pool = []
@@ -955,7 +1031,7 @@ for g in pool_games:
     if not g["pin_ok"]:
         continue
     u_sp, u_oh, u_oa, src, manual = get_market_inputs_for_game(g)
-    m = compute_metrics(g, u_sp, u_oh, u_oa, iso_model)
+    m = compute_metrics(g, u_sp, u_oh, u_oa, base_model, iso_model)
     pick_pool.append({
         "g": g,
         "src": src,
@@ -989,7 +1065,7 @@ else:
                 st.caption(f"盤口來源：{item['src']}（候選池=真盤；排序=你輸入的盤口/賠率）")
 
                 st.write(
-                    f"過盤機率：**{item['cover_prob']*100:.1f}%** | "
+                    f"過盤機率(校正)：**{item['cover_prob']*100:.1f}%** | "
                     f"損益兩平：**{item['implied_prob']*100:.1f}%**"
                 )
                 st.metric("盤口優勢", f"{item['edge_value']*100:+.1f}%")
@@ -998,6 +1074,7 @@ else:
                     f"主賠：**{item['home_odds']:.2f}** | 客賠：**{item['away_odds']:.2f}**"
                 )
                 st.write(f"點數優勢：**{item['edge_points']:.1f}** | 期望報酬：**{item['ev']*100:+.1f}%**")
+                st.caption(f"p_raw={item['p_raw']:.3f} → p_cal={item['p_cal']:.3f}")
 
 # =========================================================
 # 13) 結算按鈕：更新比分/cover 寫入 DB
@@ -1009,7 +1086,7 @@ with cA:
         try:
             n = update_results_and_settle(target_date_us)
             st.success(f"已掃描並更新 {n} 筆（非 Final 的 cover 會維持空值）")
-            # 結算後建議也刷新模型快取（如果你 train job 很快或同日重訓）
+            # 若你剛好同日重訓模型，這裡也順便清 cache
             st.cache_data.clear()
         except Exception as e:
             st.error(f"結算失敗：{e}")
@@ -1068,18 +1145,19 @@ for i in range(0, len(all_games_data), 3):
                 else:
                     src = "Fallback ⚠️"
 
-                m = compute_metrics(g, float(u_sp), float(u_oh), float(u_oa), iso_model)
+                m = compute_metrics(g, float(u_sp), float(u_oh), float(u_oa), base_model, iso_model)
 
                 st.caption(f"盤口來源：{src}（Top picks 候選池只用 Pinnacle ✅）")
-                st.write(f"過盤機率：**{m['cover_prob']*100:.1f}%** | 點數優勢：**{m['edge_points']:.1f}**")
+                st.write(f"過盤機率(校正)：**{m['cover_prob']*100:.1f}%** | 點數優勢：**{m['edge_points']:.1f}**")
                 st.write(f"盤口優勢：**{m['edge_value']*100:+.1f}%** | 期望報酬：**{m['ev']*100:+.1f}%**")
+                st.caption(f"p_raw={m['p_raw']:.3f} → p_cal={m['p_cal']:.3f}")
 
                 if g["pin_ok"] and m["edge_value"] > EDGE_THRESHOLD:
                     st.success(f"🔥 符合挑場門檻（真盤候選 + 盤口優勢 > 5%）：{m['pick_team']}")
                 else:
                     st.info(f"建議：{m['pick_team']}")
 
-                # 寫回 DB：用你手動輸入的盤口/賠率 + 最新機率
+                # ✅ 寫回 DB：你手動輸入的盤口/賠率 + 最新機率 + features
                 try:
                     upsert_game_row({
                         "game_id": gid,
@@ -1102,8 +1180,17 @@ for i in range(0, len(all_games_data), 3):
                         "edge_value": float(m["edge_value"]),
                         "ev": float(m["ev"]),
                         "pick_team": str(m["pick_team"]),
+
+                        "diff_pts": float(g["diff_pts"]),
+                        "diff_impact": float(g["diff_impact"]),
+                        "diff_recent_w": float(g["diff_recent_w"]),
+                        "diff_b2b": float(g["diff_b2b"]),
+                        "pin_ok": int(g["pin_ok_int"]),
+                        "p_raw": float(m["p_raw"]),
+                        "p_cal": float(m["p_cal"]),
                     })
                 except Exception:
+                    # 不要讓 DB 問題把 UI 卡死
                     pass
 
 # =========================================================
