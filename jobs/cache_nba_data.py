@@ -2,49 +2,38 @@
 # -*- coding: utf-8 -*-
 
 """
-jobs/cache_nba_data.py  (HARDENED)
+jobs/cache_nba_data.py (hardened)
 
-Cache strategy (minimal, stable):
-- Cache ONE record of player stats (optional)     -> cache_key: player_stats_{season}
-- Cache ONE record of team context for anchor day -> cache_key: team_ctx_{season}_{YYYYMMDD}
-  where team_ctx is {team_id: {"b2b": bool, "recent_w": float}}
+Writes to Supabase/Postgres public.nba_cache:
+- player_stats_{season}: minimal per-player stats for impact features
+- team_ctx_{season}_{YYYYMMDD}: per-team {b2b, recent_w} for anchor day
 
-Why:
-- TeamGameLog per team (30 calls) is the #1 cause of hangs/slowdowns.
-- We compute the only things we need (b2b + last5 win%) and store compactly.
-
-Env:
-- SUPABASE_HOST, SUPABASE_DB, SUPABASE_USER, SUPABASE_PASSWORD, SUPABASE_PORT (or DATABASE_URL)
-- NBA_SEASON (default 2025-26)
-- OVERRIDE_US_DATE (MM/DD/YYYY) optional for anchor date (US/Eastern)
-- CACHE_MODE: all | players | team_ctx  (default all)
-
-Hard limits:
+Anti-hang controls:
 - NBA_API_TIMEOUT_S (default 10)
 - NBA_API_RETRIES (default 1)
-- TEAM_CTX_DEADLINE_S (default 180)  total time budget for team ctx building
-- TEAM_CTX_MAX_TEAMS (default 30)    cap teams processed
-- TEAM_CTX_BATCH_SIZE (default 10)   process in batches with short sleeps
+- TEAM_CTX_DEADLINE_S (default 180)
+- TEAM_CTX_BATCH_SIZE (default 10)
+- TEAM_CTX_MAX_TEAMS (default 30)
+
+CACHE_MODE: all | players | team_ctx
 """
 
 import os
-import time
 import json
+import time
 import datetime as dt
-from typing import Optional, List, Dict, Any
+from typing import Dict, Any, List, Optional, Tuple
 
 import psycopg2
 import psycopg2.extras
 import pandas as pd
-
 from nba_api.stats.endpoints import leaguedashplayerstats, teamgamelog
 from nba_api.stats.static import teams as nba_teams
 
 
-# -------------------------
+# -----------------------------
 # Time helpers
-# -------------------------
-
+# -----------------------------
 def now_tw_str() -> str:
     try:
         from zoneinfo import ZoneInfo
@@ -63,17 +52,9 @@ def us_eastern_today() -> dt.date:
         return (dt.datetime.utcnow() - dt.timedelta(hours=5)).date()
 
 
-def anchor_us_date() -> dt.date:
-    override = (os.environ.get("OVERRIDE_US_DATE") or "").strip()
-    if override:
-        return dt.datetime.strptime(override, "%m/%d/%Y").date()
-    return us_eastern_today()
-
-
-# -------------------------
+# -----------------------------
 # DB
-# -------------------------
-
+# -----------------------------
 def db_connect():
     db_url = (os.environ.get("DATABASE_URL") or "").strip()
     if db_url:
@@ -85,22 +66,16 @@ def db_connect():
     password = (os.environ.get("SUPABASE_PASSWORD") or "").strip()
     port = (os.environ.get("SUPABASE_PORT") or "5432").strip()
 
-    present = all([host, dbname, user, password, port])
-    print(f"[INFO] DB_ENV_present={present} via={'SUPABASE_*' if present else 'none'}")
-    if not present:
-        raise RuntimeError("DB env missing: set DATABASE_URL or SUPABASE_HOST/DB/USER/PASSWORD/PORT")
+    if not all([host, dbname, user, password, port]):
+        raise RuntimeError("DB env missing: set DATABASE_URL or SUPABASE_*")
 
     return psycopg2.connect(
-        host=host,
-        dbname=dbname,
-        user=user,
-        password=password,
-        port=int(port),
+        host=host, dbname=dbname, user=user, password=password, port=int(port),
         sslmode="require",
     )
 
 
-def ensure_cache_schema():
+def ensure_schema():
     ddl = """
     CREATE TABLE IF NOT EXISTS public.nba_cache (
       cache_key TEXT PRIMARY KEY,
@@ -109,197 +84,240 @@ def ensure_cache_schema():
       pulled_at_tw TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_nba_cache_season ON public.nba_cache(season);
+
+    CREATE TABLE IF NOT EXISTS public.model_registry (
+      model_name TEXT PRIMARY KEY,
+      model_version TEXT,
+      payload_base64 TEXT,
+      trained_rows INT,
+      metrics JSONB,
+      created_at_tw TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS public.games (
+        game_id TEXT PRIMARY KEY,
+        game_date_us TEXT,
+        season TEXT,
+        away_abbr TEXT,
+        home_abbr TEXT,
+        away_name TEXT,
+        home_name TEXT,
+
+        home_spread DOUBLE PRECISION,
+        home_odds DOUBLE PRECISION,
+        away_odds DOUBLE PRECISION,
+        line_source TEXT,
+
+        base_diff DOUBLE PRECISION,
+        f_edge DOUBLE PRECISION,
+        cover_prob DOUBLE PRECISION,
+        implied_prob DOUBLE PRECISION,
+        edge_value DOUBLE PRECISION,
+        ev DOUBLE PRECISION,
+        pick_team TEXT,
+        odds_used DOUBLE PRECISION,
+
+        status TEXT,
+        away_score INTEGER,
+        home_score INTEGER,
+        cover INTEGER,
+        settled_at_tw TEXT,
+
+        margin DOUBLE PRECISION,
+
+        home_pts_sum DOUBLE PRECISION,
+        away_pts_sum DOUBLE PRECISION,
+        home_impact_mean DOUBLE PRECISION,
+        away_impact_mean DOUBLE PRECISION,
+        home_b2b INTEGER,
+        away_b2b INTEGER,
+        home_recent_w DOUBLE PRECISION,
+        away_recent_w DOUBLE PRECISION,
+
+        created_at_tw TEXT,
+        updated_at_tw TEXT,
+        game_date_tw TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_games_date_us ON public.games(game_date_us);
     """
+
+    alters = [
+        "ALTER TABLE public.games ADD COLUMN IF NOT EXISTS margin DOUBLE PRECISION",
+        "ALTER TABLE public.games ADD COLUMN IF NOT EXISTS home_pts_sum DOUBLE PRECISION",
+        "ALTER TABLE public.games ADD COLUMN IF NOT EXISTS away_pts_sum DOUBLE PRECISION",
+        "ALTER TABLE public.games ADD COLUMN IF NOT EXISTS home_impact_mean DOUBLE PRECISION",
+        "ALTER TABLE public.games ADD COLUMN IF NOT EXISTS away_impact_mean DOUBLE PRECISION",
+        "ALTER TABLE public.games ADD COLUMN IF NOT EXISTS home_b2b INTEGER",
+        "ALTER TABLE public.games ADD COLUMN IF NOT EXISTS away_b2b INTEGER",
+        "ALTER TABLE public.games ADD COLUMN IF NOT EXISTS home_recent_w DOUBLE PRECISION",
+        "ALTER TABLE public.games ADD COLUMN IF NOT EXISTS away_recent_w DOUBLE PRECISION",
+    ]
+
     conn = db_connect()
     try:
         with conn:
             with conn.cursor() as cur:
                 cur.execute(ddl)
-        print("[INFO] nba_cache schema ensured")
+                for a in alters:
+                    cur.execute(a)
+        print("[INFO] schema ensured")
     finally:
         conn.close()
 
 
 UPSERT_CACHE_SQL = """
-INSERT INTO public.nba_cache (cache_key, season, payload, pulled_at_tw)
-VALUES (%(cache_key)s, %(season)s, %(payload)s::jsonb, %(pulled_at_tw)s)
-ON CONFLICT (cache_key)
-DO UPDATE SET
+INSERT INTO public.nba_cache(cache_key, season, payload, pulled_at_tw)
+VALUES (%(cache_key)s, %(season)s, %(payload)s, %(pulled_at_tw)s)
+ON CONFLICT(cache_key) DO UPDATE SET
   season = EXCLUDED.season,
   payload = EXCLUDED.payload,
   pulled_at_tw = EXCLUDED.pulled_at_tw;
 """
 
 
-def upsert_cache_rows(rows: List[dict]) -> None:
+def upsert_cache(cache_key: str, season: str, payload: dict):
     conn = db_connect()
     try:
         with conn:
             with conn.cursor() as cur:
-                psycopg2.extras.execute_batch(cur, UPSERT_CACHE_SQL, rows, page_size=50)
-        print(f"[INFO] cache upsert ok rows={len(rows)}")
+                cur.execute(UPSERT_CACHE_SQL, {
+                    "cache_key": cache_key,
+                    "season": season,
+                    "payload": json.dumps(payload),
+                    "pulled_at_tw": now_tw_str(),
+                })
+        print(f"[INFO] cache upsert ok key={cache_key}")
     finally:
         conn.close()
 
 
-# -------------------------
-# nba_api wrapper
-# -------------------------
-
+# -----------------------------
+# nba_api calls (hardened)
+# -----------------------------
 NBA_API_TIMEOUT_S = int((os.environ.get("NBA_API_TIMEOUT_S") or "10").strip())
 NBA_API_RETRIES = int((os.environ.get("NBA_API_RETRIES") or "1").strip())
 
-TEAM_CTX_DEADLINE_S = int((os.environ.get("TEAM_CTX_DEADLINE_S") or "180").strip())
-TEAM_CTX_MAX_TEAMS = int((os.environ.get("TEAM_CTX_MAX_TEAMS") or "30").strip())
-TEAM_CTX_BATCH_SIZE = int((os.environ.get("TEAM_CTX_BATCH_SIZE") or "10").strip())
-
-
-def fetch_safe_df(endpoint_cls, timeout_s: int = NBA_API_TIMEOUT_S, retries: int = NBA_API_RETRIES, sleep_s: float = 0.8, **kwargs) -> pd.DataFrame:
-    kwargs = dict(kwargs)
-    kwargs.setdefault("timeout", timeout_s)
-
-    for attempt in range(retries + 1):
+def _endpoint_df(endpoint_cls, **kwargs) -> pd.DataFrame:
+    # nba_api uses requests under the hood; we can pass timeout in headers? not reliably.
+    # We'll just retry with sleeps and accept occasional empty.
+    last = None
+    for i in range(NBA_API_RETRIES + 1):
         try:
-            t0 = time.time()
             d = endpoint_cls(**kwargs).get_dict()
             rs = d["resultSets"][0]
-            df = pd.DataFrame(rs["rowSet"], columns=rs["headers"])
-            print(f"[INFO] nba_api ok {endpoint_cls.__name__} took={round(time.time()-t0,2)}s")
-            return df
+            return pd.DataFrame(rs["rowSet"], columns=rs["headers"])
         except Exception as e:
-            print(f"[WARN] nba_api failed {endpoint_cls.__name__} attempt={attempt+1}/{retries+1} err={e}")
-            if attempt < retries:
-                time.sleep(sleep_s * (attempt + 1))
-            else:
-                return pd.DataFrame()
+            last = e
+            time.sleep(0.8 * (i + 1))
+    print(f"[WARN] nba_api endpoint failed: {endpoint_cls.__name__} err={last}")
+    return pd.DataFrame()
 
 
-# -------------------------
-# Cache builders
-# -------------------------
-
-def build_player_stats_cache(season: str) -> Optional[dict]:
-    df = fetch_safe_df(
+def cache_player_stats(season: str):
+    print(f"[INFO] caching player stats season={season}")
+    df = _endpoint_df(
         leaguedashplayerstats.LeagueDashPlayerStats,
         season=season,
         per_mode_detailed="PerGame",
     )
     if df.empty:
-        return None
+        upsert_cache(f"player_stats_{season}", season, {"rows": []})
+        return
 
-    # Keep only needed columns to reduce payload size
     keep = ["PLAYER_NAME", "TEAM_ID", "GP", "MIN", "PTS", "REB", "AST", "STL", "BLK", "TOV"]
     for c in keep:
         if c not in df.columns:
             df[c] = 0
 
     df = df[keep].copy()
-    payload = {"rows": df.to_dict(orient="records")}
-    return payload
+    # convert numeric
+    for c in ["TEAM_ID", "GP", "MIN", "PTS", "REB", "AST", "STL", "BLK", "TOV"]:
+        df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
+
+    rows = df.to_dict(orient="records")
+    upsert_cache(f"player_stats_{season}", season, {"rows": rows})
+    print(f"[INFO] player stats rows={len(rows)}")
 
 
-def compute_team_ctx_for_date(season: str, game_day: dt.date) -> Dict[str, Any]:
-    """
-    ctx: team_id(str) -> {"b2b": bool, "recent_w": float}
-    computed from cached TeamGameLog (pulled now) but with:
-    - total deadline
-    - batch processing
-    """
-    teams = nba_teams.get_teams()
-    team_ids = [int(t["id"]) for t in teams][:TEAM_CTX_MAX_TEAMS]
+def cache_team_ctx(season: str, anchor_us: dt.date):
+    deadline_s = int((os.environ.get("TEAM_CTX_DEADLINE_S") or "180").strip())
+    batch_size = int((os.environ.get("TEAM_CTX_BATCH_SIZE") or "10").strip())
+    max_teams = int((os.environ.get("TEAM_CTX_MAX_TEAMS") or "30").strip())
 
-    ctx: Dict[str, Any] = {}
+    all_teams = nba_teams.get_teams()
+    team_ids = [int(t["id"]) for t in all_teams][:max_teams]
+
+    key_day = anchor_us.strftime("%Y%m%d")
+    cache_key = f"team_ctx_{season}_{key_day}"
+    print(f"[INFO] caching team_ctx key={cache_key} teams={len(team_ids)} deadline={deadline_s}s batch={batch_size}")
+
+    game_day = anchor_us  # use anchor day as reference for b2b/recent_w
     prev_day = game_day - dt.timedelta(days=1)
 
-    t_start = time.time()
-    for i in range(0, len(team_ids), TEAM_CTX_BATCH_SIZE):
-        if time.time() - t_start > TEAM_CTX_DEADLINE_S:
-            print(f"[WARN] TEAM_CTX deadline hit after {round(time.time()-t_start,1)}s -> stop early")
+    started = time.time()
+    ctx: Dict[int, Dict[str, Any]] = {}
+
+    def compute_one(tid: int) -> Tuple[bool, float]:
+        log = _endpoint_df(teamgamelog.TeamGameLog, team_id=tid, season=season)
+        if log.empty or "GAME_DATE" not in log.columns or "WL" not in log.columns:
+            return False, 0.5
+
+        log = log.head(15).copy()
+        log["GAME_DATE"] = pd.to_datetime(log["GAME_DATE"], format="%b %d, %Y", errors="coerce").dt.date
+        log = log.dropna(subset=["GAME_DATE"])
+
+        prior = log[log["GAME_DATE"] < game_day].sort_values("GAME_DATE", ascending=False)
+        if prior.empty:
+            return False, 0.5
+
+        last_game_date = prior.iloc[0]["GAME_DATE"]
+        is_b2b = (last_game_date == prev_day)
+
+        last5 = prior.head(5)
+        recent_w = float((last5["WL"] == "W").mean()) if len(last5) > 0 else 0.5
+        return bool(is_b2b), recent_w
+
+    # batch loop with hard deadline
+    i = 0
+    while i < len(team_ids):
+        if time.time() - started > deadline_s:
+            print(f"[WARN] team_ctx deadline reached at i={i}/{len(team_ids)}")
             break
 
-        batch = team_ids[i:i + TEAM_CTX_BATCH_SIZE]
-        print(f"[INFO] TEAM_CTX batch {i//TEAM_CTX_BATCH_SIZE+1} teams={len(batch)}")
-
+        batch = team_ids[i:i+batch_size]
         for tid in batch:
-            if time.time() - t_start > TEAM_CTX_DEADLINE_S:
+            if time.time() - started > deadline_s:
                 break
+            b2b, recent_w = compute_one(tid)
+            ctx[int(tid)] = {"b2b": bool(b2b), "recent_w": float(recent_w)}
+        i += batch_size
+        print(f"[INFO] team_ctx progress {min(i,len(team_ids))}/{len(team_ids)} elapsed={round(time.time()-started,1)}s")
 
-            log = fetch_safe_df(teamgamelog.TeamGameLog, team_id=tid, season=season)
-            is_b2b, recent_w = False, 0.5
-
-            if not log.empty and "GAME_DATE" in log.columns and "WL" in log.columns:
-                log = log.head(20).copy()
-                log["GAME_DATE"] = pd.to_datetime(
-                    log["GAME_DATE"],
-                    format="%b %d, %Y",
-                    errors="coerce"
-                ).dt.date
-                log = log.dropna(subset=["GAME_DATE"])
-
-                prior = log[log["GAME_DATE"] < game_day].sort_values("GAME_DATE", ascending=False)
-                if not prior.empty:
-                    last_game_date = prior.iloc[0]["GAME_DATE"]
-                    is_b2b = (last_game_date == prev_day)
-                    last5 = prior.head(5)
-                    if len(last5) > 0:
-                        recent_w = (last5["WL"] == "W").mean()
-
-            ctx[str(tid)] = {"b2b": bool(is_b2b), "recent_w": float(recent_w)}
-
-        # small sleep between batches to reduce rate-limit risk
-        time.sleep(0.6)
-
-    print(f"[INFO] TEAM_CTX computed teams={len(ctx)} took={round(time.time()-t_start,1)}s")
-    return ctx
+    upsert_cache(cache_key, season, {"ctx": ctx, "anchor_us": key_day})
+    print(f"[INFO] team_ctx cached teams={len(ctx)} key={cache_key}")
 
 
 def main():
-    ensure_cache_schema()
+    ensure_schema()
 
     season = (os.environ.get("NBA_SEASON") or "2025-26").strip()
-    cache_mode = (os.environ.get("CACHE_MODE") or "all").strip().lower()
-    pulled_at_tw = now_tw_str()
-    anchor_day = anchor_us_date()
-    key_day = anchor_day.strftime("%Y%m%d")
+    override = (os.environ.get("OVERRIDE_US_DATE") or "").strip()
+    if override:
+        anchor_us = dt.datetime.strptime(override, "%m/%d/%Y").date()
+    else:
+        anchor_us = us_eastern_today()
 
-    print(f"[INFO] NBA_SEASON={season} CACHE_MODE={cache_mode} anchor_us={anchor_day.isoformat()}")
-    print(f"[INFO] NBA_API_TIMEOUT_S={NBA_API_TIMEOUT_S} NBA_API_RETRIES={NBA_API_RETRIES}")
-    print(f"[INFO] TEAM_CTX_DEADLINE_S={TEAM_CTX_DEADLINE_S} TEAM_CTX_BATCH_SIZE={TEAM_CTX_BATCH_SIZE}")
+    mode = (os.environ.get("CACHE_MODE") or "all").strip().lower()
+    if mode not in ("all", "players", "team_ctx"):
+        mode = "all"
 
-    rows: List[dict] = []
+    if mode in ("all", "players"):
+        cache_player_stats(season)
 
-    if cache_mode in ("all", "players"):
-        t0 = time.time()
-        payload = build_player_stats_cache(season)
-        print(f"[T] player_stats build took={round(time.time()-t0,2)}s")
-        if payload:
-            rows.append({
-                "cache_key": f"player_stats_{season}",
-                "season": season,
-                "payload": json.dumps(payload, ensure_ascii=False),
-                "pulled_at_tw": pulled_at_tw,
-            })
-        else:
-            print("[WARN] player_stats cache skipped (empty)")
+    if mode in ("all", "team_ctx"):
+        cache_team_ctx(season, anchor_us)
 
-    if cache_mode in ("all", "team_ctx"):
-        t0 = time.time()
-        ctx = compute_team_ctx_for_date(season, anchor_day)
-        print(f"[T] team_ctx build took={round(time.time()-t0,2)}s")
-        if ctx:
-            rows.append({
-                "cache_key": f"team_ctx_{season}_{key_day}",
-                "season": season,
-                "payload": json.dumps({"ctx": ctx, "asof_us_date": anchor_day.isoformat()}, ensure_ascii=False),
-                "pulled_at_tw": pulled_at_tw,
-            })
-        else:
-            print("[WARN] team_ctx cache skipped (empty)")
-
-    if rows:
-        upsert_cache_rows(rows)
-
-    print("[OK] cache job complete")
+    print("[OK] cache complete")
 
 
 if __name__ == "__main__":
