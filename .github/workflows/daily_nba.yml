@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       run:
-        description: "sync | settle | train | sync_settle | settle_train | sync_train | all | backfill_fast"
+        description: "cache | sync | settle | train | all"
         required: true
         default: "all"
       verify_us_date:
@@ -27,7 +27,6 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-          cache: "pip"
 
       - name: Install deps
         run: |
@@ -35,14 +34,33 @@ jobs:
           pip install pandas pytz requests psycopg2-binary scikit-learn nba_api beautifulsoup4 lxml
 
       # =====================
+      # CACHE (nba_api -> Supabase)
+      # =====================
+      - name: Cache NBA data
+        if: ${{ github.event_name == 'schedule' ||
+                github.event.inputs.run == 'cache' ||
+                github.event.inputs.run == 'all' }}
+        env:
+          SUPABASE_HOST: ${{ secrets.SUPABASE_HOST }}
+          SUPABASE_DB: ${{ secrets.SUPABASE_DB }}
+          SUPABASE_USER: ${{ secrets.SUPABASE_USER }}
+          SUPABASE_PASSWORD: ${{ secrets.SUPABASE_PASSWORD }}
+          SUPABASE_PORT: ${{ secrets.SUPABASE_PORT }}
+          NBA_SEASON: "2025-26"
+          # anti-hang tuning
+          NBA_API_TIMEOUT_S: "12"
+          NBA_API_RETRIES: "2"
+          # all | players | teams
+          CACHE_MODE: "all"
+        run: |
+          python jobs/cache_nba_data.py
+
+      # =====================
       # SYNC
       # =====================
       - name: Sync games
         if: ${{ github.event_name == 'schedule' ||
                 github.event.inputs.run == 'sync' ||
-                github.event.inputs.run == 'backfill_fast' ||
-                github.event.inputs.run == 'sync_settle' ||
-                github.event.inputs.run == 'sync_train' ||
                 github.event.inputs.run == 'all' }}
         env:
           SUPABASE_HOST: ${{ secrets.SUPABASE_HOST }}
@@ -53,14 +71,9 @@ jobs:
           ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
           NBA_SEASON: "2025-26"
           OVERRIDE_US_DATE: ${{ github.event.inputs.verify_us_date }}
-
-          # ✅ schedule(日常)：7天正常模式
-          # ✅ 手動 backfill_fast：120天快速回補（不打 nba_api / injuries / teamgamelog）
-          FAST_MODE: ${{ github.event.inputs.run == 'backfill_fast' && '1' || '0' }}
-          BACKFILL_PAST_DAYS: ${{ github.event.inputs.run == 'backfill_fast' && '120' || '7' }}
+          FAST_MODE: "0"
+          BACKFILL_PAST_DAYS: "7"
           BACKFILL_FUTURE_DAYS: "7"
-
-          # Optional tuning (matches your UI defaults)
           PROB_SCALE: "12"
           PROB_FLOOR: "0.12"
           PROB_CEIL: "0.88"
@@ -73,8 +86,6 @@ jobs:
       - name: Settle results
         if: ${{ github.event_name == 'schedule' ||
                 github.event.inputs.run == 'settle' ||
-                github.event.inputs.run == 'sync_settle' ||
-                github.event.inputs.run == 'settle_train' ||
                 github.event.inputs.run == 'all' }}
         env:
           SUPABASE_HOST: ${{ secrets.SUPABASE_HOST }}
@@ -92,8 +103,6 @@ jobs:
       - name: Train calibrator
         if: ${{ github.event_name == 'schedule' ||
                 github.event.inputs.run == 'train' ||
-                github.event.inputs.run == 'sync_train' ||
-                github.event.inputs.run == 'settle_train' ||
                 github.event.inputs.run == 'all' }}
         env:
           SUPABASE_HOST: ${{ secrets.SUPABASE_HOST }}
