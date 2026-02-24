@@ -1,32 +1,13 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-"""
-jobs/settle_daily.py
-
-- Reads recent games from DB
-- Pulls ESPN scoreboard again to confirm final score
-- Computes cover using home_spread and final score
-- Writes:
-    status=final, home_score, away_score, cover, settled_at_tw, margin
-"""
-
 import os
 import datetime as dt
-from typing import Dict, List, Optional, Tuple
+from typing import List, Optional, Dict, Any
 
 import requests
 import psycopg2
 import psycopg2.extras
-
-
-def now_tw_str() -> str:
-    try:
-        from zoneinfo import ZoneInfo
-        tz = ZoneInfo("Asia/Taipei")
-        return dt.datetime.now(tz=tz).strftime("%Y-%m-%d %H:%M:%S")
-    except Exception:
-        return (dt.datetime.utcnow() + dt.timedelta(hours=8)).strftime("%Y-%m-%d %H:%M:%S")
 
 
 def us_eastern_today() -> dt.date:
@@ -36,6 +17,15 @@ def us_eastern_today() -> dt.date:
         return now_et.date()
     except Exception:
         return (dt.datetime.utcnow() - dt.timedelta(hours=5)).date()
+
+
+def now_tw_str() -> str:
+    try:
+        from zoneinfo import ZoneInfo
+        tz = ZoneInfo("Asia/Taipei")
+        return dt.datetime.now(tz=tz).strftime("%Y-%m-%d %H:%M:%S")
+    except Exception:
+        return (dt.datetime.utcnow() + dt.timedelta(hours=8)).strftime("%Y-%m-%d %H:%M:%S")
 
 
 def db_connect():
@@ -50,9 +40,53 @@ def db_connect():
     port = (os.environ.get("SUPABASE_PORT") or "5432").strip()
 
     if not all([host, dbname, user, password, port]):
-        raise RuntimeError("DB env missing: set DATABASE_URL or SUPABASE_*")
+        raise RuntimeError("DB env missing: set DATABASE_URL or SUPABASE_HOST/DB/USER/PASSWORD/PORT")
 
-    return psycopg2.connect(host=host, dbname=dbname, user=user, password=password, port=int(port), sslmode="require")
+    return psycopg2.connect(
+        host=host, dbname=dbname, user=user, password=password, port=int(port), sslmode="require"
+    )
+
+
+def ensure_schema():
+    ddl = """
+    CREATE TABLE IF NOT EXISTS public.games (
+        game_id TEXT PRIMARY KEY,
+        game_date_us TEXT,
+        season TEXT,
+        away_abbr TEXT,
+        home_abbr TEXT,
+        away_name TEXT,
+        home_name TEXT,
+
+        home_spread DOUBLE PRECISION,
+        home_odds DOUBLE PRECISION,
+        away_odds DOUBLE PRECISION,
+        line_source TEXT,
+
+        status TEXT,
+        away_score INTEGER,
+        home_score INTEGER,
+
+        margin INTEGER,
+        cover INTEGER,
+        settled_at_tw TEXT,
+
+        created_at_tw TEXT,
+        updated_at_tw TEXT,
+        game_date_tw TEXT
+    );
+    """
+    conn = db_connect()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute(ddl)
+                cur.execute("ALTER TABLE public.games ADD COLUMN IF NOT EXISTS margin INTEGER;")
+                cur.execute("ALTER TABLE public.games ADD COLUMN IF NOT EXISTS cover INTEGER;")
+                cur.execute("ALTER TABLE public.games ADD COLUMN IF NOT EXISTS settled_at_tw TEXT;")
+        print("[INFO] schema ensured")
+    finally:
+        conn.close()
 
 
 def fetch_espn_scoreboard(date_us: dt.date) -> List[dict]:
@@ -60,167 +94,162 @@ def fetch_espn_scoreboard(date_us: dt.date) -> List[dict]:
     url = "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard"
     r = requests.get(url, params={"dates": ymd, "limit": 300}, timeout=25)
     r.raise_for_status()
-    return (r.json().get("events") or [])
+    data = r.json()
+    return data.get("events") or []
 
 
-def parse_final_scores(events: List[dict]) -> Dict[Tuple[str, str], Tuple[int, int, str]]:
-    """
-    Return map (away_abbr, home_abbr) -> (away_score, home_score, status)
-    status in {scheduled, in_progress, final}
-    """
-    out = {}
+def parse_finals(events: List[dict], date_us: dt.date) -> List[Dict[str, Any]]:
+    out = []
     for ev in events:
-        try:
-            comps = ev.get("competitions") or []
-            if not comps:
-                continue
-            comp = comps[0]
-            competitors = comp.get("competitors") or []
-            if len(competitors) < 2:
-                continue
-
-            home = next((c for c in competitors if c.get("homeAway") == "home"), None)
-            away = next((c for c in competitors if c.get("homeAway") == "away"), None)
-            if not home or not away:
-                continue
-
-            home_team = home.get("team") or {}
-            away_team = away.get("team") or {}
-
-            home_abbr = home_team.get("abbreviation")
-            away_abbr = away_team.get("abbreviation")
-            if not home_abbr or not away_abbr:
-                continue
-
-            st = (comp.get("status") or {}).get("type") or {}
-            state = (st.get("state") or "").lower()
-            completed = bool(st.get("completed"))
-
-            if completed or state == "post":
-                status = "final"
-            elif state == "in":
-                status = "in_progress"
-            else:
-                status = "scheduled"
-
-            away_score = int(away.get("score")) if away.get("score") is not None else None
-            home_score = int(home.get("score")) if home.get("score") is not None else None
-
-            if away_score is None or home_score is None:
-                continue
-
-            out[(away_abbr, home_abbr)] = (away_score, home_score, status)
-        except Exception:
+        competitions = ev.get("competitions") or []
+        if not competitions:
             continue
+        comp = competitions[0]
+        competitors = comp.get("competitors") or []
+        if len(competitors) < 2:
+            continue
+        home = next((c for c in competitors if c.get("homeAway") == "home"), None)
+        away = next((c for c in competitors if c.get("homeAway") == "away"), None)
+        if not home or not away:
+            continue
+
+        home_team = home.get("team") or {}
+        away_team = away.get("team") or {}
+        home_abbr = home_team.get("abbreviation")
+        away_abbr = away_team.get("abbreviation")
+        if not home_abbr or not away_abbr:
+            continue
+
+        st = (comp.get("status") or {}).get("type") or {}
+        state = (st.get("state") or "").lower()
+        completed = bool(st.get("completed"))
+        is_final = completed or state == "post"
+        if not is_final:
+            continue
+
+        try:
+            hs = int(home.get("score")) if home.get("score") is not None else None
+            as_ = int(away.get("score")) if away.get("score") is not None else None
+        except Exception:
+            hs, as_ = None, None
+
+        if hs is None or as_ is None:
+            continue
+
+        out.append({
+            "game_id": f"{date_us.strftime('%Y%m%d')}_{away_abbr}_{home_abbr}",
+            "home_abbr": home_abbr,
+            "away_abbr": away_abbr,
+            "home_score": hs,
+            "away_score": as_,
+            "status": "final",
+            "margin": int(hs - as_),
+        })
+
     return out
 
 
-UPDATE_SQL = """
-UPDATE public.games
-SET
-  status = 'final',
-  away_score = %(away_score)s,
-  home_score = %(home_score)s,
-  cover = %(cover)s,
-  margin = %(margin)s,
-  settled_at_tw = %(settled_at_tw)s,
-  updated_at_tw = %(settled_at_tw)s
-WHERE game_id = %(game_id)s;
-"""
-
-
-def compute_cover(home_score: int, away_score: int, home_spread: float) -> int:
-    """
-    cover:
-      1 = home covers
-      0 = not
-      2 = push
-    """
-    margin = home_score - away_score
-    adj = margin + home_spread
-    if abs(adj) < 1e-9:
-        return 2
-    return 1 if adj > 0 else 0
-
-
-def main():
-    override = (os.environ.get("OVERRIDE_US_DATE") or "").strip()
-    if override:
-        anchor_us = dt.datetime.strptime(override, "%m/%d/%Y").date()
-    else:
-        anchor_us = us_eastern_today()
-
-    # settle last N days to be safe
-    settle_days = int((os.environ.get("SETTLE_PAST_DAYS") or "14").strip())
-    dates = [anchor_us - dt.timedelta(days=i) for i in range(settle_days)]
-
+def load_spreads(game_ids: List[str]) -> Dict[str, Optional[float]]:
+    if not game_ids:
+        return {}
     conn = db_connect()
     try:
         with conn.cursor() as cur:
-            cur.execute("""
-                SELECT game_id, game_date_us, away_abbr, home_abbr, home_spread, status
+            cur.execute(
+                """
+                SELECT game_id, home_spread
                 FROM public.games
-                WHERE to_date(game_date_us,'MM/DD/YYYY') >= (current_date - interval %s)
-            """, (f"{settle_days} days",))
+                WHERE game_id = ANY(%s)
+                """,
+                (game_ids,),
+            )
             rows = cur.fetchall()
+        return {gid: (float(sp) if sp is not None else None) for gid, sp in rows}
     finally:
         conn.close()
 
-    # group by date
-    by_date: Dict[str, List[tuple]] = {}
-    for game_id, game_date_us, away_abbr, home_abbr, home_spread, status in rows:
-        by_date.setdefault(game_date_us, []).append((game_id, away_abbr, home_abbr, home_spread, status))
 
-    total_settled = 0
+def write_settles(rows: List[Dict[str, Any]]) -> None:
+    if not rows:
+        return
+
+    conn = db_connect()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                psycopg2.extras.execute_batch(
+                    cur,
+                    """
+                    UPDATE public.games
+                    SET status=%(status)s,
+                        home_score=%(home_score)s,
+                        away_score=%(away_score)s,
+                        margin=%(margin)s,
+                        cover=%(cover)s,
+                        settled_at_tw=%(settled_at_tw)s,
+                        updated_at_tw=%(settled_at_tw)s
+                    WHERE game_id=%(game_id)s
+                    """,
+                    rows,
+                    page_size=200,
+                )
+        print(f"[OK] settle updated rows={len(rows)}")
+    finally:
+        conn.close()
+
+
+def main():
+    ensure_schema()
+
+    override = (os.environ.get("OVERRIDE_US_DATE") or "").strip()
+    anchor = dt.datetime.strptime(override, "%m/%d/%Y").date() if override else us_eastern_today()
+
+    past_days = int((os.environ.get("SETTLE_PAST_DAYS") or "180").strip())
+    if past_days < 1:
+        past_days = 1
+
+    dates = [anchor - dt.timedelta(days=i) for i in range(past_days)]
+    ts = now_tw_str()
+
+    total = 0
     for d in dates:
-        date_us_str = d.strftime("%m/%d/%Y")
-        games = by_date.get(date_us_str, [])
-        if not games:
-            continue
-
         try:
             events = fetch_espn_scoreboard(d)
-            final_map = parse_final_scores(events)
+            finals = parse_finals(events, d)
         except Exception as e:
-            print(f"[WARN] espn fetch failed date={date_us_str} err={e}")
+            print(f"[WARN] ESPN failed date={d.isoformat()} err={e}")
             continue
 
-        updates = []
-        for game_id, away_abbr, home_abbr, home_spread, status in games:
-            key = (away_abbr, home_abbr)
-            if key not in final_map:
-                continue
-            away_score, home_score, espn_status = final_map[key]
-            if espn_status != "final":
-                continue
-            if home_spread is None:
-                # cannot compute cover without spread
-                continue
+        if not finals:
+            continue
 
-            cover = compute_cover(home_score, away_score, float(home_spread))
-            margin = float(home_score - away_score)
+        spreads = load_spreads([x["game_id"] for x in finals])
 
-            updates.append({
-                "game_id": game_id,
-                "away_score": away_score,
-                "home_score": home_score,
+        payload = []
+        for f in finals:
+            sp = spreads.get(f["game_id"])
+            cover = None
+            # cover only if spread exists
+            if sp is not None:
+                # home covers if home_margin + home_spread > 0
+                v = f["margin"] + sp
+                if abs(v) < 1e-9:
+                    cover = 2  # push
+                elif v > 0:
+                    cover = 1
+                else:
+                    cover = 0
+
+            payload.append({
+                **f,
                 "cover": cover,
-                "margin": margin,
-                "settled_at_tw": now_tw_str(),
+                "settled_at_tw": ts,
             })
 
-        if updates:
-            conn = db_connect()
-            try:
-                with conn:
-                    with conn.cursor() as cur:
-                        psycopg2.extras.execute_batch(cur, UPDATE_SQL, updates, page_size=200)
-                total_settled += len(updates)
-                print(f"[INFO] settled date={date_us_str} n={len(updates)}")
-            finally:
-                conn.close()
+        write_settles(payload)
+        total += len(payload)
 
-    print(f"[OK] settle complete total={total_settled}")
+    print(f"[OK] settle complete total={total}")
 
 
 if __name__ == "__main__":
