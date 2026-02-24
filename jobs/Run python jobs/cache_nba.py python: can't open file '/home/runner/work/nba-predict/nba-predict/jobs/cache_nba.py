@@ -4,13 +4,11 @@
 import os
 import json
 import time
-import base64
 import datetime as dt
 from typing import Dict, Any, Optional
 
 import pandas as pd
 import psycopg2
-import psycopg2.extras
 
 from nba_api.stats.endpoints import leaguedashplayerstats, teamgamelog
 from nba_api.stats.static import teams as nba_teams
@@ -60,69 +58,13 @@ def ensure_schema():
       payload_json TEXT,
       updated_at_tw TEXT
     );
-
-    CREATE TABLE IF NOT EXISTS public.model_registry (
-      model_name TEXT PRIMARY KEY,
-      model_version TEXT,
-      payload_base64 TEXT,
-      trained_rows INT,
-      metrics JSONB,
-      created_at_tw TEXT
-    );
-
-    CREATE TABLE IF NOT EXISTS public.games (
-        game_id TEXT PRIMARY KEY,
-        game_date_us TEXT,
-        season TEXT,
-        away_abbr TEXT,
-        home_abbr TEXT,
-        away_name TEXT,
-        home_name TEXT,
-
-        home_spread DOUBLE PRECISION,
-        home_odds DOUBLE PRECISION,
-        away_odds DOUBLE PRECISION,
-        line_source TEXT,
-
-        status TEXT,
-        away_score INTEGER,
-        home_score INTEGER,
-
-        margin INTEGER,
-        cover INTEGER,
-        settled_at_tw TEXT,
-
-        -- feature columns for base model
-        home_pts_sum DOUBLE PRECISION,
-        away_pts_sum DOUBLE PRECISION,
-        home_impact_mean DOUBLE PRECISION,
-        away_impact_mean DOUBLE PRECISION,
-        home_b2b BOOLEAN,
-        away_b2b BOOLEAN,
-        home_recent_w DOUBLE PRECISION,
-        away_recent_w DOUBLE PRECISION,
-
-        base_diff DOUBLE PRECISION,
-        f_edge DOUBLE PRECISION,
-        cover_prob DOUBLE PRECISION,
-        implied_prob DOUBLE PRECISION,
-        edge_value DOUBLE PRECISION,
-        ev DOUBLE PRECISION,
-        pick_team TEXT,
-        odds_used DOUBLE PRECISION,
-
-        created_at_tw TEXT,
-        updated_at_tw TEXT,
-        game_date_tw TEXT
-    );
-    CREATE INDEX IF NOT EXISTS idx_games_date_us ON public.games (game_date_us);
     """
     conn = db_connect()
     try:
         with conn:
             with conn.cursor() as cur:
                 cur.execute(ddl)
-        print("[INFO] schema ensured")
+        print("[INFO] schema ensured: nba_cache")
     finally:
         conn.close()
 
@@ -171,11 +113,7 @@ def main():
     else:
         anchor = us_eastern_today()
 
-    backfill_past_days = int((os.environ.get("BACKFILL_PAST_DAYS") or "120").strip())
-    if backfill_past_days < 1:
-        backfill_past_days = 1
-
-    # 1) player stats snapshot (season-wide, heavy but one call)
+    # 1) Player stats snapshot (season-wide)
     ps = fetch_safe_df(
         leaguedashplayerstats.LeagueDashPlayerStats,
         season=season,
@@ -184,22 +122,19 @@ def main():
     cache_put(f"player_stats:{season}", {"season": season, "rows": ps.to_dict(orient="records")})
     print(f"[OK] cached player_stats season={season} rows={len(ps)}")
 
-    # 2) teamgamelog for every team (this is the heavy part)
+    # 2) Team game logs for every team
     all_teams = nba_teams.get_teams()
     abbr_to_id = {t["abbreviation"]: int(t["id"]) for t in all_teams}
 
-    # cache logs only once/day
     for abbr, tid in abbr_to_id.items():
         log = fetch_safe_df(teamgamelog.TeamGameLog, team_id=tid, season=season)
         cache_put(f"team_log:{season}:{abbr}", {"season": season, "abbr": abbr, "rows": log.to_dict(orient="records")})
         print(f"[OK] cached team_log {abbr} rows={len(log)}")
         time.sleep(0.35)
 
-    # 3) store the run metadata
     cache_put("cache_meta", {
         "season": season,
         "anchor_us": anchor.strftime("%Y-%m-%d"),
-        "backfill_past_days": backfill_past_days,
         "updated_at_tw": now_tw_str(),
     })
     print("[OK] cache complete")
