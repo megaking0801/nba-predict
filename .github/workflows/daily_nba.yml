@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       run:
-        description: "cache | sync | settle | train | all"
+        description: "cache | sync | settle | train_base | train_cal | all"
         required: true
         default: "all"
       verify_us_date:
@@ -12,7 +12,7 @@ on:
         required: false
         default: ""
   schedule:
-    - cron: "30 10 * * *"
+    - cron: "30 10 * * *"  # UTC 10:30 = Taiwan 18:30
 
 jobs:
   nba:
@@ -34,7 +34,7 @@ jobs:
           pip install pandas pytz requests psycopg2-binary scikit-learn nba_api beautifulsoup4 lxml
 
       # =====================
-      # CACHE (nba_api -> Supabase public.nba_cache)
+      # CACHE (nba_api -> nba_cache)
       # =====================
       - name: Cache NBA data (hardened)
         if: ${{ github.event_name == 'schedule' ||
@@ -47,27 +47,23 @@ jobs:
           SUPABASE_PASSWORD: ${{ secrets.SUPABASE_PASSWORD }}
           SUPABASE_PORT: ${{ secrets.SUPABASE_PORT }}
           NBA_SEASON: "2025-26"
-          # Optional: align anchor day for cache with manual sync override
           OVERRIDE_US_DATE: ${{ github.event.inputs.verify_us_date }}
 
-          # nba_api anti-hang
           NBA_API_TIMEOUT_S: "10"
           NBA_API_RETRIES: "1"
 
-          # team_ctx anti-hang (total time budget)
           TEAM_CTX_DEADLINE_S: "180"
           TEAM_CTX_BATCH_SIZE: "10"
           TEAM_CTX_MAX_TEAMS: "30"
 
-          # all | players | team_ctx
           CACHE_MODE: "all"
         run: |
           python jobs/cache_nba_data.py
 
       # =====================
-      # SYNC (cache-first, no nba_api)
+      # SYNC (cache-first)
       # =====================
-      - name: Sync games (cache-first)
+      - name: Sync games
         if: ${{ github.event_name == 'schedule' ||
                 github.event.inputs.run == 'sync' ||
                 github.event.inputs.run == 'all' }}
@@ -78,7 +74,6 @@ jobs:
           SUPABASE_PASSWORD: ${{ secrets.SUPABASE_PASSWORD }}
           SUPABASE_PORT: ${{ secrets.SUPABASE_PORT }}
           ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
-
           NBA_SEASON: "2025-26"
           OVERRIDE_US_DATE: ${{ github.event.inputs.verify_us_date }}
 
@@ -93,7 +88,7 @@ jobs:
           python jobs/sync_daily.py
 
       # =====================
-      # SETTLE
+      # SETTLE (writes cover + margin)
       # =====================
       - name: Settle results
         if: ${{ github.event_name == 'schedule' ||
@@ -106,15 +101,16 @@ jobs:
           SUPABASE_PASSWORD: ${{ secrets.SUPABASE_PASSWORD }}
           SUPABASE_PORT: ${{ secrets.SUPABASE_PORT }}
           OVERRIDE_US_DATE: ${{ github.event.inputs.verify_us_date }}
+          SETTLE_PAST_DAYS: "14"
         run: |
           python jobs/settle_daily.py
 
       # =====================
-      # TRAIN (calibrator)
+      # TRAIN BASE MODEL (GBM margin regression)
       # =====================
-      - name: Train calibrator
+      - name: Train base model (margin)
         if: ${{ github.event_name == 'schedule' ||
-                github.event.inputs.run == 'train' ||
+                github.event.inputs.run == 'train_base' ||
                 github.event.inputs.run == 'all' }}
         env:
           SUPABASE_HOST: ${{ secrets.SUPABASE_HOST }}
@@ -122,5 +118,25 @@ jobs:
           SUPABASE_USER: ${{ secrets.SUPABASE_USER }}
           SUPABASE_PASSWORD: ${{ secrets.SUPABASE_PASSWORD }}
           SUPABASE_PORT: ${{ secrets.SUPABASE_PORT }}
+          BASE_MIN_ROWS: "200"
+          BASE_MAX_ROWS: "5000"
+        run: |
+          python jobs/train_base_model.py
+
+      # =====================
+      # TRAIN CALIBRATOR (f_edge -> cover_prob)
+      # =====================
+      - name: Train calibrator
+        if: ${{ github.event_name == 'schedule' ||
+                github.event.inputs.run == 'train_cal' ||
+                github.event.inputs.run == 'all' }}
+        env:
+          SUPABASE_HOST: ${{ secrets.SUPABASE_HOST }}
+          SUPABASE_DB: ${{ secrets.SUPABASE_DB }}
+          SUPABASE_USER: ${{ secrets.SUPABASE_USER }}
+          SUPABASE_PASSWORD: ${{ secrets.SUPABASE_PASSWORD }}
+          SUPABASE_PORT: ${{ secrets.SUPABASE_PORT }}
+          CAL_MIN_ROWS: "200"
+          CAL_MAX_ROWS: "10000"
         run: |
           python jobs/train_calibrator.py
