@@ -506,17 +506,22 @@ def player_stats_from_cache(season: str) -> pd.DataFrame:
     return df
 
 
-def teamlog_from_cache(season: str, team_id: int) -> pd.DataFrame:
-    key = f"team_gamelog_{season}_{team_id}"
+def load_team_ctx_cache(season: str, anchor_us: dt.date) -> Dict[int, dict]:
+    key_day = anchor_us.strftime("%Y%m%d")
+    key = f"team_ctx_{season}_{key_day}"
     payload = load_cache_payload(key)
     if not payload:
-        return pd.DataFrame()
+        print(f"[WARN] team_ctx cache missing: {key}")
+        return {}
     try:
-        rs0 = payload["resultSets"][0]
-        df = pd.DataFrame(rs0["rowSet"], columns=rs0["headers"])
-        return df
+        ctx = payload.get("ctx") or {}
+        out: Dict[int, dict] = {}
+        for k, v in ctx.items():
+            out[int(k)] = {"b2b": bool(v.get("b2b", False)), "recent_w": float(v.get("recent_w", 0.5))}
+        return out
     except Exception:
-        return pd.DataFrame()
+        print(f"[WARN] team_ctx cache malformed: {key}")
+        return {}
 
 
 # =========================================================
@@ -933,14 +938,11 @@ def main():
         # ctx only needed when computing base_diff
         ctx_db: Dict[int, dict] = {}
         if not FAST_MODE:
-            team_ids: List[int] = []
-            for gg in games:
-                hid = ABBR_TO_ID.get(gg["home_abbr"])
-                aid = ABBR_TO_ID.get(gg["away_abbr"])
-                if hid:
-                    team_ids.append(hid)
-                if aid:
-                    team_ids.append(aid)
+            # Strategy B hardened: read ONE team_ctx cache for anchor day
+            if "team_ctx_all" not in locals():
+                team_ctx_all = load_team_ctx_cache(season=season, anchor_us=anchor_date_us)
+                print(f"[INFO] team_ctx(cache) loaded teams={len(team_ctx_all)}")
+            ctx_db = team_ctx_all
             team_ids = sorted(set(team_ids))
             if team_ids:
                 t0 = time.time()
