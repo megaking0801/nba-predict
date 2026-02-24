@@ -11,25 +11,7 @@ on:
         description: "Optional: override US date (MM/DD/YYYY)"
         required: false
         default: ""
-      backfill_past_days:
-        description: "Backfill past N days"
-        required: false
-        default: "120"
-      backfill_future_days:
-        description: "Backfill future N days"
-        required: false
-        default: "7"
-      fast_mode:
-        description: "FAST_MODE (0=full, 1=skip features)"
-        required: false
-        default: "0"
-      settle_past_days:
-        description: "Settle past N days"
-        required: false
-        default: "180"
-
   schedule:
-    # 10:30 UTC = 18:30 Taiwan (UTC+8)
     - cron: "30 10 * * *"
 
 jobs:
@@ -52,13 +34,14 @@ jobs:
           pip install pandas requests psycopg2-binary scikit-learn nba_api beautifulsoup4 lxml
 
       # =====================
-      # CACHE (nba_api heavy)
+      # CACHE (nba_api snapshots)
       # =====================
       - name: Cache nba_api snapshots
         if: ${{ github.event_name == 'schedule' ||
                 github.event.inputs.run == 'cache' ||
                 github.event.inputs.run == 'all' }}
         env:
+          PYTHONUNBUFFERED: "1"
           SUPABASE_HOST: ${{ secrets.SUPABASE_HOST }}
           SUPABASE_DB: ${{ secrets.SUPABASE_DB }}
           SUPABASE_USER: ${{ secrets.SUPABASE_USER }}
@@ -66,9 +49,10 @@ jobs:
           SUPABASE_PORT: ${{ secrets.SUPABASE_PORT }}
           NBA_SEASON: "2025-26"
           OVERRIDE_US_DATE: ${{ github.event.inputs.verify_us_date }}
-          BACKFILL_PAST_DAYS: ${{ github.event.inputs.backfill_past_days || '120' }}
+          CACHE_PAST_DAYS: "7"
+          CACHE_FUTURE_DAYS: "7"
         run: |
-          python jobs/cache_nba.py
+          python -u jobs/cache_nba.py
 
       # =====================
       # SYNC
@@ -78,6 +62,7 @@ jobs:
                 github.event.inputs.run == 'sync' ||
                 github.event.inputs.run == 'all' }}
         env:
+          PYTHONUNBUFFERED: "1"
           SUPABASE_HOST: ${{ secrets.SUPABASE_HOST }}
           SUPABASE_DB: ${{ secrets.SUPABASE_DB }}
           SUPABASE_USER: ${{ secrets.SUPABASE_USER }}
@@ -86,14 +71,14 @@ jobs:
           ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
           NBA_SEASON: "2025-26"
           OVERRIDE_US_DATE: ${{ github.event.inputs.verify_us_date }}
-          FAST_MODE: ${{ github.event.inputs.fast_mode || '0' }}
-          BACKFILL_PAST_DAYS: ${{ github.event.inputs.backfill_past_days || '120' }}
-          BACKFILL_FUTURE_DAYS: ${{ github.event.inputs.backfill_future_days || '7' }}
+          FAST_MODE: "0"
+          BACKFILL_PAST_DAYS: "7"
+          BACKFILL_FUTURE_DAYS: "7"
           PROB_SCALE: "12"
           PROB_FLOOR: "0.12"
           PROB_CEIL: "0.88"
         run: |
-          python jobs/sync_daily.py
+          python -u jobs/sync_daily.py
 
       # =====================
       # SETTLE
@@ -103,15 +88,15 @@ jobs:
                 github.event.inputs.run == 'settle' ||
                 github.event.inputs.run == 'all' }}
         env:
+          PYTHONUNBUFFERED: "1"
           SUPABASE_HOST: ${{ secrets.SUPABASE_HOST }}
           SUPABASE_DB: ${{ secrets.SUPABASE_DB }}
           SUPABASE_USER: ${{ secrets.SUPABASE_USER }}
           SUPABASE_PASSWORD: ${{ secrets.SUPABASE_PASSWORD }}
           SUPABASE_PORT: ${{ secrets.SUPABASE_PORT }}
           OVERRIDE_US_DATE: ${{ github.event.inputs.verify_us_date }}
-          SETTLE_PAST_DAYS: ${{ github.event.inputs.settle_past_days || '180' }}
         run: |
-          python jobs/settle_daily.py
+          python -u jobs/settle_daily.py
 
       # =====================
       # TRAIN BASE (margin model)
@@ -121,28 +106,28 @@ jobs:
                 github.event.inputs.run == 'train_base' ||
                 github.event.inputs.run == 'all' }}
         env:
+          PYTHONUNBUFFERED: "1"
           SUPABASE_HOST: ${{ secrets.SUPABASE_HOST }}
           SUPABASE_DB: ${{ secrets.SUPABASE_DB }}
           SUPABASE_USER: ${{ secrets.SUPABASE_USER }}
           SUPABASE_PASSWORD: ${{ secrets.SUPABASE_PASSWORD }}
           SUPABASE_PORT: ${{ secrets.SUPABASE_PORT }}
-          BASE_MIN_ROWS: "200"
         run: |
-          python jobs/train_base_model.py
+          python -u jobs/train_base_model.py
 
       # =====================
-      # TRAIN CAL (cover prob calibrator)
+      # TRAIN CALIBRATOR
       # =====================
       - name: Train calibrator
         if: ${{ github.event_name == 'schedule' ||
                 github.event.inputs.run == 'train_cal' ||
                 github.event.inputs.run == 'all' }}
         env:
+          PYTHONUNBUFFERED: "1"
           SUPABASE_HOST: ${{ secrets.SUPABASE_HOST }}
           SUPABASE_DB: ${{ secrets.SUPABASE_DB }}
           SUPABASE_USER: ${{ secrets.SUPABASE_USER }}
           SUPABASE_PASSWORD: ${{ secrets.SUPABASE_PASSWORD }}
           SUPABASE_PORT: ${{ secrets.SUPABASE_PORT }}
-          CAL_MIN_ROWS: "200"
         run: |
-          python jobs/train_calibrator.py
+          python -u jobs/train_calibrator.py
