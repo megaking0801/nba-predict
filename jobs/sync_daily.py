@@ -448,30 +448,28 @@ def ensure_schema():
 
 def load_models() -> Tuple[Optional[Any], Optional[Any]]:
     """
-    Load base_model + calibrator from model_registry if present.
+    Load base_model + calibrator from public.model_registry.
     Returns (base_model, calibrator)
     """
     conn = db_connect()
     try:
-        df = pd.read_sql("""
-            SELECT model_name, payload_base64
-            FROM public.model_registry
-        """, conn)
-        if df.empty:
-            return None, None
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT model_name, payload_base64
+                FROM public.model_registry
+            """)
+            rows = cur.fetchall()
 
         base_model = None
         calibrator = None
 
-        for _, r in df.iterrows():
-            name = str(r.get("model_name", ""))
-            payload = r.get("payload_base64")
-            if not payload:
+        for model_name, payload_base64 in rows:
+            if not payload_base64:
                 continue
-            obj = pickle.loads(base64.b64decode(payload))
-            if name == "cover_base_model":
+            obj = pickle.loads(base64.b64decode(payload_base64))
+            if model_name == "cover_base_model":
                 base_model = obj
-            if name == "cover_prob_calibrator":
+            elif model_name == "cover_prob_calibrator":
                 calibrator = obj
 
         return base_model, calibrator
