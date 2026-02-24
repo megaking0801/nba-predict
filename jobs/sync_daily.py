@@ -2,20 +2,25 @@
 # -*- coding: utf-8 -*-
 
 """
-jobs/sync_daily.py (stable + fast backfill)
+jobs/sync_daily.py (stable + fast backfill + anti-hang)
 
-- ESPN scoreboard -> games list
-- Odds API spreads (multi-book) -> odds map
-- nba_api (player stats + team gamelog) + ESPN injuries -> base_diff
-- f_edge = base_diff + home_spread
-- cover_prob uses model_registry calibrator if exists; else fallback logistic
-- Upsert into Supabase/Postgres public.games
-- Past dates: if odds missing, send NULLs so DB preserves existing odds/features (COALESCE)
-- Today/future: if odds missing, write fallback odds
+What it does (FAST_MODE=0):
+- ESPN scoreboard per date -> schedule/status/scores
+- Odds API (once per run) -> spreads + odds (multi-book)
+- nba_api:
+  - LeagueDashPlayerStats (once) -> player stats
+  - TeamGameLog (per team, cached) -> b2b + recent win%
+- ESPN injuries (once) -> mark OUT players
+- compute base_diff -> f_edge -> cover_prob -> EV metrics
+- upsert into Supabase/Postgres public.games (COALESCE preserves past odds/features)
 
-Critical performance fix:
-- FAST_MODE=1: only sync ESPN + odds/fallback, NO nba_api, NO injuries, NO teamgamelog, NO base_diff.
-- teamgamelog cached per run to avoid repeated calls.
+What it does (FAST_MODE=1):
+- Only ESPN scoreboard + Odds API/fallback -> upsert
+- NO nba_api, NO injuries, NO base_diff/EV (prevents long runs)
+
+Anti-hang changes:
+- nba_api calls have HARD timeout + retries
+- teamgamelog has overall deadline per date (skip remaining teams if slow)
 """
 
 import os
@@ -81,6 +86,15 @@ def today_tw_mmddyyyy() -> str:
         return (dt.datetime.utcnow() + dt.timedelta(hours=8)).strftime("%m/%d/%Y")
 
 
+def _env_bool(name: str, default: bool = False) -> bool:
+    raw = (os.environ.get(name) or "").strip().lower()
+    if raw in ("1", "true", "yes", "y", "on"):
+        return True
+    if raw in ("0", "false", "no", "n", "off"):
+        return False
+    return default
+
+
 # =========================================================
 # Team mapping (Odds API -> Abbr)
 # =========================================================
@@ -128,9 +142,6 @@ BOOK_KEY_ALIASES = {"pointsbet": "pointsbetus"}
 # =========================================================
 
 def fetch_espn_scoreboard(date_us: dt.date) -> List[dict]:
-    """
-    https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard?dates=YYYYMMDD
-    """
     ymd = date_us.strftime("%Y%m%d")
     candidates = [
         ("https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard", {"dates": ymd, "limit": 300}),
@@ -144,9 +155,9 @@ def fetch_espn_scoreboard(date_us: dt.date) -> List[dict]:
             if r.status_code == 200:
                 data = r.json()
                 events = data.get("events") or []
-                print(f"[INFO] espn scoreboard ok url={url} games={len(events)}")
+                print(f"[INFO] espn scoreboard ok games={len(events)} url={url}")
                 return events
-            print(f"[WARN] espn scoreboard status={r.status_code} url={url} body={r.text[:140]}")
+            print(f"[WARN] espn scoreboard status={r.status_code} url={url} body={r.text[:160]}")
             last_err = Exception(f"status={r.status_code} url={r.url}")
         except Exception as e:
             print(f"[WARN] espn scoreboard error url={url} err={e}")
@@ -156,14 +167,6 @@ def fetch_espn_scoreboard(date_us: dt.date) -> List[dict]:
 
 
 def parse_espn_events(events: List[dict], date_us: dt.date) -> List[dict]:
-    """
-    Output per game:
-    - game_date_us (MM/DD/YYYY)
-    - home_abbr, away_abbr
-    - home_name, away_name
-    - home_score, away_score (int or None)
-    - status: scheduled | in_progress | final
-    """
     out: List[dict] = []
     game_date_str = date_us.strftime("%m/%d/%Y")
 
@@ -194,7 +197,7 @@ def parse_espn_events(events: List[dict], date_us: dt.date) -> List[dict]:
             away_name = away_team.get("displayName") or away_team.get("shortDisplayName") or away_abbr
 
             st = (comp.get("status") or {}).get("type") or {}
-            state = (st.get("state") or "").lower()  # pre|in|post
+            state = (st.get("state") or "").lower()
             completed = bool(st.get("completed"))
 
             if completed or state == "post":
@@ -233,13 +236,81 @@ def parse_espn_events(events: List[dict], date_us: dt.date) -> List[dict]:
 
 
 # =========================================================
-# Odds API spreads
+# Optional: ESPN line fallback (best-effort)
+# =========================================================
+
+USE_ESPN_LINE_FALLBACK = _env_bool("USE_ESPN_LINE_FALLBACK", default=False)
+
+def get_espn_line_map(date_us: dt.date) -> Dict[Tuple[str, str], dict]:
+    """
+    Best-effort fallback: try to read spread-ish info from ESPN scoreboard payload
+    if present. If ESPN doesn't provide it (often), returns empty.
+
+    Returned mapping key: (away_abbr, home_abbr) -> {"home_spread": float, "line_source": "ESPN"}
+    """
+    if not USE_ESPN_LINE_FALLBACK:
+        return {}
+
+    try:
+        events = fetch_espn_scoreboard(date_us)
+        # ESPN sometimes contains odds-like fields under competitions[].odds or pickcenter; structure can vary.
+        # We'll probe safely without assuming.
+        m: Dict[Tuple[str, str], dict] = {}
+        for ev in events:
+            comps = ev.get("competitions") or []
+            if not comps:
+                continue
+            comp = comps[0]
+            competitors = comp.get("competitors") or []
+            if len(competitors) < 2:
+                continue
+
+            home = next((c for c in competitors if c.get("homeAway") == "home"), None)
+            away = next((c for c in competitors if c.get("homeAway") == "away"), None)
+            if not home or not away:
+                continue
+
+            home_abbr = (home.get("team") or {}).get("abbreviation")
+            away_abbr = (away.get("team") or {}).get("abbreviation")
+            if not home_abbr or not away_abbr:
+                continue
+
+            # Probe common places
+            spread = None
+
+            odds_list = comp.get("odds") or []
+            if isinstance(odds_list, list) and odds_list:
+                # sometimes like {"details":"LAL -3.5","overUnder":...}
+                details = odds_list[0].get("details") if isinstance(odds_list[0], dict) else None
+                if isinstance(details, str):
+                    # Parse "TEAM -3.5" or "TEAM +2.0"
+                    mm = re.search(r"\b([A-Z]{2,3})\s*([+-]\d+(\.\d+)?)\b", details)
+                    if mm:
+                        team = mm.group(1)
+                        val = float(mm.group(2))
+                        # If details gives favored team line, convert to home_spread
+                        if team == home_abbr:
+                            spread = val
+                        elif team == away_abbr:
+                            spread = -val
+
+            if spread is None:
+                continue
+
+            m[(away_abbr, home_abbr)] = {"home_spread": float(spread), "line_source": "ESPN"}
+        if m:
+            print(f"[INFO] espn line fallback mapped={len(m)} for date={date_us.isoformat()}")
+        return m
+    except Exception as e:
+        print(f"[WARN] espn line fallback failed: {e}")
+        return {}
+
+
+# =========================================================
+# Odds API spreads (primary)
 # =========================================================
 
 def get_odds_map() -> Dict[Tuple[str, str], dict]:
-    """
-    Map keyed by (away_abbr, home_abbr)
-    """
     api_key = (os.environ.get("ODDS_API_KEY") or "").strip()
     if not api_key:
         print("[WARN] ODDS_API_KEY missing -> odds disabled")
@@ -422,40 +493,16 @@ def ensure_schema():
         with conn:
             with conn.cursor() as cur:
                 cur.execute(ddl)
-
-                alters = [
-                    "ALTER TABLE public.games ADD COLUMN IF NOT EXISTS base_diff DOUBLE PRECISION",
-                    "ALTER TABLE public.games ADD COLUMN IF NOT EXISTS f_edge DOUBLE PRECISION",
-                    "ALTER TABLE public.games ADD COLUMN IF NOT EXISTS cover_prob DOUBLE PRECISION",
-                    "ALTER TABLE public.games ADD COLUMN IF NOT EXISTS implied_prob DOUBLE PRECISION",
-                    "ALTER TABLE public.games ADD COLUMN IF NOT EXISTS edge_value DOUBLE PRECISION",
-                    "ALTER TABLE public.games ADD COLUMN IF NOT EXISTS ev DOUBLE PRECISION",
-                    "ALTER TABLE public.games ADD COLUMN IF NOT EXISTS pick_team TEXT",
-                    "ALTER TABLE public.games ADD COLUMN IF NOT EXISTS odds_used DOUBLE PRECISION",
-                    "ALTER TABLE public.games ADD COLUMN IF NOT EXISTS cover INTEGER",
-                    "ALTER TABLE public.games ADD COLUMN IF NOT EXISTS settled_at_tw TEXT",
-                    "ALTER TABLE public.games ADD COLUMN IF NOT EXISTS game_date_tw TEXT",
-                ]
-                for a in alters:
-                    cur.execute(a)
-
         print("[INFO] schema ensured")
     finally:
         conn.close()
 
 
 def load_models() -> Tuple[Optional[Any], Optional[Any]]:
-    """
-    Load base_model + calibrator from public.model_registry.
-    Returns (base_model, calibrator)
-    """
     conn = db_connect()
     try:
         with conn.cursor() as cur:
-            cur.execute("""
-                SELECT model_name, payload_base64
-                FROM public.model_registry
-            """)
+            cur.execute("""SELECT model_name, payload_base64 FROM public.model_registry""")
             rows = cur.fetchall()
 
         base_model = None
@@ -478,7 +525,7 @@ def load_models() -> Tuple[Optional[Any], Optional[Any]]:
 
 
 # =========================================================
-# nba_api data
+# nba_api data (with hard timeout to avoid hanging)
 # =========================================================
 
 ALL_TEAMS = nba_teams.get_teams()
@@ -497,17 +544,30 @@ TEAM_MAP = {
     "TOR": ["Toronto Raptors"], "UTA": ["Utah Jazz"], "WAS": ["Washington Wizards"],
 }
 
-def fetch_safe_df(endpoint_cls, retries: int = 2, sleep_s: float = 0.7, **kwargs) -> pd.DataFrame:
+NBA_API_TIMEOUT_S = int((os.environ.get("NBA_API_TIMEOUT_S") or "12").strip())
+NBA_API_RETRIES = int((os.environ.get("NBA_API_RETRIES") or "2").strip())
+
+def fetch_safe_df(endpoint_cls, timeout_s: int = NBA_API_TIMEOUT_S, retries: int = NBA_API_RETRIES, sleep_s: float = 0.8, **kwargs) -> pd.DataFrame:
+    """
+    Critical: enforce hard timeout so GH Actions won't hang for 20+ minutes.
+    Many nba_api endpoints accept 'timeout' and pass it to requests.
+    """
+    kwargs = dict(kwargs)
+    kwargs.setdefault("timeout", timeout_s)
+
     for attempt in range(retries + 1):
         try:
+            t0 = time.time()
             d = endpoint_cls(**kwargs).get_dict()
             rs = d["resultSets"][0]
-            return pd.DataFrame(rs["rowSet"], columns=rs["headers"])
+            df = pd.DataFrame(rs["rowSet"], columns=rs["headers"])
+            print(f"[INFO] nba_api ok {endpoint_cls.__name__} took={round(time.time()-t0,2)}s rows={len(df)}")
+            return df
         except Exception as e:
+            print(f"[WARN] nba_api failed {endpoint_cls.__name__} attempt={attempt+1}/{retries+1} err={e}")
             if attempt < retries:
                 time.sleep(sleep_s * (attempt + 1))
             else:
-                print(f"[WARN] nba_api endpoint failed: {endpoint_cls.__name__} err={e}")
                 return pd.DataFrame()
 
 
@@ -538,10 +598,6 @@ def get_player_stats(season: str) -> pd.DataFrame:
 
 
 def get_injuries() -> pd.DataFrame:
-    """
-    ESPN injuries page best-effort parse.
-    Returns columns: NORM, TEAM_ABBR, IS_OUT
-    """
     inj_list = []
     try:
         url = "https://www.espn.com/nba/injuries"
@@ -594,14 +650,18 @@ def get_team_context(
     game_date_us: str,
     season: str,
     teamlog_cache: Dict[Tuple[int, str], pd.DataFrame],
+    deadline_s: int = 25,
 ) -> Dict[int, dict]:
     """
-    TeamGameLog -> b2b + recent_w (pre-game last 5)
-    Cache avoids repeated calls per run.
+    TeamGameLog -> b2b + recent_w
+    - cached per (team_id, season) per run
+    - deadline prevents the whole sync from stalling
     """
     ctx: Dict[int, dict] = {}
     game_day = dt.datetime.strptime(game_date_us, "%m/%d/%Y").date()
     prev_day = game_day - dt.timedelta(days=1)
+
+    deadline = time.time() + deadline_s
 
     def get_teamlog_cached(tid: int) -> pd.DataFrame:
         key = (tid, season)
@@ -613,18 +673,20 @@ def get_team_context(
         return df
 
     for tid in team_ids:
+        if time.time() > deadline:
+            print("[WARN] ctx deadline hit -> skip remaining teams for this date")
+            break
+
         log = get_teamlog_cached(tid)
         is_b2b, recent_w = False, 0.5
 
         if not log.empty and "GAME_DATE" in log.columns and "WL" in log.columns:
             log = log.head(15).copy()
-
             log["GAME_DATE"] = pd.to_datetime(
                 log["GAME_DATE"],
                 format="%b %d, %Y",
                 errors="coerce"
             ).dt.date
-
             log = log.dropna(subset=["GAME_DATE"])
 
             prior = log[log["GAME_DATE"] < game_day].sort_values("GAME_DATE", ascending=False)
@@ -649,9 +711,6 @@ def compute_base_diff(
     inj_db: pd.DataFrame,
     ctx_db: Dict[int, dict],
 ) -> Optional[float]:
-    """
-    base_diff = (h_pts - a_pts)*0.09 + (h_impact - a_impact)*3.8 + 2.5 + b2b_v + recent_v
-    """
     hid = ABBR_TO_ID.get(home_abbr)
     aid = ABBR_TO_ID.get(away_abbr)
     if not hid or not aid:
@@ -850,7 +909,6 @@ DO UPDATE SET
     game_date_tw  = EXCLUDED.game_date_tw;
 """
 
-
 def upsert_games(rows: List[dict]) -> None:
     if (os.environ.get("DRY_RUN") or "").strip() == "1":
         print(f"[DRY_RUN] skip db upsert rows={len(rows)}")
@@ -874,6 +932,8 @@ def main():
     FAST_MODE = (os.environ.get("FAST_MODE") or "").strip() == "1"
     print(f"[INFO] FAST_MODE={FAST_MODE}")
     print(f"[INFO] ODDS_API_KEY_present={bool((os.environ.get('ODDS_API_KEY') or '').strip())}")
+    print(f"[INFO] USE_ESPN_LINE_FALLBACK={USE_ESPN_LINE_FALLBACK}")
+    print(f"[INFO] NBA_API_TIMEOUT_S={NBA_API_TIMEOUT_S} NBA_API_RETRIES={NBA_API_RETRIES}")
 
     ensure_schema()
 
@@ -900,38 +960,31 @@ def main():
     date_list = past_list + future_list
 
     season = (os.environ.get("NBA_SEASON") or "2025-26").strip()
-
     ts_tw = now_tw_str()
     game_date_tw = today_tw_mmddyyyy()
 
-    # models
     base_model, calibrator = load_models()
-    print("[INFO] loading models...")
-    print(f"[INFO] base_model={bool(base_model)}")
-    print(f"[INFO] calibrator={bool(calibrator)}")
+    print(f"[INFO] base_model={bool(base_model)} calibrator={bool(calibrator)}")
 
-    # odds snapshot
+    # odds snapshot (once per run)
     t0 = time.time()
-    print("[T] get_odds_map start")
     odds_map = get_odds_map()
-    print("[T] get_odds_map done", round(time.time() - t0, 3), "s")
+    print(f"[T] odds_map ready took={round(time.time()-t0,2)}s")
 
-    # feature snapshot (skip in FAST_MODE)
+    # feature snapshots (skip in FAST_MODE)
     if FAST_MODE:
         ps_db = pd.DataFrame()
         inj_db = pd.DataFrame()
         teamlog_cache: Dict[Tuple[int, str], pd.DataFrame] = {}
-        print("[INFO] FAST_MODE -> skip player stats / injuries / team contexts / base_diff")
+        print("[INFO] FAST_MODE -> skip nba_api/injuries/base_diff")
     else:
         t0 = time.time()
-        print("[T] get_player_stats start")
         ps_db = get_player_stats(season=season)
-        print("[T] get_player_stats done", round(time.time() - t0, 3), "s", "rows=", len(ps_db))
+        print(f"[T] player_stats ready took={round(time.time()-t0,2)}s rows={len(ps_db)}")
 
         t0 = time.time()
-        print("[T] get_injuries start")
         inj_db = get_injuries()
-        print("[T] get_injuries done", round(time.time() - t0, 3), "s", "rows=", len(inj_db))
+        print(f"[T] injuries ready took={round(time.time()-t0,2)}s rows={len(inj_db)}")
 
         teamlog_cache = {}
 
@@ -941,11 +994,12 @@ def main():
         is_past = d < anchor_date_us
         print(f"[INFO] ---- sync date_us={d.isoformat()} is_past={is_past} ----")
 
+        # ESPN games
+        t0 = time.time()
         try:
-            t0 = time.time()
             events = fetch_espn_scoreboard(d)
             games = parse_espn_events(events, d)
-            print(f"[INFO] espn games={len(games)} took={round(time.time() - t0, 3)}s")
+            print(f"[INFO] espn games={len(games)} took={round(time.time()-t0,2)}s")
         except Exception as e:
             print(f"[ERROR] espn fetch failed for {d.isoformat()}: {e}")
             continue
@@ -953,12 +1007,16 @@ def main():
         if not games:
             continue
 
+        # Optional ESPN line fallback for this date
+        espn_line_map = get_espn_line_map(d) if USE_ESPN_LINE_FALLBACK else {}
+
         # Determine if we need ctx (only if not FAST_MODE)
         need_ctx = False
         if not FAST_MODE:
             if not is_past:
                 need_ctx = True
             else:
+                # past day: only compute if we have odds snapshot (rare), otherwise skip
                 for gg in games:
                     if odds_map.get((gg["away_abbr"], gg["home_abbr"])) is not None:
                         need_ctx = True
@@ -975,6 +1033,7 @@ def main():
                 if aid:
                     team_ids.append(aid)
             team_ids = sorted(set(team_ids))
+
             if team_ids:
                 t0 = time.time()
                 ctx_db = get_team_context(
@@ -982,8 +1041,9 @@ def main():
                     game_date_us=d.strftime("%m/%d/%Y"),
                     season=season,
                     teamlog_cache=teamlog_cache,
+                    deadline_s=25,
                 )
-                print(f"[INFO] ctx ready teams={len(team_ids)} took={round(time.time() - t0, 3)}s")
+                print(f"[INFO] ctx teams={len(team_ids)} got={len(ctx_db)} took={round(time.time()-t0,2)}s")
 
         rows: List[dict] = []
 
@@ -991,7 +1051,20 @@ def main():
             away_abbr = g["away_abbr"]
             home_abbr = g["home_abbr"]
 
+            # Primary odds
             od = odds_map.get((away_abbr, home_abbr))
+
+            # If missing, optionally fallback to ESPN line (spread only)
+            if (od is None) and USE_ESPN_LINE_FALLBACK:
+                el = espn_line_map.get((away_abbr, home_abbr))
+                if el and el.get("home_spread") is not None:
+                    od = {
+                        "home_spread": float(el["home_spread"]),
+                        "home_odds": 1.90,
+                        "away_odds": 1.90,
+                        "line_source": "ESPN_Fallback",
+                    }
+
             if od:
                 sp = float(od["home_spread"])
                 oh = float(od["home_odds"])
@@ -1003,7 +1076,6 @@ def main():
                 else:
                     sp, oh, oa, src = 0.0, 1.90, 1.90, "Fallback ⚠️"
 
-            # compute features only when meaningful (and not FAST_MODE)
             should_compute = (not FAST_MODE) and ((not is_past) or (sp is not None))
 
             base_diff = None
@@ -1076,7 +1148,7 @@ def main():
             t0 = time.time()
             upsert_games(rows)
             total_rows += len(rows)
-            print(f"[INFO] upsert took={round(time.time() - t0, 3)}s rows={len(rows)}")
+            print(f"[INFO] upsert rows={len(rows)} took={round(time.time()-t0,2)}s")
 
     print(f"[OK] sync complete rows={total_rows}")
 
