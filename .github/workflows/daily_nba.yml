@@ -34,9 +34,9 @@ jobs:
           pip install pandas pytz requests psycopg2-binary scikit-learn nba_api beautifulsoup4 lxml
 
       # =====================
-      # CACHE (nba_api -> Supabase)
+      # CACHE (nba_api -> Supabase public.nba_cache)
       # =====================
-      - name: Cache NBA data
+      - name: Cache NBA data (hardened)
         if: ${{ github.event_name == 'schedule' ||
                 github.event.inputs.run == 'cache' ||
                 github.event.inputs.run == 'all' }}
@@ -47,18 +47,27 @@ jobs:
           SUPABASE_PASSWORD: ${{ secrets.SUPABASE_PASSWORD }}
           SUPABASE_PORT: ${{ secrets.SUPABASE_PORT }}
           NBA_SEASON: "2025-26"
-          # anti-hang tuning
-          NBA_API_TIMEOUT_S: "12"
-          NBA_API_RETRIES: "2"
-          # all | players | teams
+          # Optional: align anchor day for cache with manual sync override
+          OVERRIDE_US_DATE: ${{ github.event.inputs.verify_us_date }}
+
+          # nba_api anti-hang
+          NBA_API_TIMEOUT_S: "10"
+          NBA_API_RETRIES: "1"
+
+          # team_ctx anti-hang (total time budget)
+          TEAM_CTX_DEADLINE_S: "180"
+          TEAM_CTX_BATCH_SIZE: "10"
+          TEAM_CTX_MAX_TEAMS: "30"
+
+          # all | players | team_ctx
           CACHE_MODE: "all"
         run: |
           python jobs/cache_nba_data.py
 
       # =====================
-      # SYNC
+      # SYNC (cache-first, no nba_api)
       # =====================
-      - name: Sync games
+      - name: Sync games (cache-first)
         if: ${{ github.event_name == 'schedule' ||
                 github.event.inputs.run == 'sync' ||
                 github.event.inputs.run == 'all' }}
@@ -69,11 +78,14 @@ jobs:
           SUPABASE_PASSWORD: ${{ secrets.SUPABASE_PASSWORD }}
           SUPABASE_PORT: ${{ secrets.SUPABASE_PORT }}
           ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+
           NBA_SEASON: "2025-26"
           OVERRIDE_US_DATE: ${{ github.event.inputs.verify_us_date }}
+
           FAST_MODE: "0"
           BACKFILL_PAST_DAYS: "7"
           BACKFILL_FUTURE_DAYS: "7"
+
           PROB_SCALE: "12"
           PROB_FLOOR: "0.12"
           PROB_CEIL: "0.88"
