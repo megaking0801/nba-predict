@@ -2,19 +2,18 @@
 # -*- coding: utf-8 -*-
 
 """
-jobs/sync_daily.py (Strategy B: cache-first, NO nba_api in sync)
+jobs/sync_daily.py (Strategy B hardened: cache-only for NBA stats)
 
-- ESPN scoreboard -> games list (schedule/status/scores)
-- Odds API spreads (once per run) -> odds map
-- Load nba_api cache from public.nba_cache:
-  - player_stats_{season}
-  - team_gamelog_{season}_{team_id}
-- ESPN injuries -> OUT list
-- compute base_diff / f_edge / cover_prob / EV metrics
-- Upsert into Supabase/Postgres public.games
+Data sources:
+- ESPN scoreboard: schedule/status/scores (fast, stable)
+- Odds API: spreads/odds (once per run)
+- Supabase cache table public.nba_cache:
+  - player_stats_{season}: minimal rows needed for IMPACT computation
+  - team_ctx_{season}_{YYYYMMDD}: {team_id: {b2b, recent_w}} for anchor day
+- ESPN injuries page: OUT status (best-effort)
 
 FAST_MODE=1:
-- skip cache + injuries + base_diff (only schedule + odds)
+- Skip cache/injuries/base_diff. Only schedule + odds + status/score upsert.
 """
 
 import os
@@ -79,7 +78,7 @@ def today_tw_mmddyyyy() -> str:
 
 
 # =========================================================
-# Team mapping (Odds API -> Abbr)
+# Odds API team mapping
 # =========================================================
 
 ODDS_TEAMNAME_TO_ABBR: Dict[str, str] = {
@@ -325,7 +324,7 @@ def get_odds_map() -> Dict[Tuple[str, str], dict]:
 
 
 # =========================================================
-# DB connection + schema
+# DB + schema
 # =========================================================
 
 def db_connect():
@@ -422,7 +421,7 @@ def load_models() -> Tuple[Optional[Any], Optional[Any]]:
     conn = db_connect()
     try:
         with conn.cursor() as cur:
-            cur.execute("""SELECT model_name, payload_base64 FROM public.model_registry""")
+            cur.execute("SELECT model_name, payload_base64 FROM public.model_registry")
             rows = cur.fetchall()
 
         base_model = None
@@ -444,22 +443,18 @@ def load_models() -> Tuple[Optional[Any], Optional[Any]]:
 
 
 # =========================================================
-# Cache loaders
+# Cache loaders (nba_cache)
 # =========================================================
 
 def load_cache_payload(cache_key: str) -> Optional[dict]:
     conn = db_connect()
     try:
         with conn.cursor() as cur:
-            cur.execute(
-                "SELECT payload, pulled_at_tw FROM public.nba_cache WHERE cache_key=%s",
-                (cache_key,),
-            )
+            cur.execute("SELECT payload FROM public.nba_cache WHERE cache_key=%s", (cache_key,))
             row = cur.fetchone()
             if not row:
                 return None
-            payload, pulled_at_tw = row
-            # payload is JSONB -> psycopg2 returns dict already in many setups, but be safe:
+            payload = row[0]
             if isinstance(payload, str):
                 payload = json.loads(payload)
             if not isinstance(payload, dict):
@@ -479,15 +474,12 @@ def player_stats_from_cache(season: str) -> pd.DataFrame:
         print(f"[WARN] player stats cache missing: {key}")
         return pd.DataFrame(columns=["PLAYER_NAME", "TEAM_ID", "PTS", "IMPACT", "NORM", "GP", "MIN"])
 
-    try:
-        rs0 = payload["resultSets"][0]
-        df = pd.DataFrame(rs0["rowSet"], columns=rs0["headers"])
-    except Exception:
-        print(f"[WARN] player stats cache malformed: {key}")
+    rows = payload.get("rows") or []
+    if not isinstance(rows, list) or len(rows) == 0:
+        print(f"[WARN] player stats cache empty: {key}")
         return pd.DataFrame(columns=["PLAYER_NAME", "TEAM_ID", "PTS", "IMPACT", "NORM", "GP", "MIN"])
 
-    if df.empty or "TEAM_ID" not in df.columns or "PLAYER_NAME" not in df.columns:
-        return pd.DataFrame(columns=["PLAYER_NAME", "TEAM_ID", "PTS", "IMPACT", "NORM", "GP", "MIN"])
+    df = pd.DataFrame(rows)
 
     for c in ["GP", "MIN", "PTS", "REB", "AST", "STL", "BLK", "TOV"]:
         if c not in df.columns:
@@ -513,11 +505,15 @@ def load_team_ctx_cache(season: str, anchor_us: dt.date) -> Dict[int, dict]:
     if not payload:
         print(f"[WARN] team_ctx cache missing: {key}")
         return {}
+
     try:
         ctx = payload.get("ctx") or {}
         out: Dict[int, dict] = {}
         for k, v in ctx.items():
-            out[int(k)] = {"b2b": bool(v.get("b2b", False)), "recent_w": float(v.get("recent_w", 0.5))}
+            out[int(k)] = {
+                "b2b": bool(v.get("b2b", False)),
+                "recent_w": float(v.get("recent_w", 0.5)),
+            }
         return out
     except Exception:
         print(f"[WARN] team_ctx cache malformed: {key}")
@@ -525,7 +521,7 @@ def load_team_ctx_cache(season: str, anchor_us: dt.date) -> Dict[int, dict]:
 
 
 # =========================================================
-# Injuries (ESPN)
+# ESPN injuries
 # =========================================================
 
 TEAM_MAP = {
@@ -541,6 +537,7 @@ TEAM_MAP = {
     "TOR": ["Toronto Raptors"], "UTA": ["Utah Jazz"], "WAS": ["Washington Wizards"],
 }
 
+# Static mapping sufficient for ctx lookup (team_id keys must match cache_nba_data.py)
 ABBR_TO_ID = {
     "ATL": 1610612737, "BOS": 1610612738, "BKN": 1610612751, "CHA": 1610612766,
     "CHI": 1610612741, "CLE": 1610612739, "DAL": 1610612742, "DEN": 1610612743,
@@ -598,41 +595,6 @@ def get_injuries() -> pd.DataFrame:
         print(f"[WARN] injuries fetch/parse failed: {e}")
 
     return pd.DataFrame(inj_list)
-
-
-# =========================================================
-# Team context from cached team logs
-# =========================================================
-
-def get_team_context_from_cache(team_ids: List[int], game_date_us: str, season: str) -> Dict[int, dict]:
-    ctx: Dict[int, dict] = {}
-    game_day = dt.datetime.strptime(game_date_us, "%m/%d/%Y").date()
-    prev_day = game_day - dt.timedelta(days=1)
-
-    for tid in team_ids:
-        log = teamlog_from_cache(season=season, team_id=tid)
-        is_b2b, recent_w = False, 0.5
-
-        if not log.empty and "GAME_DATE" in log.columns and "WL" in log.columns:
-            log = log.head(15).copy()
-            log["GAME_DATE"] = pd.to_datetime(
-                log["GAME_DATE"],
-                format="%b %d, %Y",
-                errors="coerce"
-            ).dt.date
-            log = log.dropna(subset=["GAME_DATE"])
-
-            prior = log[log["GAME_DATE"] < game_day].sort_values("GAME_DATE", ascending=False)
-            if not prior.empty:
-                last_game_date = prior.iloc[0]["GAME_DATE"]
-                is_b2b = (last_game_date == prev_day)
-                last5 = prior.head(5)
-                if len(last5) > 0:
-                    recent_w = (last5["WL"] == "W").mean()
-
-        ctx[tid] = {"b2b": bool(is_b2b), "recent_w": float(recent_w)}
-
-    return ctx
 
 
 # =========================================================
@@ -907,11 +869,16 @@ def main():
     if FAST_MODE:
         ps_db = pd.DataFrame()
         inj_db = pd.DataFrame()
+        team_ctx_all: Dict[int, dict] = {}
         print("[INFO] FAST_MODE -> skip cache/injuries/base_diff")
     else:
         t0 = time.time()
         ps_db = player_stats_from_cache(season)
         print(f"[T] player_stats(cache) took={round(time.time()-t0,2)}s rows={len(ps_db)}")
+
+        t0 = time.time()
+        team_ctx_all = load_team_ctx_cache(season=season, anchor_us=anchor_date_us)
+        print(f"[T] team_ctx(cache) took={round(time.time()-t0,2)}s teams={len(team_ctx_all)}")
 
         t0 = time.time()
         inj_db = get_injuries()
@@ -934,20 +901,6 @@ def main():
 
         if not games:
             continue
-
-        # ctx only needed when computing base_diff
-        ctx_db: Dict[int, dict] = {}
-        if not FAST_MODE:
-            # Strategy B hardened: read ONE team_ctx cache for anchor day
-            if "team_ctx_all" not in locals():
-                team_ctx_all = load_team_ctx_cache(season=season, anchor_us=anchor_date_us)
-                print(f"[INFO] team_ctx(cache) loaded teams={len(team_ctx_all)}")
-            ctx_db = team_ctx_all
-            team_ids = sorted(set(team_ids))
-            if team_ids:
-                t0 = time.time()
-                ctx_db = get_team_context_from_cache(team_ids, game_date_us=d.strftime("%m/%d/%Y"), season=season)
-                print(f"[INFO] ctx(cache) teams={len(team_ids)} got={len(ctx_db)} took={round(time.time()-t0,2)}s")
 
         rows: List[dict] = []
 
@@ -986,7 +939,7 @@ def main():
                     away_abbr=away_abbr,
                     ps_db=ps_db,
                     inj_db=inj_db,
-                    ctx_db=ctx_db,
+                    ctx_db=team_ctx_all,
                 )
                 mm = compute_market_metrics(
                     home_abbr=home_abbr,
