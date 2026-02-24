@@ -14,13 +14,12 @@ jobs/sync_daily.py (stable + fast backfill)
 - Today/future: if odds missing, write fallback odds
 
 Critical performance fix:
-- For past backfill, we DO NOT call teamgamelog unless we will compute base_diff.
-  This prevents API call explosion and GitHub Actions cancel due to timeout.
+- FAST_MODE=1: only sync ESPN + odds/fallback, NO nba_api, NO injuries, NO teamgamelog, NO base_diff.
+- teamgamelog cached per run to avoid repeated calls.
 """
 
 import os
 import re
-import json
 import math
 import time
 import base64
@@ -33,7 +32,6 @@ import requests
 import psycopg2
 import psycopg2.extras
 import pandas as pd
-
 from bs4 import BeautifulSoup
 
 from nba_api.stats.endpoints import leaguedashplayerstats, teamgamelog
@@ -505,10 +503,11 @@ def fetch_safe_df(endpoint_cls, retries: int = 2, sleep_s: float = 0.7, **kwargs
             d = endpoint_cls(**kwargs).get_dict()
             rs = d["resultSets"][0]
             return pd.DataFrame(rs["rowSet"], columns=rs["headers"])
-        except Exception:
+        except Exception as e:
             if attempt < retries:
                 time.sleep(sleep_s * (attempt + 1))
             else:
+                print(f"[WARN] nba_api endpoint failed: {endpoint_cls.__name__} err={e}")
                 return pd.DataFrame()
 
 
@@ -584,30 +583,42 @@ def get_injuries() -> pd.DataFrame:
                     "TEAM_ABBR": t_abbr,
                     "IS_OUT": bool(is_out),
                 })
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"[WARN] injuries fetch/parse failed: {e}")
 
     return pd.DataFrame(inj_list)
 
 
-def get_team_context(team_ids: List[int], game_date_us: str, season: str) -> Dict[int, dict]:
+def get_team_context(
+    team_ids: List[int],
+    game_date_us: str,
+    season: str,
+    teamlog_cache: Dict[Tuple[int, str], pd.DataFrame],
+) -> Dict[int, dict]:
     """
     TeamGameLog -> b2b + recent_w (pre-game last 5)
-    PERFORMANCE FIX:
-    - GAME_DATE format is "%b %d, %Y" so parsing is fast and no warning.
+    Cache avoids repeated calls per run.
     """
     ctx: Dict[int, dict] = {}
     game_day = dt.datetime.strptime(game_date_us, "%m/%d/%Y").date()
     prev_day = game_day - dt.timedelta(days=1)
 
+    def get_teamlog_cached(tid: int) -> pd.DataFrame:
+        key = (tid, season)
+        if key in teamlog_cache:
+            return teamlog_cache[key]
+        print(f"[INFO] nba_api teamgamelog fetch team_id={tid}")
+        df = fetch_safe_df(teamgamelog.TeamGameLog, team_id=tid, season=season)
+        teamlog_cache[key] = df
+        return df
+
     for tid in team_ids:
-        log = fetch_safe_df(teamgamelog.TeamGameLog, team_id=tid, season=season)
+        log = get_teamlog_cached(tid)
         is_b2b, recent_w = False, 0.5
 
         if not log.empty and "GAME_DATE" in log.columns and "WL" in log.columns:
             log = log.head(15).copy()
 
-            # ✅ FIX: specify format to avoid slow dateutil parsing + warning
             log["GAME_DATE"] = pd.to_datetime(
                 log["GAME_DATE"],
                 format="%b %d, %Y",
@@ -639,7 +650,6 @@ def compute_base_diff(
     ctx_db: Dict[int, dict],
 ) -> Optional[float]:
     """
-    Same as your Streamlit formula:
     base_diff = (h_pts - a_pts)*0.09 + (h_impact - a_impact)*3.8 + 2.5 + b2b_v + recent_v
     """
     hid = ABBR_TO_ID.get(home_abbr)
@@ -650,10 +660,10 @@ def compute_base_diff(
     def build_pkg(tid: int, abbr: str):
         ctx = ctx_db.get(tid, {"b2b": False, "recent_w": 0.5})
 
-        t_inj = inj_db[inj_db["TEAM_ABBR"] == abbr] if not inj_db.empty else pd.DataFrame()
+        t_inj = inj_db[inj_db["TEAM_ABBR"] == abbr] if (inj_db is not None and not inj_db.empty) else pd.DataFrame()
         out_list = t_inj[t_inj["IS_OUT"]]["NORM"].tolist() if not t_inj.empty else []
 
-        if not ps_db.empty and "TEAM_ID" in ps_db.columns and "NORM" in ps_db.columns:
+        if ps_db is not None and not ps_db.empty and "TEAM_ID" in ps_db.columns and "NORM" in ps_db.columns:
             active = (
                 ps_db[(ps_db["TEAM_ID"] == tid) & (~ps_db["NORM"].isin(out_list))]
                 .sort_values("IMPACT", ascending=False)
@@ -861,6 +871,8 @@ def upsert_games(rows: List[dict]) -> None:
 # =========================================================
 
 def main():
+    FAST_MODE = (os.environ.get("FAST_MODE") or "").strip() == "1"
+    print(f"[INFO] FAST_MODE={FAST_MODE}")
     print(f"[INFO] ODDS_API_KEY_present={bool((os.environ.get('ODDS_API_KEY') or '').strip())}")
 
     ensure_schema()
@@ -899,11 +911,29 @@ def main():
     print(f"[INFO] calibrator={bool(calibrator)}")
 
     # odds snapshot
+    t0 = time.time()
+    print("[T] get_odds_map start")
     odds_map = get_odds_map()
+    print("[T] get_odds_map done", round(time.time() - t0, 3), "s")
 
-    # feature snapshot
-    ps_db = get_player_stats(season=season)
-    inj_db = get_injuries()
+    # feature snapshot (skip in FAST_MODE)
+    if FAST_MODE:
+        ps_db = pd.DataFrame()
+        inj_db = pd.DataFrame()
+        teamlog_cache: Dict[Tuple[int, str], pd.DataFrame] = {}
+        print("[INFO] FAST_MODE -> skip player stats / injuries / team contexts / base_diff")
+    else:
+        t0 = time.time()
+        print("[T] get_player_stats start")
+        ps_db = get_player_stats(season=season)
+        print("[T] get_player_stats done", round(time.time() - t0, 3), "s", "rows=", len(ps_db))
+
+        t0 = time.time()
+        print("[T] get_injuries start")
+        inj_db = get_injuries()
+        print("[T] get_injuries done", round(time.time() - t0, 3), "s", "rows=", len(inj_db))
+
+        teamlog_cache = {}
 
     total_rows = 0
 
@@ -912,9 +942,10 @@ def main():
         print(f"[INFO] ---- sync date_us={d.isoformat()} is_past={is_past} ----")
 
         try:
+            t0 = time.time()
             events = fetch_espn_scoreboard(d)
             games = parse_espn_events(events, d)
-            print(f"[INFO] espn games={len(games)}")
+            print(f"[INFO] espn games={len(games)} took={round(time.time() - t0, 3)}s")
         except Exception as e:
             print(f"[ERROR] espn fetch failed for {d.isoformat()}: {e}")
             continue
@@ -922,17 +953,16 @@ def main():
         if not games:
             continue
 
-        # ✅ PERFORMANCE FIX:
-        # past days usually won't compute base_diff (no odds snapshot for past),
-        # so DO NOT call teamgamelog unless needed.
+        # Determine if we need ctx (only if not FAST_MODE)
         need_ctx = False
-        if not is_past:
-            need_ctx = True
-        else:
-            for gg in games:
-                if odds_map.get((gg["away_abbr"], gg["home_abbr"])) is not None:
-                    need_ctx = True
-                    break
+        if not FAST_MODE:
+            if not is_past:
+                need_ctx = True
+            else:
+                for gg in games:
+                    if odds_map.get((gg["away_abbr"], gg["home_abbr"])) is not None:
+                        need_ctx = True
+                        break
 
         ctx_db: Dict[int, dict] = {}
         if need_ctx:
@@ -946,7 +976,14 @@ def main():
                     team_ids.append(aid)
             team_ids = sorted(set(team_ids))
             if team_ids:
-                ctx_db = get_team_context(team_ids, game_date_us=d.strftime("%m/%d/%Y"), season=season)
+                t0 = time.time()
+                ctx_db = get_team_context(
+                    team_ids,
+                    game_date_us=d.strftime("%m/%d/%Y"),
+                    season=season,
+                    teamlog_cache=teamlog_cache,
+                )
+                print(f"[INFO] ctx ready teams={len(team_ids)} took={round(time.time() - t0, 3)}s")
 
         rows: List[dict] = []
 
@@ -966,8 +1003,8 @@ def main():
                 else:
                     sp, oh, oa, src = 0.0, 1.90, 1.90, "Fallback ⚠️"
 
-            # compute features only when meaningful:
-            should_compute = (not is_past) or (sp is not None)
+            # compute features only when meaningful (and not FAST_MODE)
+            should_compute = (not FAST_MODE) and ((not is_past) or (sp is not None))
 
             base_diff = None
             mm = {
@@ -1036,8 +1073,10 @@ def main():
             })
 
         if rows:
+            t0 = time.time()
             upsert_games(rows)
             total_rows += len(rows)
+            print(f"[INFO] upsert took={round(time.time() - t0, 3)}s rows={len(rows)}")
 
     print(f"[OK] sync complete rows={total_rows}")
 
