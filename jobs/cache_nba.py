@@ -10,7 +10,7 @@ from typing import Dict, Any, List, Set, Optional, Tuple
 
 import requests
 import pandas as pd
-import psycopg2
+from jobs.db_utils import db_connect
 
 
 # ============================================================
@@ -38,24 +38,6 @@ def now_tw_str() -> str:
 # ============================================================
 # DB
 # ============================================================
-def db_connect():
-    db_url = (os.environ.get("DATABASE_URL") or "").strip()
-    if db_url:
-        return psycopg2.connect(db_url)
-
-    host = (os.environ.get("SUPABASE_HOST") or "").strip()
-    dbname = (os.environ.get("SUPABASE_DB") or "").strip()
-    user = (os.environ.get("SUPABASE_USER") or "").strip()
-    password = (os.environ.get("SUPABASE_PASSWORD") or "").strip()
-    port = (os.environ.get("SUPABASE_PORT") or "5432").strip()
-
-    if not all([host, dbname, user, password, port]):
-        raise RuntimeError("DB env missing: set DATABASE_URL or SUPABASE_HOST/DB/USER/PASSWORD/PORT")
-
-    return psycopg2.connect(
-        host=host, dbname=dbname, user=user, password=password, port=int(port), sslmode="require"
-    )
-
 
 def ensure_schema(conn) -> None:
     with conn:
@@ -264,7 +246,8 @@ def resultset_to_df(data: dict, idx: int = 0) -> pd.DataFrame:
         headers = rs.get("headers") or []
         rows = rs.get("rowSet") or []
         return pd.DataFrame(rows, columns=headers)
-    except Exception:
+    except Exception as e:
+        print(f"[WARN] resultset_to_df failed idx={idx} err={e}", flush=True)
         return pd.DataFrame()
 
 
@@ -529,8 +512,8 @@ def main():
     finally:
         try:
             conn.close()
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[WARN] db close failed err={e}", flush=True)
 
 
 if __name__ == "__main__":

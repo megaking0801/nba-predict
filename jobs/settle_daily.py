@@ -7,6 +7,7 @@ from typing import List, Optional, Dict, Any
 
 import requests
 import psycopg2
+from jobs.db_utils import db_connect
 import psycopg2.extras
 
 
@@ -27,24 +28,6 @@ def now_tw_str() -> str:
     except Exception:
         return (dt.datetime.utcnow() + dt.timedelta(hours=8)).strftime("%Y-%m-%d %H:%M:%S")
 
-
-def db_connect():
-    db_url = (os.environ.get("DATABASE_URL") or "").strip()
-    if db_url:
-        return psycopg2.connect(db_url)
-
-    host = (os.environ.get("SUPABASE_HOST") or "").strip()
-    dbname = (os.environ.get("SUPABASE_DB") or "").strip()
-    user = (os.environ.get("SUPABASE_USER") or "").strip()
-    password = (os.environ.get("SUPABASE_PASSWORD") or "").strip()
-    port = (os.environ.get("SUPABASE_PORT") or "5432").strip()
-
-    if not all([host, dbname, user, password, port]):
-        raise RuntimeError("DB env missing: set DATABASE_URL or SUPABASE_HOST/DB/USER/PASSWORD/PORT")
-
-    return psycopg2.connect(
-        host=host, dbname=dbname, user=user, password=password, port=int(port), sslmode="require"
-    )
 
 
 def ensure_schema():
@@ -130,7 +113,8 @@ def parse_finals(events: List[dict], date_us: dt.date) -> List[Dict[str, Any]]:
         try:
             hs = int(home.get("score")) if home.get("score") is not None else None
             as_ = int(away.get("score")) if away.get("score") is not None else None
-        except Exception:
+        except Exception as e:
+            print(f"[WARN] score parse failed date={date_us.isoformat()} home={home_abbr} away={away_abbr} err={e}")
             hs, as_ = None, None
 
         if hs is None or as_ is None:
