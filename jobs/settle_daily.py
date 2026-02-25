@@ -8,26 +8,8 @@ from typing import List, Optional, Dict, Any
 import requests
 import psycopg2
 from jobs.db_utils import db_connect
+from jobs.time_utils import now_tw_str, us_eastern_today
 import psycopg2.extras
-
-
-def us_eastern_today() -> dt.date:
-    try:
-        from zoneinfo import ZoneInfo
-        now_et = dt.datetime.now(tz=ZoneInfo("America/New_York"))
-        return now_et.date()
-    except Exception:
-        return (dt.datetime.utcnow() - dt.timedelta(hours=5)).date()
-
-
-def now_tw_str() -> str:
-    try:
-        from zoneinfo import ZoneInfo
-        tz = ZoneInfo("Asia/Taipei")
-        return dt.datetime.now(tz=tz).strftime("%Y-%m-%d %H:%M:%S")
-    except Exception:
-        return (dt.datetime.utcnow() + dt.timedelta(hours=8)).strftime("%Y-%m-%d %H:%M:%S")
-
 
 
 def ensure_schema():
