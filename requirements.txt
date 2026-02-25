@@ -6,3 +6,4 @@ beautifulsoup4
 nba_api
 psycopg2-binary
 scikit-learn
+lxml
