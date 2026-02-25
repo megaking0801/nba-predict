@@ -23,11 +23,19 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
-      NBA_SEASON: ${{ github.event.inputs.season || vars.NBA_SEASON || "2025-26" }}
+      NBA_SEASON: ${{ inputs.season || vars.NBA_SEASON || '2025-26' }}
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Show dispatch inputs
+        if: ${{ github.event_name == 'workflow_dispatch' }}
+        run: |
+          echo "run=${{ inputs.run }}"
+          echo "verify_us_date=${{ inputs.verify_us_date }}"
+          echo "season=${{ inputs.season }}"
+          echo "NBA_SEASON(resolved)=${NBA_SEASON}"
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -43,9 +51,7 @@ jobs:
       # CACHE (nba_api snapshots)
       # =====================
       - name: Cache nba_api snapshots
-        if: ${{ github.event_name == 'schedule' ||
-                github.event.inputs.run == 'cache' ||
-                github.event.inputs.run == 'all' }}
+        if: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && (inputs.run == 'cache' || inputs.run == 'all')) }}
         env:
           PYTHONUNBUFFERED: "1"
           SUPABASE_HOST: ${{ secrets.SUPABASE_HOST }}
@@ -53,7 +59,7 @@ jobs:
           SUPABASE_USER: ${{ secrets.SUPABASE_USER }}
           SUPABASE_PASSWORD: ${{ secrets.SUPABASE_PASSWORD }}
           SUPABASE_PORT: ${{ secrets.SUPABASE_PORT }}
-          OVERRIDE_US_DATE: ${{ github.event.inputs.verify_us_date }}
+          OVERRIDE_US_DATE: ${{ inputs.verify_us_date }}
           CACHE_PAST_DAYS: "7"
           CACHE_FUTURE_DAYS: "7"
         run: |
@@ -63,9 +69,7 @@ jobs:
       # SYNC
       # =====================
       - name: Sync games
-        if: ${{ github.event_name == 'schedule' ||
-                github.event.inputs.run == 'sync' ||
-                github.event.inputs.run == 'all' }}
+        if: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && (inputs.run == 'sync' || inputs.run == 'all')) }}
         env:
           PYTHONUNBUFFERED: "1"
           SUPABASE_HOST: ${{ secrets.SUPABASE_HOST }}
@@ -74,7 +78,7 @@ jobs:
           SUPABASE_PASSWORD: ${{ secrets.SUPABASE_PASSWORD }}
           SUPABASE_PORT: ${{ secrets.SUPABASE_PORT }}
           ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
-          OVERRIDE_US_DATE: ${{ github.event.inputs.verify_us_date }}
+          OVERRIDE_US_DATE: ${{ inputs.verify_us_date }}
           FAST_MODE: "0"
           BACKFILL_PAST_DAYS: "7"
           BACKFILL_FUTURE_DAYS: "7"
@@ -88,9 +92,7 @@ jobs:
       # SETTLE
       # =====================
       - name: Settle results
-        if: ${{ github.event_name == 'schedule' ||
-                github.event.inputs.run == 'settle' ||
-                github.event.inputs.run == 'all' }}
+        if: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && (inputs.run == 'settle' || inputs.run == 'all')) }}
         env:
           PYTHONUNBUFFERED: "1"
           SUPABASE_HOST: ${{ secrets.SUPABASE_HOST }}
@@ -98,7 +100,7 @@ jobs:
           SUPABASE_USER: ${{ secrets.SUPABASE_USER }}
           SUPABASE_PASSWORD: ${{ secrets.SUPABASE_PASSWORD }}
           SUPABASE_PORT: ${{ secrets.SUPABASE_PORT }}
-          OVERRIDE_US_DATE: ${{ github.event.inputs.verify_us_date }}
+          OVERRIDE_US_DATE: ${{ inputs.verify_us_date }}
         run: |
           python -u jobs/settle_daily.py
 
@@ -106,9 +108,7 @@ jobs:
       # TRAIN BASE (margin model)
       # =====================
       - name: Train base model
-        if: ${{ github.event_name == 'schedule' ||
-                github.event.inputs.run == 'train_base' ||
-                github.event.inputs.run == 'all' }}
+        if: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && (inputs.run == 'train_base' || inputs.run == 'all')) }}
         env:
           PYTHONUNBUFFERED: "1"
           SUPABASE_HOST: ${{ secrets.SUPABASE_HOST }}
@@ -123,9 +123,7 @@ jobs:
       # TRAIN CALIBRATOR
       # =====================
       - name: Train calibrator
-        if: ${{ github.event_name == 'schedule' ||
-                github.event.inputs.run == 'train_cal' ||
-                github.event.inputs.run == 'all' }}
+        if: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && (inputs.run == 'train_cal' || inputs.run == 'all')) }}
         env:
           PYTHONUNBUFFERED: "1"
           SUPABASE_HOST: ${{ secrets.SUPABASE_HOST }}
