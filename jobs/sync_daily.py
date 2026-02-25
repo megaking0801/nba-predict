@@ -517,7 +517,7 @@ INSERT INTO public.games (
     %(home_spread)s, %(home_odds)s, %(away_odds)s, %(line_source)s,
     %(status)s, %(away_score)s, %(home_score)s,
     %(home_pts_sum)s, %(away_pts_sum)s, %(home_impact_mean)s, %(away_impact_mean)s,
-    %(home_b2b)s, %(away_b2b)s, %(home_recent_w)s, %(away_recent_w)s,
+    %(home_b2b)s::INTEGER, %(away_b2b)s::INTEGER, %(home_recent_w)s, %(away_recent_w)s,
     %(base_diff)s, %(f_edge)s, %(cover_prob)s, %(implied_prob)s, %(edge_value)s, %(ev)s, %(pick_team)s, %(odds_used)s,
     %(created_at_tw)s, %(updated_at_tw)s, %(game_date_tw)s
 )
@@ -564,6 +564,10 @@ DO UPDATE SET
 
 
 def upsert_games(rows: List[dict]) -> None:
+    for r in rows:
+        r["home_b2b"] = b2b_to_int(r.get("home_b2b"))
+        r["away_b2b"] = b2b_to_int(r.get("away_b2b"))
+
     conn = db_connect()
     try:
         with conn:
