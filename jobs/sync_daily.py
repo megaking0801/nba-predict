@@ -12,6 +12,8 @@ from typing import Dict, Tuple, Optional, List, Any
 
 import requests
 import psycopg2
+from jobs.db_utils import db_connect
+from jobs.time_utils import now_tw_str, today_tw_mmddyyyy, us_eastern_today
 import psycopg2.extras
 import pandas as pd
 from bs4 import BeautifulSoup
@@ -27,33 +29,6 @@ def norm_name(s: str) -> str:
     s = re.sub(r"[^a-z\s]", " ", s)
     s = re.sub(r"\s+", " ", s).strip()
     return s
-
-
-def us_eastern_today() -> dt.date:
-    try:
-        from zoneinfo import ZoneInfo
-        now_et = dt.datetime.now(tz=ZoneInfo("America/New_York"))
-        return now_et.date()
-    except Exception:
-        return (dt.datetime.utcnow() - dt.timedelta(hours=5)).date()
-
-
-def now_tw_str() -> str:
-    try:
-        from zoneinfo import ZoneInfo
-        tz = ZoneInfo("Asia/Taipei")
-        return dt.datetime.now(tz=tz).strftime("%Y-%m-%d %H:%M:%S")
-    except Exception:
-        return (dt.datetime.utcnow() + dt.timedelta(hours=8)).strftime("%Y-%m-%d %H:%M:%S")
-
-
-def today_tw_mmddyyyy() -> str:
-    try:
-        from zoneinfo import ZoneInfo
-        tz = ZoneInfo("Asia/Taipei")
-        return dt.datetime.now(tz=tz).strftime("%m/%d/%Y")
-    except Exception:
-        return (dt.datetime.utcnow() + dt.timedelta(hours=8)).strftime("%m/%d/%Y")
 
 
 ODDS_TEAMNAME_TO_ABBR: Dict[str, str] = {
@@ -93,24 +68,6 @@ ODDS_TEAMNAME_TO_ABBR: Dict[str, str] = {
 
 BOOK_KEY_ALIASES = {"pointsbet": "pointsbetus"}
 
-
-def db_connect():
-    db_url = (os.environ.get("DATABASE_URL") or "").strip()
-    if db_url:
-        return psycopg2.connect(db_url)
-
-    host = (os.environ.get("SUPABASE_HOST") or "").strip()
-    dbname = (os.environ.get("SUPABASE_DB") or "").strip()
-    user = (os.environ.get("SUPABASE_USER") or "").strip()
-    password = (os.environ.get("SUPABASE_PASSWORD") or "").strip()
-    port = (os.environ.get("SUPABASE_PORT") or "5432").strip()
-
-    if not all([host, dbname, user, password, port]):
-        raise RuntimeError("DB env missing: set DATABASE_URL or SUPABASE_HOST/DB/USER/PASSWORD/PORT")
-
-    return psycopg2.connect(
-        host=host, dbname=dbname, user=user, password=password, port=int(port), sslmode="require"
-    )
 
 
 def ensure_schema():
@@ -156,8 +113,8 @@ def ensure_schema():
         away_pts_sum DOUBLE PRECISION,
         home_impact_mean DOUBLE PRECISION,
         away_impact_mean DOUBLE PRECISION,
-        home_b2b BOOLEAN,
-        away_b2b BOOLEAN,
+        home_b2b INTEGER,
+        away_b2b INTEGER,
         home_recent_w DOUBLE PRECISION,
         away_recent_w DOUBLE PRECISION,
 
@@ -181,6 +138,28 @@ def ensure_schema():
         with conn:
             with conn.cursor() as cur:
                 cur.execute(ddl)
+                cur.execute("""
+                DO $$
+                BEGIN
+                  IF EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema='public' AND table_name='games' AND column_name='home_b2b' AND data_type='boolean'
+                  ) THEN
+                    ALTER TABLE public.games
+                    ALTER COLUMN home_b2b TYPE INTEGER
+                    USING (CASE WHEN home_b2b THEN 1 ELSE 0 END);
+                  END IF;
+
+                  IF EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema='public' AND table_name='games' AND column_name='away_b2b' AND data_type='boolean'
+                  ) THEN
+                    ALTER TABLE public.games
+                    ALTER COLUMN away_b2b TYPE INTEGER
+                    USING (CASE WHEN away_b2b THEN 1 ELSE 0 END);
+                  END IF;
+                END $$;
+                """)
         print("[INFO] schema ensured")
     finally:
         conn.close()
@@ -217,7 +196,8 @@ def load_models() -> Tuple[Optional[Any], Optional[Any]]:
             elif name == "cover_prob_calibrator":
                 calibrator = obj
         return base_model, calibrator
-    except Exception:
+    except Exception as e:
+        print(f"[WARN] load_models failed err={e}")
         return None, None
     finally:
         conn.close()
@@ -280,7 +260,8 @@ def parse_espn_events(events: List[dict], date_us: dt.date) -> List[dict]:
             try:
                 home_score = int(home.get("score")) if home.get("score") is not None else None
                 away_score = int(away.get("score")) if away.get("score") is not None else None
-            except Exception:
+            except Exception as e:
+                print(f"[WARN] score parse failed date={game_date_str} home={home_abbr} away={away_abbr} err={e}")
                 home_score, away_score = None, None
 
         out.append({
@@ -389,7 +370,8 @@ def get_odds_map() -> Dict[Tuple[str, str], dict]:
                 "away_odds": float(away_odds),
                 "line_source": f"OddsAPI:{bk_key}",
             }
-        except Exception:
+        except Exception as e:
+            print(f"[WARN] odds mapping failed game={g.get('id', 'unknown')} home={g.get('home_team')} away={g.get('away_team')} err={e}")
             continue
 
     print(f"[INFO] odds mapped={len(out)}")
@@ -453,8 +435,8 @@ def get_injuries() -> pd.DataFrame:
                     "TEAM_ABBR": t_abbr,
                     "IS_OUT": bool(is_out),
                 })
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"[WARN] injuries scrape failed err={e}")
 
     return pd.DataFrame(inj_list)
 
@@ -470,6 +452,17 @@ def fallback_cover_prob(edge_points_signed: float) -> float:
     p = 1.0 / (1.0 + math.exp(-x))
     p = max(PROB_FLOOR, min(PROB_CEIL, p))
     return float(p)
+
+
+def b2b_to_int(v: Any) -> Optional[int]:
+    if v is None:
+        return None
+    if isinstance(v, bool):
+        return 1 if v else 0
+    try:
+        return 1 if float(v) > 0 else 0
+    except Exception:
+        return None
 
 
 def compute_market_metrics(
@@ -490,7 +483,8 @@ def compute_market_metrics(
         try:
             p = float(calibrator.predict([f_edge])[0])
             p = max(0.0, min(1.0, p))
-        except Exception:
+        except Exception as e:
+            print(f"[WARN] calibrator predict failed f_edge={f_edge:.4f} err={e}")
             p = fallback_cover_prob(f_edge)
     else:
         p = fallback_cover_prob(f_edge)
@@ -507,6 +501,17 @@ def compute_market_metrics(
 
 # ---------------- UPSERT ----------------
 
+UPSERT_COLUMNS = [
+    "game_id", "game_date_us", "season",
+    "away_abbr", "home_abbr", "away_name", "home_name",
+    "home_spread", "home_odds", "away_odds", "line_source",
+    "status", "away_score", "home_score",
+    "home_pts_sum", "away_pts_sum", "home_impact_mean", "away_impact_mean",
+    "home_b2b", "away_b2b", "home_recent_w", "away_recent_w",
+    "base_diff", "f_edge", "cover_prob", "implied_prob", "edge_value", "ev", "pick_team", "odds_used",
+    "created_at_tw", "updated_at_tw", "game_date_tw",
+]
+
 UPSERT_SQL = """
 INSERT INTO public.games (
     game_id, game_date_us, season,
@@ -517,16 +522,7 @@ INSERT INTO public.games (
     home_b2b, away_b2b, home_recent_w, away_recent_w,
     base_diff, f_edge, cover_prob, implied_prob, edge_value, ev, pick_team, odds_used,
     created_at_tw, updated_at_tw, game_date_tw
-) VALUES (
-    %(game_id)s, %(game_date_us)s, %(season)s,
-    %(away_abbr)s, %(home_abbr)s, %(away_name)s, %(home_name)s,
-    %(home_spread)s, %(home_odds)s, %(away_odds)s, %(line_source)s,
-    %(status)s, %(away_score)s, %(home_score)s,
-    %(home_pts_sum)s, %(away_pts_sum)s, %(home_impact_mean)s, %(away_impact_mean)s,
-    %(home_b2b)s, %(away_b2b)s, %(home_recent_w)s, %(away_recent_w)s,
-    %(base_diff)s, %(f_edge)s, %(cover_prob)s, %(implied_prob)s, %(edge_value)s, %(ev)s, %(pick_team)s, %(odds_used)s,
-    %(created_at_tw)s, %(updated_at_tw)s, %(game_date_tw)s
-)
+) VALUES %s
 ON CONFLICT (game_id)
 DO UPDATE SET
     game_date_us = EXCLUDED.game_date_us,
@@ -545,7 +541,6 @@ DO UPDATE SET
     away_score = EXCLUDED.away_score,
     home_score = EXCLUDED.home_score,
 
-    -- base-model features SHOULD be allowed to backfill (do not COALESCE to preserve old empties)
     home_pts_sum = COALESCE(EXCLUDED.home_pts_sum, public.games.home_pts_sum),
     away_pts_sum = COALESCE(EXCLUDED.away_pts_sum, public.games.away_pts_sum),
     home_impact_mean = COALESCE(EXCLUDED.home_impact_mean, public.games.home_impact_mean),
@@ -569,12 +564,33 @@ DO UPDATE SET
 """
 
 
+def normalize_upsert_row(row: dict) -> tuple:
+    r = dict(row)
+    r["home_b2b"] = b2b_to_int(r.get("home_b2b"))
+    r["away_b2b"] = b2b_to_int(r.get("away_b2b"))
+
+    # hard guard: only int/None may pass for b2b columns
+    for k in ("home_b2b", "away_b2b"):
+        v = r.get(k)
+        if v is not None and type(v) is not int:
+            raise ValueError(f"{k} must be int or None, got type={type(v).__name__} value={v!r}")
+
+    return tuple(r.get(c) for c in UPSERT_COLUMNS)
+
+
 def upsert_games(rows: List[dict]) -> None:
+    values = [normalize_upsert_row(r) for r in rows]
+
     conn = db_connect()
     try:
         with conn:
             with conn.cursor() as cur:
-                psycopg2.extras.execute_batch(cur, UPSERT_SQL, rows, page_size=200)
+                psycopg2.extras.execute_values(
+                    cur,
+                    UPSERT_SQL,
+                    values,
+                    page_size=200,
+                )
         print(f"[INFO] db upsert ok rows={len(rows)}")
     finally:
         conn.close()
@@ -587,7 +603,7 @@ def build_team_context_from_cache(team_log_df: pd.DataFrame, game_day: dt.date) 
     team_log_df columns include GAME_DATE, WL
     """
     if team_log_df.empty or "GAME_DATE" not in team_log_df.columns or "WL" not in team_log_df.columns:
-        return {"b2b": False, "recent_w": 0.5}
+        return {"b2b": 0, "recent_w": 0.5}
 
     df = team_log_df.copy()
     # nba_api log format usually: "FEB 02, 2026"
@@ -595,11 +611,11 @@ def build_team_context_from_cache(team_log_df: pd.DataFrame, game_day: dt.date) 
     df = df.dropna(subset=["GAME_DATE"])
     prior = df[df["GAME_DATE"] < game_day].sort_values("GAME_DATE", ascending=False)
     if prior.empty:
-        return {"b2b": False, "recent_w": 0.5}
+        return {"b2b": 0, "recent_w": 0.5}
 
     prev_day = game_day - dt.timedelta(days=1)
     last_game_date = prior.iloc[0]["GAME_DATE"]
-    is_b2b = bool(last_game_date == prev_day)
+    is_b2b = 1 if (last_game_date == prev_day) else 0
 
     last5 = prior.head(5)
     recent_w = float((last5["WL"] == "W").mean()) if len(last5) > 0 else 0.5
@@ -648,13 +664,15 @@ def compute_team_package(abbr: str, season: str, ps_df: pd.DataFrame, inj_df: pd
     return {
         "pts_sum": pts_sum,
         "impact_mean": impact_mean,
-        "b2b": bool(ctx["b2b"]),
+        "b2b": b2b_to_int(ctx.get("b2b")) or 0,
         "recent_w": float(ctx["recent_w"]),
     }
 
 
 def compute_base_diff(home_pkg: Dict[str, Any], away_pkg: Dict[str, Any]) -> float:
-    b2b_v = (-2.5 if home_pkg["b2b"] else 0) - (-2.5 if away_pkg["b2b"] else 0)
+    home_b2b = b2b_to_int(home_pkg.get("b2b")) or 0
+    away_b2b = b2b_to_int(away_pkg.get("b2b")) or 0
+    b2b_v = (-2.5 if home_b2b > 0 else 0) - (-2.5 if away_b2b > 0 else 0)
     recent_v = (home_pkg["recent_w"] - away_pkg["recent_w"]) * 5
     base_diff = (
         (home_pkg["pts_sum"] - away_pkg["pts_sum"]) * 0.09
@@ -799,8 +817,8 @@ def main():
                 "away_pts_sum": away_pkg.get("pts_sum"),
                 "home_impact_mean": home_pkg.get("impact_mean"),
                 "away_impact_mean": away_pkg.get("impact_mean"),
-                "home_b2b": home_pkg.get("b2b"),
-                "away_b2b": away_pkg.get("b2b"),
+                "home_b2b": b2b_to_int(home_pkg.get("b2b")),
+                "away_b2b": b2b_to_int(away_pkg.get("b2b")),
                 "home_recent_w": home_pkg.get("recent_w"),
                 "away_recent_w": away_pkg.get("recent_w"),
 
