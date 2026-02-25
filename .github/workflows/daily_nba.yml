@@ -77,7 +77,28 @@ jobs:
           import jobs.sync_daily as s
           print('sync_daily_file=', s.__file__)
           print('upsert_games_line=', inspect.getsourcelines(s.upsert_games)[1])
-          print('has_b2b_case_sql=', 'WHEN %(home_b2b)s IS NULL THEN NULL' in s.UPSERT_SQL)
+          print('upsert_includes_home_b2b=', 'home_b2b' in s.UPSERT_COLUMNS and 'home_b2b' in s.UPSERT_SQL)
+          print('upsert_includes_away_b2b=', 'away_b2b' in s.UPSERT_COLUMNS and 'away_b2b' in s.UPSERT_SQL)
+          print('uses_execute_batch_for_b2b=', 'execute_batch' in inspect.getsource(s.upsert_games))
+          PY2
+
+      - name: Check sync env presence
+        if: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && (inputs.run == 'sync' || inputs.run == 'all')) }}
+        env:
+          SUPABASE_HOST: ${{ secrets.SUPABASE_HOST }}
+          SUPABASE_DB: ${{ secrets.SUPABASE_DB }}
+          SUPABASE_USER: ${{ secrets.SUPABASE_USER }}
+          SUPABASE_PASSWORD: ${{ secrets.SUPABASE_PASSWORD }}
+          SUPABASE_PORT: ${{ secrets.SUPABASE_PORT }}
+          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+        run: |
+          python - <<'PY2'
+          import os
+          keys = [
+              'SUPABASE_HOST','SUPABASE_DB','SUPABASE_USER','SUPABASE_PASSWORD','SUPABASE_PORT','ODDS_API_KEY'
+          ]
+          for k in keys:
+              print(f"{k}={'set' if bool((os.getenv(k) or '').strip()) else 'missing'}")
           PY2
 
       - name: Sync games
