@@ -113,8 +113,8 @@ def ensure_schema():
         away_pts_sum DOUBLE PRECISION,
         home_impact_mean DOUBLE PRECISION,
         away_impact_mean DOUBLE PRECISION,
-        home_b2b BOOLEAN,
-        away_b2b BOOLEAN,
+        home_b2b INTEGER,
+        away_b2b INTEGER,
         home_recent_w DOUBLE PRECISION,
         away_recent_w DOUBLE PRECISION,
 
@@ -138,6 +138,28 @@ def ensure_schema():
         with conn:
             with conn.cursor() as cur:
                 cur.execute(ddl)
+                cur.execute("""
+                DO $$
+                BEGIN
+                  IF EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema='public' AND table_name='games' AND column_name='home_b2b' AND data_type='boolean'
+                  ) THEN
+                    ALTER TABLE public.games
+                    ALTER COLUMN home_b2b TYPE INTEGER
+                    USING (CASE WHEN home_b2b THEN 1 ELSE 0 END);
+                  END IF;
+
+                  IF EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema='public' AND table_name='games' AND column_name='away_b2b' AND data_type='boolean'
+                  ) THEN
+                    ALTER TABLE public.games
+                    ALTER COLUMN away_b2b TYPE INTEGER
+                    USING (CASE WHEN away_b2b THEN 1 ELSE 0 END);
+                  END IF;
+                END $$;
+                """)
         print("[INFO] schema ensured")
     finally:
         conn.close()
@@ -430,6 +452,17 @@ def fallback_cover_prob(edge_points_signed: float) -> float:
     p = 1.0 / (1.0 + math.exp(-x))
     p = max(PROB_FLOOR, min(PROB_CEIL, p))
     return float(p)
+
+
+def b2b_to_int(v: Any) -> Optional[int]:
+    if v is None:
+        return None
+    if isinstance(v, bool):
+        return 1 if v else 0
+    try:
+        return 1 if float(v) > 0 else 0
+    except Exception:
+        return None
 
 
 def compute_market_metrics(
@@ -760,8 +793,8 @@ def main():
                 "away_pts_sum": away_pkg.get("pts_sum"),
                 "home_impact_mean": home_pkg.get("impact_mean"),
                 "away_impact_mean": away_pkg.get("impact_mean"),
-                "home_b2b": home_pkg.get("b2b"),
-                "away_b2b": away_pkg.get("b2b"),
+                "home_b2b": b2b_to_int(home_pkg.get("b2b")),
+                "away_b2b": b2b_to_int(away_pkg.get("b2b")),
                 "home_recent_w": home_pkg.get("recent_w"),
                 "away_recent_w": away_pkg.get("recent_w"),
 
