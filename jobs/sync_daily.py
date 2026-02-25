@@ -19,6 +19,26 @@ import pandas as pd
 from bs4 import BeautifulSoup
 
 
+def log_db_env_status() -> None:
+    db_url = (os.environ.get("DATABASE_URL") or "").strip()
+    host = (os.environ.get("SUPABASE_HOST") or "").strip()
+    dbname = (os.environ.get("SUPABASE_DB") or "").strip()
+    user = (os.environ.get("SUPABASE_USER") or "").strip()
+    password = (os.environ.get("SUPABASE_PASSWORD") or "").strip()
+    port = (os.environ.get("SUPABASE_PORT") or "").strip()
+
+    print(
+        "[INFO] db env "
+        f"DATABASE_URL={'set' if bool(db_url) else 'missing'} "
+        f"SUPABASE_HOST={'set' if bool(host) else 'missing'} "
+        f"SUPABASE_DB={'set' if bool(dbname) else 'missing'} "
+        f"SUPABASE_USER={'set' if bool(user) else 'missing'} "
+        f"SUPABASE_PASSWORD={'set' if bool(password) else 'missing'} "
+        f"SUPABASE_PORT={'set' if bool(port) else 'missing'}",
+        flush=True,
+    )
+
+
 def norm_name(s: str) -> str:
     if not isinstance(s, str):
         return ""
@@ -680,6 +700,7 @@ def compute_base_diff(home_pkg: Dict[str, Any], away_pkg: Dict[str, Any]) -> flo
 
 
 def main():
+    log_db_env_status()
     ensure_schema()
 
     override = (os.environ.get("OVERRIDE_US_DATE") or "").strip()
