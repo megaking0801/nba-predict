@@ -68,6 +68,18 @@ jobs:
       # =====================
       # SYNC
       # =====================
+      - name: Debug sync module version
+        if: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && (inputs.run == 'sync' || inputs.run == 'all')) }}
+        run: |
+          git rev-parse --short HEAD
+          python - <<'PY2'
+          import inspect
+          import jobs.sync_daily as s
+          print('sync_daily_file=', s.__file__)
+          print('upsert_games_line=', inspect.getsourcelines(s.upsert_games)[1])
+          print('has_b2b_case_sql=', 'WHEN %(home_b2b)s IS NULL THEN NULL' in s.UPSERT_SQL)
+          PY2
+
       - name: Sync games
         if: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && (inputs.run == 'sync' || inputs.run == 'all')) }}
         env:
