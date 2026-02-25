@@ -517,7 +517,23 @@ INSERT INTO public.games (
     %(home_spread)s, %(home_odds)s, %(away_odds)s, %(line_source)s,
     %(status)s, %(away_score)s, %(home_score)s,
     %(home_pts_sum)s, %(away_pts_sum)s, %(home_impact_mean)s, %(away_impact_mean)s,
-    %(home_b2b)s::INTEGER, %(away_b2b)s::INTEGER, %(home_recent_w)s, %(away_recent_w)s,
+    (
+      CASE
+        WHEN %(home_b2b)s IS NULL THEN NULL
+        WHEN lower(%(home_b2b)s::text) IN ('true','t') THEN 1
+        WHEN lower(%(home_b2b)s::text) IN ('false','f') THEN 0
+        ELSE (%(home_b2b)s::text)::INTEGER
+      END
+    ),
+    (
+      CASE
+        WHEN %(away_b2b)s IS NULL THEN NULL
+        WHEN lower(%(away_b2b)s::text) IN ('true','t') THEN 1
+        WHEN lower(%(away_b2b)s::text) IN ('false','f') THEN 0
+        ELSE (%(away_b2b)s::text)::INTEGER
+      END
+    ),
+    %(home_recent_w)s, %(away_recent_w)s,
     %(base_diff)s, %(f_edge)s, %(cover_prob)s, %(implied_prob)s, %(edge_value)s, %(ev)s, %(pick_team)s, %(odds_used)s,
     %(created_at_tw)s, %(updated_at_tw)s, %(game_date_tw)s
 )
@@ -564,9 +580,18 @@ DO UPDATE SET
 
 
 def upsert_games(rows: List[dict]) -> None:
+    bool_seen = 0
     for r in rows:
+        if type(r.get("home_b2b")) is bool:
+            bool_seen += 1
+        if type(r.get("away_b2b")) is bool:
+            bool_seen += 1
+
         r["home_b2b"] = b2b_to_int(r.get("home_b2b"))
         r["away_b2b"] = b2b_to_int(r.get("away_b2b"))
+
+    if bool_seen:
+        print(f"[WARN] coerced boolean b2b values to integer count={bool_seen}")
 
     conn = db_connect()
     try:
