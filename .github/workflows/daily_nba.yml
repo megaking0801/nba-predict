@@ -69,7 +69,7 @@ jobs:
       # SYNC
       # =====================
       - name: Debug sync module version
-        if: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && (inputs.run == 'sync' || inputs.run == 'all')) }}
+        if: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && (inputs.run == 'sync' || inputs.run == 'train_base' || inputs.run == 'train_cal' || inputs.run == 'all')) }}
         run: |
           git rev-parse --short HEAD
           python - <<'PY2'
@@ -83,7 +83,7 @@ jobs:
           PY2
 
       - name: Check sync env presence
-        if: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && (inputs.run == 'sync' || inputs.run == 'all')) }}
+        if: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && (inputs.run == 'sync' || inputs.run == 'train_base' || inputs.run == 'train_cal' || inputs.run == 'all')) }}
         env:
           SUPABASE_HOST: ${{ secrets.SUPABASE_HOST }}
           SUPABASE_DB: ${{ secrets.SUPABASE_DB }}
@@ -102,7 +102,7 @@ jobs:
           PY2
 
       - name: Sync games
-        if: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && (inputs.run == 'sync' || inputs.run == 'all')) }}
+        if: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && (inputs.run == 'sync' || inputs.run == 'train_base' || inputs.run == 'train_cal' || inputs.run == 'all')) }}
         env:
           PYTHONUNBUFFERED: "1"
           SUPABASE_HOST: ${{ secrets.SUPABASE_HOST }}
@@ -125,7 +125,7 @@ jobs:
       # SETTLE
       # =====================
       - name: Settle results
-        if: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && (inputs.run == 'settle' || inputs.run == 'all')) }}
+        if: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && (inputs.run == 'settle' || inputs.run == 'train_base' || inputs.run == 'train_cal' || inputs.run == 'all')) }}
         env:
           PYTHONUNBUFFERED: "1"
           SUPABASE_HOST: ${{ secrets.SUPABASE_HOST }}
@@ -136,6 +136,21 @@ jobs:
           OVERRIDE_US_DATE: ${{ inputs.verify_us_date }}
         run: |
           python -u -m jobs.settle_daily
+
+      # =====================
+      # PREP TRAIN DATA
+      # =====================
+      - name: Fill b2b NULLs with 0 before training
+        if: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && (inputs.run == 'train_base' || inputs.run == 'train_cal' || inputs.run == 'all')) }}
+        env:
+          PYTHONUNBUFFERED: "1"
+          SUPABASE_HOST: ${{ secrets.SUPABASE_HOST }}
+          SUPABASE_DB: ${{ secrets.SUPABASE_DB }}
+          SUPABASE_USER: ${{ secrets.SUPABASE_USER }}
+          SUPABASE_PASSWORD: ${{ secrets.SUPABASE_PASSWORD }}
+          SUPABASE_PORT: ${{ secrets.SUPABASE_PORT }}
+        run: |
+          python -u -m jobs.fill_b2b_nulls
 
       # =====================
       # TRAIN BASE (margin model)
