@@ -217,7 +217,8 @@ def load_models() -> Tuple[Optional[Any], Optional[Any]]:
             elif name == "cover_prob_calibrator":
                 calibrator = obj
         return base_model, calibrator
-    except Exception:
+    except Exception as e:
+        print(f"[WARN] load_models failed err={e}")
         return None, None
     finally:
         conn.close()
@@ -280,7 +281,8 @@ def parse_espn_events(events: List[dict], date_us: dt.date) -> List[dict]:
             try:
                 home_score = int(home.get("score")) if home.get("score") is not None else None
                 away_score = int(away.get("score")) if away.get("score") is not None else None
-            except Exception:
+            except Exception as e:
+                print(f"[WARN] score parse failed date={game_date_str} home={home_abbr} away={away_abbr} err={e}")
                 home_score, away_score = None, None
 
         out.append({
@@ -389,7 +391,8 @@ def get_odds_map() -> Dict[Tuple[str, str], dict]:
                 "away_odds": float(away_odds),
                 "line_source": f"OddsAPI:{bk_key}",
             }
-        except Exception:
+        except Exception as e:
+            print(f"[WARN] odds mapping failed game={g.get('id', 'unknown')} home={g.get('home_team')} away={g.get('away_team')} err={e}")
             continue
 
     print(f"[INFO] odds mapped={len(out)}")
@@ -453,8 +456,8 @@ def get_injuries() -> pd.DataFrame:
                     "TEAM_ABBR": t_abbr,
                     "IS_OUT": bool(is_out),
                 })
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"[WARN] injuries scrape failed err={e}")
 
     return pd.DataFrame(inj_list)
 
@@ -490,7 +493,8 @@ def compute_market_metrics(
         try:
             p = float(calibrator.predict([f_edge])[0])
             p = max(0.0, min(1.0, p))
-        except Exception:
+        except Exception as e:
+            print(f"[WARN] calibrator predict failed f_edge={f_edge:.4f} err={e}")
             p = fallback_cover_prob(f_edge)
     else:
         p = fallback_cover_prob(f_edge)
