@@ -130,7 +130,8 @@ def parse_finals(events: List[dict], date_us: dt.date) -> List[Dict[str, Any]]:
         try:
             hs = int(home.get("score")) if home.get("score") is not None else None
             as_ = int(away.get("score")) if away.get("score") is not None else None
-        except Exception:
+        except Exception as e:
+            print(f"[WARN] score parse failed date={date_us.isoformat()} home={home_abbr} away={away_abbr} err={e}")
             hs, as_ = None, None
 
         if hs is None or as_ is None:
