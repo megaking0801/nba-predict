@@ -19,6 +19,26 @@ import pandas as pd
 from bs4 import BeautifulSoup
 
 
+def log_db_env_status() -> None:
+    db_url = (os.environ.get("DATABASE_URL") or "").strip()
+    host = (os.environ.get("SUPABASE_HOST") or "").strip()
+    dbname = (os.environ.get("SUPABASE_DB") or "").strip()
+    user = (os.environ.get("SUPABASE_USER") or "").strip()
+    password = (os.environ.get("SUPABASE_PASSWORD") or "").strip()
+    port = (os.environ.get("SUPABASE_PORT") or "").strip()
+
+    print(
+        "[INFO] db env "
+        f"DATABASE_URL={'set' if bool(db_url) else 'missing'} "
+        f"SUPABASE_HOST={'set' if bool(host) else 'missing'} "
+        f"SUPABASE_DB={'set' if bool(dbname) else 'missing'} "
+        f"SUPABASE_USER={'set' if bool(user) else 'missing'} "
+        f"SUPABASE_PASSWORD={'set' if bool(password) else 'missing'} "
+        f"SUPABASE_PORT={'set' if bool(port) else 'missing'}",
+        flush=True,
+    )
+
+
 def norm_name(s: str) -> str:
     if not isinstance(s, str):
         return ""
@@ -507,7 +527,7 @@ UPSERT_COLUMNS = [
     "home_spread", "home_odds", "away_odds", "line_source",
     "status", "away_score", "home_score",
     "home_pts_sum", "away_pts_sum", "home_impact_mean", "away_impact_mean",
-    "home_recent_w", "away_recent_w",
+    "home_b2b", "away_b2b", "home_recent_w", "away_recent_w",
     "base_diff", "f_edge", "cover_prob", "implied_prob", "edge_value", "ev", "pick_team", "odds_used",
     "created_at_tw", "updated_at_tw", "game_date_tw",
 ]
@@ -519,7 +539,7 @@ INSERT INTO public.games (
     home_spread, home_odds, away_odds, line_source,
     status, away_score, home_score,
     home_pts_sum, away_pts_sum, home_impact_mean, away_impact_mean,
-    home_recent_w, away_recent_w,
+    home_b2b, away_b2b, home_recent_w, away_recent_w,
     base_diff, f_edge, cover_prob, implied_prob, edge_value, ev, pick_team, odds_used,
     created_at_tw, updated_at_tw, game_date_tw
 ) VALUES %s
@@ -545,6 +565,8 @@ DO UPDATE SET
     away_pts_sum = COALESCE(EXCLUDED.away_pts_sum, public.games.away_pts_sum),
     home_impact_mean = COALESCE(EXCLUDED.home_impact_mean, public.games.home_impact_mean),
     away_impact_mean = COALESCE(EXCLUDED.away_impact_mean, public.games.away_impact_mean),
+    home_b2b = COALESCE(EXCLUDED.home_b2b, public.games.home_b2b),
+    away_b2b = COALESCE(EXCLUDED.away_b2b, public.games.away_b2b),
     home_recent_w = COALESCE(EXCLUDED.home_recent_w, public.games.home_recent_w),
     away_recent_w = COALESCE(EXCLUDED.away_recent_w, public.games.away_recent_w),
 
@@ -562,34 +584,17 @@ DO UPDATE SET
 """
 
 
-B2B_UPDATE_SQL = """
-UPDATE public.games
-SET home_b2b = %s,
-    away_b2b = %s,
-    updated_at_tw = %s
-WHERE game_id = %s
-"""
-
-
 def normalize_upsert_row(row: dict) -> tuple:
-    r = dict(row)
-    return tuple(r.get(c) for c in UPSERT_COLUMNS)
-
-
-def normalize_b2b_row(row: dict) -> tuple:
     r = dict(row)
     hb = b2b_to_int(r.get("home_b2b"))
     ab = b2b_to_int(r.get("away_b2b"))
-    if hb is None:
-        hb = 0
-    if ab is None:
-        ab = 0
-    return (int(hb), int(ab), r.get("updated_at_tw"), r.get("game_id"))
+    r["home_b2b"] = int(hb) if hb is not None else 0
+    r["away_b2b"] = int(ab) if ab is not None else 0
+    return tuple(r.get(c) for c in UPSERT_COLUMNS)
 
 
 def upsert_games(rows: List[dict]) -> None:
     values = [normalize_upsert_row(r) for r in rows]
-    b2b_values = [normalize_b2b_row(r) for r in rows]
 
     conn = db_connect()
     try:
@@ -599,12 +604,6 @@ def upsert_games(rows: List[dict]) -> None:
                     cur,
                     UPSERT_SQL,
                     values,
-                    page_size=200,
-                )
-                psycopg2.extras.execute_batch(
-                    cur,
-                    B2B_UPDATE_SQL,
-                    b2b_values,
                     page_size=200,
                 )
         print(f"[INFO] db upsert ok rows={len(rows)}")
@@ -701,6 +700,7 @@ def compute_base_diff(home_pkg: Dict[str, Any], away_pkg: Dict[str, Any]) -> flo
 
 
 def main():
+    log_db_env_status()
     ensure_schema()
 
     override = (os.environ.get("OVERRIDE_US_DATE") or "").strip()
