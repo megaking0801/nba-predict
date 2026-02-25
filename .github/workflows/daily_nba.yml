@@ -11,6 +11,10 @@ on:
         description: "Optional: override US date (MM/DD/YYYY)"
         required: false
         default: ""
+      season:
+        description: "Optional NBA season (e.g. 2025-26)"
+        required: false
+        default: "2025-26"
   schedule:
     - cron: "30 10 * * *"
 
@@ -18,6 +22,8 @@ jobs:
   nba:
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    env:
+      NBA_SEASON: ${{ github.event.inputs.season || vars.NBA_SEASON || "2025-26" }}
 
     steps:
       - name: Checkout
@@ -47,7 +53,6 @@ jobs:
           SUPABASE_USER: ${{ secrets.SUPABASE_USER }}
           SUPABASE_PASSWORD: ${{ secrets.SUPABASE_PASSWORD }}
           SUPABASE_PORT: ${{ secrets.SUPABASE_PORT }}
-          NBA_SEASON: "2025-26"
           OVERRIDE_US_DATE: ${{ github.event.inputs.verify_us_date }}
           CACHE_PAST_DAYS: "7"
           CACHE_FUTURE_DAYS: "7"
@@ -69,7 +74,6 @@ jobs:
           SUPABASE_PASSWORD: ${{ secrets.SUPABASE_PASSWORD }}
           SUPABASE_PORT: ${{ secrets.SUPABASE_PORT }}
           ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
-          NBA_SEASON: "2025-26"
           OVERRIDE_US_DATE: ${{ github.event.inputs.verify_us_date }}
           FAST_MODE: "0"
           BACKFILL_PAST_DAYS: "7"
