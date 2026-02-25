@@ -264,7 +264,8 @@ def resultset_to_df(data: dict, idx: int = 0) -> pd.DataFrame:
         headers = rs.get("headers") or []
         rows = rs.get("rowSet") or []
         return pd.DataFrame(rows, columns=headers)
-    except Exception:
+    except Exception as e:
+        print(f"[WARN] resultset_to_df failed idx={idx} err={e}", flush=True)
         return pd.DataFrame()
 
 
@@ -529,8 +530,8 @@ def main():
     finally:
         try:
             conn.close()
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[WARN] db close failed err={e}", flush=True)
 
 
 if __name__ == "__main__":
