@@ -1,8 +1,9 @@
-streamlit
-pandas
-pytz
-requests
-beautifulsoup4
-nba_api
-psycopg2-binary
-scikit-learn
+streamlit==1.54.0
+pandas==2.3.3
+pytz==2025.2
+requests==2.32.5
+beautifulsoup4==4.14.3
+nba_api==1.11.4
+psycopg2-binary==2.9.11
+scikit-learn==1.7.2
+lxml==5.2.2
