@@ -112,7 +112,7 @@ jobs:
           OVERRIDE_US_DATE: ${{ inputs.verify_us_date }}
           FAST_MODE: "0"
           USE_ODDS: "0"
-          BACKFILL_PAST_DAYS: "7"
+          BACKFILL_PAST_DAYS: "180"
           BACKFILL_FUTURE_DAYS: "7"
           PROB_SCALE: "12"
           PROB_FLOOR: "0.12"
@@ -179,7 +179,7 @@ jobs:
           OVERRIDE_US_DATE: ${{ inputs.verify_us_date }}
           FAST_MODE: "0"
           USE_ODDS: "0"
-          BACKFILL_PAST_DAYS: "7"
+          BACKFILL_PAST_DAYS: "180"
           BACKFILL_FUTURE_DAYS: "7"
           PROB_SCALE: "12"
           PROB_FLOOR: "0.12"
