@@ -44,6 +44,10 @@ FEATURES = [
     "home_impact_mean", "away_impact_mean",
     "home_b2b", "away_b2b",
     "home_recent_w", "away_recent_w",
+    "home_ts_pct", "away_ts_pct",
+    "home_orb_rate", "away_orb_rate",
+    "home_usage_proxy", "away_usage_proxy",
+    "home_onoff_proxy", "away_onoff_proxy",
 ]
 
 
@@ -60,6 +64,10 @@ def main():
                   AND home_impact_mean IS NOT NULL AND away_impact_mean IS NOT NULL
                   AND home_b2b IS NOT NULL AND away_b2b IS NOT NULL
                   AND home_recent_w IS NOT NULL AND away_recent_w IS NOT NULL
+                  AND home_ts_pct IS NOT NULL AND away_ts_pct IS NOT NULL
+                  AND home_orb_rate IS NOT NULL AND away_orb_rate IS NOT NULL
+                  AND home_usage_proxy IS NOT NULL AND away_usage_proxy IS NOT NULL
+                  AND home_onoff_proxy IS NOT NULL AND away_onoff_proxy IS NOT NULL
             """)
             rows = cur.fetchall()
 
