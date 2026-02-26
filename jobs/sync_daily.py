@@ -180,6 +180,14 @@ def ensure_schema():
                   END IF;
                 END $$;
                 """)
+                cur.execute("ALTER TABLE public.games ADD COLUMN IF NOT EXISTS home_ts_pct DOUBLE PRECISION;")
+                cur.execute("ALTER TABLE public.games ADD COLUMN IF NOT EXISTS away_ts_pct DOUBLE PRECISION;")
+                cur.execute("ALTER TABLE public.games ADD COLUMN IF NOT EXISTS home_orb_rate DOUBLE PRECISION;")
+                cur.execute("ALTER TABLE public.games ADD COLUMN IF NOT EXISTS away_orb_rate DOUBLE PRECISION;")
+                cur.execute("ALTER TABLE public.games ADD COLUMN IF NOT EXISTS home_usage_proxy DOUBLE PRECISION;")
+                cur.execute("ALTER TABLE public.games ADD COLUMN IF NOT EXISTS away_usage_proxy DOUBLE PRECISION;")
+                cur.execute("ALTER TABLE public.games ADD COLUMN IF NOT EXISTS home_onoff_proxy DOUBLE PRECISION;")
+                cur.execute("ALTER TABLE public.games ADD COLUMN IF NOT EXISTS away_onoff_proxy DOUBLE PRECISION;")
         print("[INFO] schema ensured")
     finally:
         conn.close()
@@ -472,6 +480,10 @@ MODEL_FEATURE_ORDER = [
     "home_impact_mean", "away_impact_mean",
     "home_b2b", "away_b2b",
     "home_recent_w", "away_recent_w",
+    "home_ts_pct", "away_ts_pct",
+    "home_orb_rate", "away_orb_rate",
+    "home_usage_proxy", "away_usage_proxy",
+    "home_onoff_proxy", "away_onoff_proxy",
 ]
 
 def fallback_cover_prob(edge_points_signed: float) -> float:
@@ -549,6 +561,8 @@ UPSERT_COLUMNS = [
     "status", "away_score", "home_score",
     "home_pts_sum", "away_pts_sum", "home_impact_mean", "away_impact_mean",
     "home_b2b", "away_b2b", "home_recent_w", "away_recent_w",
+    "home_ts_pct", "away_ts_pct", "home_orb_rate", "away_orb_rate",
+    "home_usage_proxy", "away_usage_proxy", "home_onoff_proxy", "away_onoff_proxy",
     "base_diff", "f_edge", "cover_prob", "implied_prob", "edge_value", "ev", "pick_team", "odds_used",
     "created_at_tw", "updated_at_tw", "game_date_tw",
 ]
@@ -561,6 +575,8 @@ INSERT INTO public.games (
     status, away_score, home_score,
     home_pts_sum, away_pts_sum, home_impact_mean, away_impact_mean,
     home_b2b, away_b2b, home_recent_w, away_recent_w,
+    home_ts_pct, away_ts_pct, home_orb_rate, away_orb_rate,
+    home_usage_proxy, away_usage_proxy, home_onoff_proxy, away_onoff_proxy,
     base_diff, f_edge, cover_prob, implied_prob, edge_value, ev, pick_team, odds_used,
     created_at_tw, updated_at_tw, game_date_tw
 ) VALUES %s
@@ -590,6 +606,14 @@ DO UPDATE SET
     away_b2b = COALESCE(EXCLUDED.away_b2b, public.games.away_b2b),
     home_recent_w = COALESCE(EXCLUDED.home_recent_w, public.games.home_recent_w),
     away_recent_w = COALESCE(EXCLUDED.away_recent_w, public.games.away_recent_w),
+    home_ts_pct = COALESCE(EXCLUDED.home_ts_pct, public.games.home_ts_pct),
+    away_ts_pct = COALESCE(EXCLUDED.away_ts_pct, public.games.away_ts_pct),
+    home_orb_rate = COALESCE(EXCLUDED.home_orb_rate, public.games.home_orb_rate),
+    away_orb_rate = COALESCE(EXCLUDED.away_orb_rate, public.games.away_orb_rate),
+    home_usage_proxy = COALESCE(EXCLUDED.home_usage_proxy, public.games.home_usage_proxy),
+    away_usage_proxy = COALESCE(EXCLUDED.away_usage_proxy, public.games.away_usage_proxy),
+    home_onoff_proxy = COALESCE(EXCLUDED.home_onoff_proxy, public.games.home_onoff_proxy),
+    away_onoff_proxy = COALESCE(EXCLUDED.away_onoff_proxy, public.games.away_onoff_proxy),
 
     base_diff = COALESCE(EXCLUDED.base_diff, public.games.base_diff),
     f_edge = COALESCE(EXCLUDED.f_edge, public.games.f_edge),
@@ -690,6 +714,16 @@ def compute_team_package(abbr: str, season: str, ps_df: pd.DataFrame, inj_df: pd
 
     pts_sum = float(active["PTS"].sum()) if (not active.empty and "PTS" in active.columns) else 0.0
     impact_mean = float(active["IMPACT"].mean()) if (not active.empty and "IMPACT" in active.columns) else 0.0
+    team_fga = float(active["FGA"].sum()) if (not active.empty and "FGA" in active.columns) else 0.0
+    team_fta = float(active["FTA"].sum()) if (not active.empty and "FTA" in active.columns) else 0.0
+    team_tov = float(active["TOV"].sum()) if (not active.empty and "TOV" in active.columns) else 0.0
+    team_oreb = float(active["OREB"].sum()) if (not active.empty and "OREB" in active.columns) else 0.0
+    team_dreb = float(active["DREB"].sum()) if (not active.empty and "DREB" in active.columns) else 0.0
+    denom_ts = 2.0 * (team_fga + 0.44 * team_fta)
+    ts_pct = float(pts_sum / denom_ts) if denom_ts > 0 else 0.0
+    orb_rate = float(team_oreb / max(1.0, (team_oreb + team_dreb)))
+    usage_proxy = float(team_fga + 0.44 * team_fta + team_tov)
+    onoff_proxy = float(active["PLUS_MINUS"].mean()) if (not active.empty and "PLUS_MINUS" in active.columns) else 0.0
 
     # 3) team context from cached log
     log_payload = cache_get(f"team_log:{season}:{abbr}") or {}
@@ -702,6 +736,10 @@ def compute_team_package(abbr: str, season: str, ps_df: pd.DataFrame, inj_df: pd
         "impact_mean": impact_mean,
         "b2b": b2b_to_int(ctx.get("b2b")) or 0,
         "recent_w": float(ctx["recent_w"]),
+        "ts_pct": ts_pct,
+        "orb_rate": orb_rate,
+        "usage_proxy": usage_proxy,
+        "onoff_proxy": onoff_proxy,
     }
 
 
@@ -722,6 +760,14 @@ def predict_margin_from_model(
         "away_b2b": float(b2b_to_int(away_pkg.get("b2b")) or 0),
         "home_recent_w": float(home_pkg.get("recent_w") or 0.5),
         "away_recent_w": float(away_pkg.get("recent_w") or 0.5),
+        "home_ts_pct": float(home_pkg.get("ts_pct") or 0.0),
+        "away_ts_pct": float(away_pkg.get("ts_pct") or 0.0),
+        "home_orb_rate": float(home_pkg.get("orb_rate") or 0.0),
+        "away_orb_rate": float(away_pkg.get("orb_rate") or 0.0),
+        "home_usage_proxy": float(home_pkg.get("usage_proxy") or 0.0),
+        "away_usage_proxy": float(away_pkg.get("usage_proxy") or 0.0),
+        "home_onoff_proxy": float(home_pkg.get("onoff_proxy") or 0.0),
+        "away_onoff_proxy": float(away_pkg.get("onoff_proxy") or 0.0),
     }
     feature_row = [feature_map[k] for k in MODEL_FEATURE_ORDER]
     try:
@@ -771,7 +817,7 @@ def main():
     ps_df = pd.DataFrame(ps_rows)
     if not ps_df.empty:
         # build IMPACT + NORM once
-        for c in ["GP", "MIN", "PTS", "REB", "AST", "STL", "BLK", "TOV"]:
+        for c in ["GP", "MIN", "PTS", "REB", "AST", "STL", "BLK", "TOV", "FGA", "FTA", "OREB", "DREB", "PLUS_MINUS"]:
             if c not in ps_df.columns:
                 ps_df[c] = 0
         ps_df = ps_df[(ps_df["GP"] >= 5) & (ps_df["MIN"] >= 10)].copy()
@@ -821,8 +867,8 @@ def main():
                     src = od["line_source"]
 
             # features (for base model): we want them even for past games
-            home_pkg = {"pts_sum": None, "impact_mean": None, "b2b": None, "recent_w": None}
-            away_pkg = {"pts_sum": None, "impact_mean": None, "b2b": None, "recent_w": None}
+            home_pkg = {"pts_sum": None, "impact_mean": None, "b2b": None, "recent_w": None, "ts_pct": None, "orb_rate": None, "usage_proxy": None, "onoff_proxy": None}
+            away_pkg = {"pts_sum": None, "impact_mean": None, "b2b": None, "recent_w": None, "ts_pct": None, "orb_rate": None, "usage_proxy": None, "onoff_proxy": None}
             base_diff = None
             mm = {"f_edge": None, "cover_prob": None, "implied_prob": None, "edge_value": None, "ev": None, "pick_team": None, "odds_used": None}
 
@@ -869,6 +915,14 @@ def main():
                 "away_b2b": b2b_to_int(away_pkg.get("b2b")),
                 "home_recent_w": home_pkg.get("recent_w"),
                 "away_recent_w": away_pkg.get("recent_w"),
+                "home_ts_pct": home_pkg.get("ts_pct"),
+                "away_ts_pct": away_pkg.get("ts_pct"),
+                "home_orb_rate": home_pkg.get("orb_rate"),
+                "away_orb_rate": away_pkg.get("orb_rate"),
+                "home_usage_proxy": home_pkg.get("usage_proxy"),
+                "away_usage_proxy": away_pkg.get("usage_proxy"),
+                "home_onoff_proxy": home_pkg.get("onoff_proxy"),
+                "away_onoff_proxy": away_pkg.get("onoff_proxy"),
 
                 "base_diff": base_diff,
                 "f_edge": mm["f_edge"],
