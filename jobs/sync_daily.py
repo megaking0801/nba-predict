@@ -19,6 +19,26 @@ import pandas as pd
 from bs4 import BeautifulSoup
 
 
+def log_db_env_status() -> None:
+    db_url = (os.environ.get("DATABASE_URL") or "").strip()
+    host = (os.environ.get("SUPABASE_HOST") or "").strip()
+    dbname = (os.environ.get("SUPABASE_DB") or "").strip()
+    user = (os.environ.get("SUPABASE_USER") or "").strip()
+    password = (os.environ.get("SUPABASE_PASSWORD") or "").strip()
+    port = (os.environ.get("SUPABASE_PORT") or "").strip()
+
+    print(
+        "[INFO] db env "
+        f"DATABASE_URL={'set' if bool(db_url) else 'missing'} "
+        f"SUPABASE_HOST={'set' if bool(host) else 'missing'} "
+        f"SUPABASE_DB={'set' if bool(dbname) else 'missing'} "
+        f"SUPABASE_USER={'set' if bool(user) else 'missing'} "
+        f"SUPABASE_PASSWORD={'set' if bool(password) else 'missing'} "
+        f"SUPABASE_PORT={'set' if bool(port) else 'missing'}",
+        flush=True,
+    )
+
+
 def norm_name(s: str) -> str:
     if not isinstance(s, str):
         return ""
@@ -447,6 +467,13 @@ PROB_SCALE = float((os.environ.get("PROB_SCALE") or "12").strip())
 PROB_FLOOR = float((os.environ.get("PROB_FLOOR") or "0.12").strip())
 PROB_CEIL  = float((os.environ.get("PROB_CEIL") or "0.88").strip())
 
+MODEL_FEATURE_ORDER = [
+    "home_pts_sum", "away_pts_sum",
+    "home_impact_mean", "away_impact_mean",
+    "home_b2b", "away_b2b",
+    "home_recent_w", "away_recent_w",
+]
+
 def fallback_cover_prob(edge_points_signed: float) -> float:
     x = abs(edge_points_signed) / max(1e-9, PROB_SCALE)
     p = 1.0 / (1.0 + math.exp(-x))
@@ -499,6 +526,20 @@ def compute_market_metrics(
     return {"f_edge": f_edge, "cover_prob": p, "implied_prob": implied_prob, "edge_value": edge_value, "ev": ev, "pick_team": pick_team, "odds_used": odds_used}
 
 
+def compute_data_only_metrics(
+    home_abbr: str,
+    away_abbr: str,
+    base_diff: Optional[float],
+) -> Dict[str, Optional[float]]:
+    if base_diff is None:
+        return {"f_edge": None, "cover_prob": None, "implied_prob": None, "edge_value": None, "ev": None, "pick_team": None, "odds_used": None}
+
+    f_edge = float(base_diff)
+    p = fallback_cover_prob(f_edge)
+    pick_team = home_abbr if f_edge >= 0 else away_abbr
+    return {"f_edge": f_edge, "cover_prob": p, "implied_prob": None, "edge_value": None, "ev": None, "pick_team": pick_team, "odds_used": None}
+
+
 # ---------------- UPSERT ----------------
 
 UPSERT_COLUMNS = [
@@ -507,7 +548,7 @@ UPSERT_COLUMNS = [
     "home_spread", "home_odds", "away_odds", "line_source",
     "status", "away_score", "home_score",
     "home_pts_sum", "away_pts_sum", "home_impact_mean", "away_impact_mean",
-    "home_recent_w", "away_recent_w",
+    "home_b2b", "away_b2b", "home_recent_w", "away_recent_w",
     "base_diff", "f_edge", "cover_prob", "implied_prob", "edge_value", "ev", "pick_team", "odds_used",
     "created_at_tw", "updated_at_tw", "game_date_tw",
 ]
@@ -519,7 +560,7 @@ INSERT INTO public.games (
     home_spread, home_odds, away_odds, line_source,
     status, away_score, home_score,
     home_pts_sum, away_pts_sum, home_impact_mean, away_impact_mean,
-    home_recent_w, away_recent_w,
+    home_b2b, away_b2b, home_recent_w, away_recent_w,
     base_diff, f_edge, cover_prob, implied_prob, edge_value, ev, pick_team, odds_used,
     created_at_tw, updated_at_tw, game_date_tw
 ) VALUES %s
@@ -545,6 +586,8 @@ DO UPDATE SET
     away_pts_sum = COALESCE(EXCLUDED.away_pts_sum, public.games.away_pts_sum),
     home_impact_mean = COALESCE(EXCLUDED.home_impact_mean, public.games.home_impact_mean),
     away_impact_mean = COALESCE(EXCLUDED.away_impact_mean, public.games.away_impact_mean),
+    home_b2b = COALESCE(EXCLUDED.home_b2b, public.games.home_b2b),
+    away_b2b = COALESCE(EXCLUDED.away_b2b, public.games.away_b2b),
     home_recent_w = COALESCE(EXCLUDED.home_recent_w, public.games.home_recent_w),
     away_recent_w = COALESCE(EXCLUDED.away_recent_w, public.games.away_recent_w),
 
@@ -562,34 +605,17 @@ DO UPDATE SET
 """
 
 
-B2B_UPDATE_SQL = """
-UPDATE public.games
-SET home_b2b = %s,
-    away_b2b = %s,
-    updated_at_tw = %s
-WHERE game_id = %s
-"""
-
-
 def normalize_upsert_row(row: dict) -> tuple:
-    r = dict(row)
-    return tuple(r.get(c) for c in UPSERT_COLUMNS)
-
-
-def normalize_b2b_row(row: dict) -> tuple:
     r = dict(row)
     hb = b2b_to_int(r.get("home_b2b"))
     ab = b2b_to_int(r.get("away_b2b"))
-    if hb is None:
-        hb = 0
-    if ab is None:
-        ab = 0
-    return (int(hb), int(ab), r.get("updated_at_tw"), r.get("game_id"))
+    r["home_b2b"] = int(hb) if hb is not None else 0
+    r["away_b2b"] = int(ab) if ab is not None else 0
+    return tuple(r.get(c) for c in UPSERT_COLUMNS)
 
 
 def upsert_games(rows: List[dict]) -> None:
     values = [normalize_upsert_row(r) for r in rows]
-    b2b_values = [normalize_b2b_row(r) for r in rows]
 
     conn = db_connect()
     try:
@@ -599,12 +625,6 @@ def upsert_games(rows: List[dict]) -> None:
                     cur,
                     UPSERT_SQL,
                     values,
-                    page_size=200,
-                )
-                psycopg2.extras.execute_batch(
-                    cur,
-                    B2B_UPDATE_SQL,
-                    b2b_values,
                     page_size=200,
                 )
         print(f"[INFO] db upsert ok rows={len(rows)}")
@@ -685,22 +705,35 @@ def compute_team_package(abbr: str, season: str, ps_df: pd.DataFrame, inj_df: pd
     }
 
 
-def compute_base_diff(home_pkg: Dict[str, Any], away_pkg: Dict[str, Any]) -> float:
-    home_b2b = b2b_to_int(home_pkg.get("b2b")) or 0
-    away_b2b = b2b_to_int(away_pkg.get("b2b")) or 0
-    b2b_v = (-2.5 if home_b2b > 0 else 0) - (-2.5 if away_b2b > 0 else 0)
-    recent_v = (home_pkg["recent_w"] - away_pkg["recent_w"]) * 5
-    base_diff = (
-        (home_pkg["pts_sum"] - away_pkg["pts_sum"]) * 0.09
-        + (home_pkg["impact_mean"] - away_pkg["impact_mean"]) * 3.8
-        + 2.5
-        + b2b_v
-        + recent_v
-    )
-    return float(base_diff)
+def predict_margin_from_model(
+    base_model: Optional[Any],
+    home_pkg: Dict[str, Any],
+    away_pkg: Dict[str, Any],
+) -> Optional[float]:
+    if base_model is None:
+        return None
+
+    feature_map = {
+        "home_pts_sum": float(home_pkg.get("pts_sum") or 0.0),
+        "away_pts_sum": float(away_pkg.get("pts_sum") or 0.0),
+        "home_impact_mean": float(home_pkg.get("impact_mean") or 0.0),
+        "away_impact_mean": float(away_pkg.get("impact_mean") or 0.0),
+        "home_b2b": float(b2b_to_int(home_pkg.get("b2b")) or 0),
+        "away_b2b": float(b2b_to_int(away_pkg.get("b2b")) or 0),
+        "home_recent_w": float(home_pkg.get("recent_w") or 0.5),
+        "away_recent_w": float(away_pkg.get("recent_w") or 0.5),
+    }
+    feature_row = [feature_map[k] for k in MODEL_FEATURE_ORDER]
+    try:
+        pred = base_model.predict([feature_row])[0]
+        return float(pred)
+    except Exception as e:
+        print(f"[WARN] base_model predict failed err={e}", flush=True)
+        return None
 
 
 def main():
+    log_db_env_status()
     ensure_schema()
 
     override = (os.environ.get("OVERRIDE_US_DATE") or "").strip()
@@ -721,15 +754,16 @@ def main():
 
     season = (os.environ.get("NBA_SEASON") or "2025-26").strip()
     FAST_MODE = (os.environ.get("FAST_MODE") or "0").strip() == "1"
+    USE_ODDS = (os.environ.get("USE_ODDS") or "0").strip() == "1"
 
     ts_tw = now_tw_str()
     game_date_tw = today_tw_mmddyyyy()
 
     base_model, calibrator = load_models()
-    print(f"[INFO] base_model_loaded={bool(base_model)} calibrator_loaded={bool(calibrator)} fast_mode={FAST_MODE}")
+    print(f"[INFO] base_model_loaded={bool(base_model)} calibrator_loaded={bool(calibrator)} fast_mode={FAST_MODE} use_odds={USE_ODDS}")
 
-    # odds snapshot (only current market; past won't have)
-    odds_map = get_odds_map()
+    # odds snapshot is optional in data-only mode
+    odds_map = get_odds_map() if USE_ODDS else {}
 
     # player stats from cache (sync itself不打nba_api)
     ps_payload = cache_get(f"player_stats:{season}") or {}
@@ -776,19 +810,15 @@ def main():
             away_abbr = g["away_abbr"]
             home_abbr = g["home_abbr"]
 
-            # odds
-            od = odds_map.get((away_abbr, home_abbr))
-            if od:
-                sp = float(od["home_spread"])
-                oh = float(od["home_odds"])
-                oa = float(od["away_odds"])
-                src = od["line_source"]
-            else:
-                if is_past:
-                    # keep NULL so we don't overwrite any existing odds
-                    sp, oh, oa, src = None, None, None, None
-                else:
-                    sp, oh, oa, src = 0.0, 1.90, 1.90, "Fallback ⚠️"
+            # odds (optional)
+            sp, oh, oa, src = None, None, None, None
+            if USE_ODDS:
+                od = odds_map.get((away_abbr, home_abbr))
+                if od:
+                    sp = float(od["home_spread"])
+                    oh = float(od["home_odds"])
+                    oa = float(od["away_odds"])
+                    src = od["line_source"]
 
             # features (for base model): we want them even for past games
             home_pkg = {"pts_sum": None, "impact_mean": None, "b2b": None, "recent_w": None}
@@ -800,13 +830,15 @@ def main():
                 home_pkg = compute_team_package(home_abbr, season, ps_df, inj_df, game_day)
                 away_pkg = compute_team_package(away_abbr, season, ps_df, inj_df, game_day)
 
-                # if you already have base_model, you could predict margin here;
-                # but first we produce heuristic base_diff to allow f_edge when spread exists
-                base_diff = compute_base_diff(home_pkg, away_pkg)
+                base_diff = predict_margin_from_model(base_model, home_pkg, away_pkg)
 
-                # market metrics only if spread exists
-                if sp is not None and oh is not None and oa is not None:
+                if base_diff is None:
+                    print(f"[WARN] margin_base_model unavailable; skip edge metrics game={away_abbr}@{home_abbr}", flush=True)
+                    mm = {"f_edge": None, "cover_prob": None, "implied_prob": None, "edge_value": None, "ev": None, "pick_team": None, "odds_used": None}
+                elif USE_ODDS and sp is not None and oh is not None and oa is not None:
                     mm = compute_market_metrics(home_abbr, away_abbr, sp, oh, oa, base_diff, calibrator)
+                else:
+                    mm = compute_data_only_metrics(home_abbr, away_abbr, base_diff)
 
             game_id = f"{d.strftime('%Y%m%d')}_{away_abbr}_{home_abbr}"
 
