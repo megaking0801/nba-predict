@@ -519,6 +519,20 @@ def compute_market_metrics(
     return {"f_edge": f_edge, "cover_prob": p, "implied_prob": implied_prob, "edge_value": edge_value, "ev": ev, "pick_team": pick_team, "odds_used": odds_used}
 
 
+def compute_data_only_metrics(
+    home_abbr: str,
+    away_abbr: str,
+    base_diff: Optional[float],
+) -> Dict[str, Optional[float]]:
+    if base_diff is None:
+        return {"f_edge": None, "cover_prob": None, "implied_prob": None, "edge_value": None, "ev": None, "pick_team": None, "odds_used": None}
+
+    f_edge = float(base_diff)
+    p = fallback_cover_prob(f_edge)
+    pick_team = home_abbr if f_edge >= 0 else away_abbr
+    return {"f_edge": f_edge, "cover_prob": p, "implied_prob": None, "edge_value": None, "ev": None, "pick_team": pick_team, "odds_used": None}
+
+
 # ---------------- UPSERT ----------------
 
 UPSERT_COLUMNS = [
@@ -721,15 +735,16 @@ def main():
 
     season = (os.environ.get("NBA_SEASON") or "2025-26").strip()
     FAST_MODE = (os.environ.get("FAST_MODE") or "0").strip() == "1"
+    USE_ODDS = (os.environ.get("USE_ODDS") or "0").strip() == "1"
 
     ts_tw = now_tw_str()
     game_date_tw = today_tw_mmddyyyy()
 
     base_model, calibrator = load_models()
-    print(f"[INFO] base_model_loaded={bool(base_model)} calibrator_loaded={bool(calibrator)} fast_mode={FAST_MODE}")
+    print(f"[INFO] base_model_loaded={bool(base_model)} calibrator_loaded={bool(calibrator)} fast_mode={FAST_MODE} use_odds={USE_ODDS}")
 
-    # odds snapshot (only current market; past won't have)
-    odds_map = get_odds_map()
+    # odds snapshot is optional in data-only mode
+    odds_map = get_odds_map() if USE_ODDS else {}
 
     # player stats from cache (sync itself不打nba_api)
     ps_payload = cache_get(f"player_stats:{season}") or {}
@@ -776,19 +791,15 @@ def main():
             away_abbr = g["away_abbr"]
             home_abbr = g["home_abbr"]
 
-            # odds
-            od = odds_map.get((away_abbr, home_abbr))
-            if od:
-                sp = float(od["home_spread"])
-                oh = float(od["home_odds"])
-                oa = float(od["away_odds"])
-                src = od["line_source"]
-            else:
-                if is_past:
-                    # keep NULL so we don't overwrite any existing odds
-                    sp, oh, oa, src = None, None, None, None
-                else:
-                    sp, oh, oa, src = 0.0, 1.90, 1.90, "Fallback ⚠️"
+            # odds (optional)
+            sp, oh, oa, src = None, None, None, None
+            if USE_ODDS:
+                od = odds_map.get((away_abbr, home_abbr))
+                if od:
+                    sp = float(od["home_spread"])
+                    oh = float(od["home_odds"])
+                    oa = float(od["away_odds"])
+                    src = od["line_source"]
 
             # features (for base model): we want them even for past games
             home_pkg = {"pts_sum": None, "impact_mean": None, "b2b": None, "recent_w": None}
@@ -804,9 +815,10 @@ def main():
                 # but first we produce heuristic base_diff to allow f_edge when spread exists
                 base_diff = compute_base_diff(home_pkg, away_pkg)
 
-                # market metrics only if spread exists
-                if sp is not None and oh is not None and oa is not None:
+                if USE_ODDS and sp is not None and oh is not None and oa is not None:
                     mm = compute_market_metrics(home_abbr, away_abbr, sp, oh, oa, base_diff, calibrator)
+                else:
+                    mm = compute_data_only_metrics(home_abbr, away_abbr, base_diff)
 
             game_id = f"{d.strftime('%Y%m%d')}_{away_abbr}_{home_abbr}"
 

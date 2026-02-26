@@ -90,12 +90,11 @@ jobs:
           SUPABASE_USER: ${{ secrets.SUPABASE_USER }}
           SUPABASE_PASSWORD: ${{ secrets.SUPABASE_PASSWORD }}
           SUPABASE_PORT: ${{ secrets.SUPABASE_PORT }}
-          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
         run: |
           python - <<'PY2'
           import os
           keys = [
-              'SUPABASE_HOST','SUPABASE_DB','SUPABASE_USER','SUPABASE_PASSWORD','SUPABASE_PORT','ODDS_API_KEY'
+              'SUPABASE_HOST','SUPABASE_DB','SUPABASE_USER','SUPABASE_PASSWORD','SUPABASE_PORT'
           ]
           for k in keys:
               print(f"{k}={'set' if bool((os.getenv(k) or '').strip()) else 'missing'}")
@@ -110,9 +109,9 @@ jobs:
           SUPABASE_USER: ${{ secrets.SUPABASE_USER }}
           SUPABASE_PASSWORD: ${{ secrets.SUPABASE_PASSWORD }}
           SUPABASE_PORT: ${{ secrets.SUPABASE_PORT }}
-          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
           OVERRIDE_US_DATE: ${{ inputs.verify_us_date }}
           FAST_MODE: "0"
+          USE_ODDS: "0"
           BACKFILL_PAST_DAYS: "7"
           BACKFILL_FUTURE_DAYS: "7"
           PROB_SCALE: "12"
