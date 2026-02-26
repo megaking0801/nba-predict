@@ -467,6 +467,13 @@ PROB_SCALE = float((os.environ.get("PROB_SCALE") or "12").strip())
 PROB_FLOOR = float((os.environ.get("PROB_FLOOR") or "0.12").strip())
 PROB_CEIL  = float((os.environ.get("PROB_CEIL") or "0.88").strip())
 
+MODEL_FEATURE_ORDER = [
+    "home_pts_sum", "away_pts_sum",
+    "home_impact_mean", "away_impact_mean",
+    "home_b2b", "away_b2b",
+    "home_recent_w", "away_recent_w",
+]
+
 def fallback_cover_prob(edge_points_signed: float) -> float:
     x = abs(edge_points_signed) / max(1e-9, PROB_SCALE)
     p = 1.0 / (1.0 + math.exp(-x))
@@ -698,19 +705,31 @@ def compute_team_package(abbr: str, season: str, ps_df: pd.DataFrame, inj_df: pd
     }
 
 
-def compute_base_diff(home_pkg: Dict[str, Any], away_pkg: Dict[str, Any]) -> float:
-    home_b2b = b2b_to_int(home_pkg.get("b2b")) or 0
-    away_b2b = b2b_to_int(away_pkg.get("b2b")) or 0
-    b2b_v = (-2.5 if home_b2b > 0 else 0) - (-2.5 if away_b2b > 0 else 0)
-    recent_v = (home_pkg["recent_w"] - away_pkg["recent_w"]) * 5
-    base_diff = (
-        (home_pkg["pts_sum"] - away_pkg["pts_sum"]) * 0.09
-        + (home_pkg["impact_mean"] - away_pkg["impact_mean"]) * 3.8
-        + 2.5
-        + b2b_v
-        + recent_v
-    )
-    return float(base_diff)
+def predict_margin_from_model(
+    base_model: Optional[Any],
+    home_pkg: Dict[str, Any],
+    away_pkg: Dict[str, Any],
+) -> Optional[float]:
+    if base_model is None:
+        return None
+
+    feature_map = {
+        "home_pts_sum": float(home_pkg.get("pts_sum") or 0.0),
+        "away_pts_sum": float(away_pkg.get("pts_sum") or 0.0),
+        "home_impact_mean": float(home_pkg.get("impact_mean") or 0.0),
+        "away_impact_mean": float(away_pkg.get("impact_mean") or 0.0),
+        "home_b2b": float(b2b_to_int(home_pkg.get("b2b")) or 0),
+        "away_b2b": float(b2b_to_int(away_pkg.get("b2b")) or 0),
+        "home_recent_w": float(home_pkg.get("recent_w") or 0.5),
+        "away_recent_w": float(away_pkg.get("recent_w") or 0.5),
+    }
+    feature_row = [feature_map[k] for k in MODEL_FEATURE_ORDER]
+    try:
+        pred = base_model.predict([feature_row])[0]
+        return float(pred)
+    except Exception as e:
+        print(f"[WARN] base_model predict failed err={e}", flush=True)
+        return None
 
 
 def main():
@@ -811,11 +830,12 @@ def main():
                 home_pkg = compute_team_package(home_abbr, season, ps_df, inj_df, game_day)
                 away_pkg = compute_team_package(away_abbr, season, ps_df, inj_df, game_day)
 
-                # if you already have base_model, you could predict margin here;
-                # but first we produce heuristic base_diff to allow f_edge when spread exists
-                base_diff = compute_base_diff(home_pkg, away_pkg)
+                base_diff = predict_margin_from_model(base_model, home_pkg, away_pkg)
 
-                if USE_ODDS and sp is not None and oh is not None and oa is not None:
+                if base_diff is None:
+                    print(f"[WARN] margin_base_model unavailable; skip edge metrics game={away_abbr}@{home_abbr}", flush=True)
+                    mm = {"f_edge": None, "cover_prob": None, "implied_prob": None, "edge_value": None, "ev": None, "pick_team": None, "odds_used": None}
+                elif USE_ODDS and sp is not None and oh is not None and oa is not None:
                     mm = compute_market_metrics(home_abbr, away_abbr, sp, oh, oa, base_diff, calibrator)
                 else:
                     mm = compute_data_only_metrics(home_abbr, away_abbr, base_diff)

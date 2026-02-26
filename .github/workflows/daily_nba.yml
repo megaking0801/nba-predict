@@ -166,6 +166,27 @@ jobs:
         run: |
           python -u -m jobs.train_base_model
 
+
+      - name: Sync games (post-train refresh)
+        if: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && (inputs.run == 'all')) }}
+        env:
+          PYTHONUNBUFFERED: "1"
+          SUPABASE_HOST: ${{ secrets.SUPABASE_HOST }}
+          SUPABASE_DB: ${{ secrets.SUPABASE_DB }}
+          SUPABASE_USER: ${{ secrets.SUPABASE_USER }}
+          SUPABASE_PASSWORD: ${{ secrets.SUPABASE_PASSWORD }}
+          SUPABASE_PORT: ${{ secrets.SUPABASE_PORT }}
+          OVERRIDE_US_DATE: ${{ inputs.verify_us_date }}
+          FAST_MODE: "0"
+          USE_ODDS: "0"
+          BACKFILL_PAST_DAYS: "7"
+          BACKFILL_FUTURE_DAYS: "7"
+          PROB_SCALE: "12"
+          PROB_FLOOR: "0.12"
+          PROB_CEIL: "0.88"
+        run: |
+          python -u -m jobs.sync_daily
+
       # =====================
       # TRAIN CALIBRATOR
       # =====================
