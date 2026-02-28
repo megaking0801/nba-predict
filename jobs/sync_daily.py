@@ -639,7 +639,17 @@ def normalize_upsert_row(row: dict) -> tuple:
 
 
 def upsert_games(rows: List[dict]) -> None:
-    values = [normalize_upsert_row(r) for r in rows]
+    dedup: Dict[str, dict] = {}
+    for r in rows:
+        gid = str(r.get("game_id") or "").strip()
+        if not gid:
+            continue
+        dedup[gid] = r
+
+    if len(dedup) != len(rows):
+        print(f"[WARN] dedup upsert rows={len(rows)} unique_game_id={len(dedup)}", flush=True)
+
+    values = [normalize_upsert_row(r) for r in dedup.values()]
 
     conn = db_connect()
     try:
@@ -651,7 +661,7 @@ def upsert_games(rows: List[dict]) -> None:
                     values,
                     page_size=200,
                 )
-        print(f"[INFO] db upsert ok rows={len(rows)}")
+        print(f"[INFO] db upsert ok rows={len(values)}")
     finally:
         conn.close()
 
