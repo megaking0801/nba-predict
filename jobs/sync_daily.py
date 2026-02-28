@@ -247,6 +247,7 @@ def parse_espn_events(events: List[dict], date_us: dt.date) -> List[dict]:
     game_date_str = date_us.strftime("%m/%d/%Y")
 
     for ev in events:
+        espn_event_id = str(ev.get("id") or "").strip()
         competitions = ev.get("competitions") or []
         if not competitions:
             continue
@@ -293,6 +294,7 @@ def parse_espn_events(events: List[dict], date_us: dt.date) -> List[dict]:
                 home_score, away_score = None, None
 
         out.append({
+            "espn_event_id": espn_event_id or None,
             "game_date_us": game_date_str,
             "home_abbr": home_abbr,
             "away_abbr": away_abbr,
@@ -971,7 +973,7 @@ def main():
                 else:
                     mm = compute_data_only_metrics(home_abbr, away_abbr, base_diff)
 
-            game_id = f"{d.strftime('%Y%m%d')}_{away_abbr}_{home_abbr}"
+            game_id = str(g.get("espn_event_id") or "").strip() or f"{d.strftime('%Y%m%d')}_{away_abbr}_{home_abbr}"
 
             rows.append({
                 "game_id": game_id,
