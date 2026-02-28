@@ -893,7 +893,13 @@ def main():
     game_date_tw = today_tw_mmddyyyy()
 
     base_model, calibrator = load_models()
-    print(f"[INFO] base_model_loaded={bool(base_model)} calibrator_loaded={bool(calibrator)} fast_mode={FAST_MODE} use_odds={USE_ODDS}")
+    auto_fast_mode = FAST_MODE or (base_model is None)
+    if (base_model is None) and (not FAST_MODE):
+        print("[INFO] base model missing -> auto fast_mode enabled for sync", flush=True)
+    print(
+        f"[INFO] base_model_loaded={bool(base_model)} calibrator_loaded={bool(calibrator)} "
+        f"fast_mode={FAST_MODE} auto_fast_mode={auto_fast_mode} use_odds={USE_ODDS}"
+    )
 
     # odds snapshot is optional in data-only mode
     odds_map = get_odds_map() if USE_ODDS else {}
@@ -959,7 +965,7 @@ def main():
             base_diff = None
             mm = {"f_edge": None, "cover_prob": None, "implied_prob": None, "edge_value": None, "ev": None, "pick_team": None, "odds_used": None}
 
-            if not FAST_MODE:
+            if not auto_fast_mode:
                 home_pkg = compute_team_package(home_abbr, season, ps_df, inj_df, game_day)
                 away_pkg = compute_team_package(away_abbr, season, ps_df, inj_df, game_day)
 
