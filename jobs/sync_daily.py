@@ -649,19 +649,94 @@ def upsert_games(rows: List[dict]) -> None:
     if len(dedup) != len(rows):
         print(f"[WARN] dedup upsert rows={len(rows)} unique_game_id={len(dedup)}", flush=True)
 
-    values = [normalize_upsert_row(r) for r in dedup.values()]
+    rows_norm = []
+    for r in dedup.values():
+        vals = normalize_upsert_row(r)
+        row_map = {c: vals[i] for i, c in enumerate(UPSERT_COLUMNS)}
+        rows_norm.append(row_map)
+
+    if not rows_norm:
+        print("[WARN] db upsert skipped rows=0 after dedup", flush=True)
+        return
+
+    upsert_sql_single = """
+    INSERT INTO public.games (
+        game_id, game_date_us, season,
+        away_abbr, home_abbr, away_name, home_name,
+        home_spread, home_odds, away_odds, line_source,
+        status, away_score, home_score,
+        home_pts_sum, away_pts_sum, home_impact_mean, away_impact_mean,
+        home_b2b, away_b2b, home_recent_w, away_recent_w,
+        home_ts_pct, away_ts_pct, home_orb_rate, away_orb_rate,
+        home_usage_proxy, away_usage_proxy, home_onoff_proxy, away_onoff_proxy,
+        base_diff, f_edge, cover_prob, implied_prob, edge_value, ev, pick_team, odds_used,
+        created_at_tw, updated_at_tw, game_date_tw
+    ) VALUES (
+        %(game_id)s, %(game_date_us)s, %(season)s,
+        %(away_abbr)s, %(home_abbr)s, %(away_name)s, %(home_name)s,
+        %(home_spread)s, %(home_odds)s, %(away_odds)s, %(line_source)s,
+        %(status)s, %(away_score)s, %(home_score)s,
+        %(home_pts_sum)s, %(away_pts_sum)s, %(home_impact_mean)s, %(away_impact_mean)s,
+        %(home_b2b)s, %(away_b2b)s, %(home_recent_w)s, %(away_recent_w)s,
+        %(home_ts_pct)s, %(away_ts_pct)s, %(home_orb_rate)s, %(away_orb_rate)s,
+        %(home_usage_proxy)s, %(away_usage_proxy)s, %(home_onoff_proxy)s, %(away_onoff_proxy)s,
+        %(base_diff)s, %(f_edge)s, %(cover_prob)s, %(implied_prob)s, %(edge_value)s, %(ev)s, %(pick_team)s, %(odds_used)s,
+        %(created_at_tw)s, %(updated_at_tw)s, %(game_date_tw)s
+    )
+    ON CONFLICT (game_id)
+    DO UPDATE SET
+        game_date_us = EXCLUDED.game_date_us,
+        season = EXCLUDED.season,
+        away_abbr = EXCLUDED.away_abbr,
+        home_abbr = EXCLUDED.home_abbr,
+        away_name = EXCLUDED.away_name,
+        home_name = EXCLUDED.home_name,
+
+        home_spread = COALESCE(EXCLUDED.home_spread, public.games.home_spread),
+        home_odds   = COALESCE(EXCLUDED.home_odds,   public.games.home_odds),
+        away_odds   = COALESCE(EXCLUDED.away_odds,   public.games.away_odds),
+        line_source = COALESCE(EXCLUDED.line_source, public.games.line_source),
+
+        status = EXCLUDED.status,
+        away_score = EXCLUDED.away_score,
+        home_score = EXCLUDED.home_score,
+
+        home_pts_sum = COALESCE(EXCLUDED.home_pts_sum, public.games.home_pts_sum),
+        away_pts_sum = COALESCE(EXCLUDED.away_pts_sum, public.games.away_pts_sum),
+        home_impact_mean = COALESCE(EXCLUDED.home_impact_mean, public.games.home_impact_mean),
+        away_impact_mean = COALESCE(EXCLUDED.away_impact_mean, public.games.away_impact_mean),
+        home_b2b = COALESCE(EXCLUDED.home_b2b, public.games.home_b2b),
+        away_b2b = COALESCE(EXCLUDED.away_b2b, public.games.away_b2b),
+        home_recent_w = COALESCE(EXCLUDED.home_recent_w, public.games.home_recent_w),
+        away_recent_w = COALESCE(EXCLUDED.away_recent_w, public.games.away_recent_w),
+        home_ts_pct = COALESCE(EXCLUDED.home_ts_pct, public.games.home_ts_pct),
+        away_ts_pct = COALESCE(EXCLUDED.away_ts_pct, public.games.away_ts_pct),
+        home_orb_rate = COALESCE(EXCLUDED.home_orb_rate, public.games.home_orb_rate),
+        away_orb_rate = COALESCE(EXCLUDED.away_orb_rate, public.games.away_orb_rate),
+        home_usage_proxy = COALESCE(EXCLUDED.home_usage_proxy, public.games.home_usage_proxy),
+        away_usage_proxy = COALESCE(EXCLUDED.away_usage_proxy, public.games.away_usage_proxy),
+        home_onoff_proxy = COALESCE(EXCLUDED.home_onoff_proxy, public.games.home_onoff_proxy),
+        away_onoff_proxy = COALESCE(EXCLUDED.away_onoff_proxy, public.games.away_onoff_proxy),
+
+        base_diff = COALESCE(EXCLUDED.base_diff, public.games.base_diff),
+        f_edge = COALESCE(EXCLUDED.f_edge, public.games.f_edge),
+        cover_prob = COALESCE(EXCLUDED.cover_prob, public.games.cover_prob),
+        implied_prob = COALESCE(EXCLUDED.implied_prob, public.games.implied_prob),
+        edge_value = COALESCE(EXCLUDED.edge_value, public.games.edge_value),
+        ev = COALESCE(EXCLUDED.ev, public.games.ev),
+        pick_team = COALESCE(EXCLUDED.pick_team, public.games.pick_team),
+        odds_used = COALESCE(EXCLUDED.odds_used, public.games.odds_used),
+
+        updated_at_tw = EXCLUDED.updated_at_tw,
+        game_date_tw = EXCLUDED.game_date_tw;
+    """
 
     conn = db_connect()
     try:
         with conn:
             with conn.cursor() as cur:
-                psycopg2.extras.execute_values(
-                    cur,
-                    UPSERT_SQL,
-                    values,
-                    page_size=200,
-                )
-        print(f"[INFO] db upsert ok rows={len(values)}")
+                psycopg2.extras.execute_batch(cur, upsert_sql_single, rows_norm, page_size=100)
+        print(f"[INFO] db upsert ok rows={len(rows_norm)}")
     finally:
         conn.close()
 
