@@ -48,6 +48,29 @@ def load_tables(conn, season: str):
     return games, gps
 
 
+
+
+def parse_game_date_us(raw) -> dt.date:
+    """Accept MM/DD/YYYY or YYYY-MM-DD (and timestamp-like values) and return date."""
+    if raw is None:
+        raise ValueError("game_date_us is null")
+    text = str(raw).strip()
+    if not text:
+        raise ValueError("game_date_us is empty")
+
+    # strict known formats first
+    for fmt in ("%Y-%m-%d", "%m/%d/%Y"):
+        try:
+            return dt.datetime.strptime(text, fmt).date()
+        except ValueError:
+            pass
+
+    # fallback for timestamp-like strings
+    ts = pd.to_datetime(text, errors="coerce")
+    if pd.isna(ts):
+        raise ValueError(f"unsupported game_date_us format: {text}")
+    return ts.date()
+
 def _weighted(vals):
     if not vals:
         return None
@@ -79,7 +102,7 @@ def build_team_game_agg(gps: pd.DataFrame) -> pd.DataFrame:
 def build_team_context(games: pd.DataFrame) -> Dict[Tuple[str, dt.date], Tuple[int, float]]:
     rows = []
     for _, r in games.iterrows():
-        d = dt.datetime.strptime(r["game_date_us"], "%Y-%m-%d").date()
+        d = parse_game_date_us(r["game_date_us"])
         hs = r["home_score"]
         aws = r["away_score"]
         rows.append((r["home_abbr"], d, hs is not None and aws is not None and hs > aws))
@@ -131,12 +154,15 @@ def main() -> None:
             return
 
         tg = build_team_game_agg(gps)
-        tg["game_date"] = pd.to_datetime(tg["game_date_us"]).dt.date if not tg.empty else pd.Series(dtype=object)
+        if not tg.empty:
+            tg["game_date"] = tg["game_date_us"].map(parse_game_date_us)
+        else:
+            tg["game_date"] = pd.Series(dtype=object)
         ctx = build_team_context(games)
 
         updates = []
         for _, g in games.iterrows():
-            d = dt.datetime.strptime(g["game_date_us"], "%Y-%m-%d").date()
+            d = parse_game_date_us(g["game_date_us"])
             home = g["home_abbr"]
             away = g["away_abbr"]
             hm = team_prior_metrics(tg, home, d)
