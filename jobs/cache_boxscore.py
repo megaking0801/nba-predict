@@ -5,6 +5,7 @@ import datetime as dt
 from typing import Dict, List, Tuple, Optional
 
 import requests
+import pandas as pd
 import psycopg2.extras
 
 from jobs.db_utils import db_connect
@@ -13,6 +14,24 @@ from jobs.db_utils import db_connect
 SCOREBOARD_URL = "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard"
 SUMMARY_URL = "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/summary"
 
+
+def parse_date_us(raw: str) -> dt.date:
+    text = str(raw or "").strip()
+    if not text:
+        raise ValueError("date_us is empty")
+    for fmt in ("%Y-%m-%d", "%m/%d/%Y"):
+        try:
+            return dt.datetime.strptime(text, fmt).date()
+        except ValueError:
+            pass
+    ts = pd.to_datetime(text, errors="coerce")
+    if pd.isna(ts):
+        raise ValueError(f"unsupported date_us format: {text}")
+    return ts.date()
+
+
+def to_iso_date(raw: str) -> str:
+    return parse_date_us(raw).strftime("%Y-%m-%d")
 
 def normalize_abbr(a: Optional[str]) -> str:
     x = (a or "").strip().upper()
@@ -76,7 +95,7 @@ def load_games(conn, season: str) -> List[Tuple[str, str, str, str]]:
 
 
 def fetch_scoreboard(date_us: str) -> List[dict]:
-    ymd = dt.datetime.strptime(date_us, "%Y-%m-%d").strftime("%Y%m%d")
+    ymd = to_iso_date(date_us).replace("-", "")
     r = requests.get(SCOREBOARD_URL, params={"dates": ymd, "limit": 300}, timeout=25)
     r.raise_for_status()
     return (r.json() or {}).get("events") or []
@@ -210,7 +229,8 @@ def main() -> None:
 
         by_date: Dict[str, List[Tuple[str, str, str]]] = {}
         for gid, d, away, home in games:
-            by_date.setdefault(d, []).append((gid, normalize_abbr(away), normalize_abbr(home)))
+            iso_d = to_iso_date(d)
+            by_date.setdefault(iso_d, []).append((gid, normalize_abbr(away), normalize_abbr(home)))
 
         total_rows = 0
         for d, game_list in by_date.items():
