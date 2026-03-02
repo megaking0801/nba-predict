@@ -21,7 +21,7 @@ on:
 jobs:
   nba:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 90
     env:
       NBA_SEASON: ${{ inputs.season || vars.NBA_SEASON || '2025-26' }}
 
@@ -112,8 +112,8 @@ jobs:
           OVERRIDE_US_DATE: ${{ inputs.verify_us_date }}
           FAST_MODE: "0"
           USE_ODDS: "0"
-          BACKFILL_PAST_DAYS: "180"
-          BACKFILL_FUTURE_DAYS: "7"
+          BACKFILL_PAST_DAYS: ${{ vars.BACKFILL_PAST_DAYS || '45' }}
+          BACKFILL_FUTURE_DAYS: ${{ vars.BACKFILL_FUTURE_DAYS || '3' }}
           PROB_SCALE: "12"
           PROB_FLOOR: "0.12"
           PROB_CEIL: "0.88"
@@ -207,8 +207,8 @@ jobs:
           OVERRIDE_US_DATE: ${{ inputs.verify_us_date }}
           FAST_MODE: "0"
           USE_ODDS: "0"
-          BACKFILL_PAST_DAYS: "180"
-          BACKFILL_FUTURE_DAYS: "7"
+          BACKFILL_PAST_DAYS: ${{ vars.BACKFILL_PAST_DAYS || '45' }}
+          BACKFILL_FUTURE_DAYS: ${{ vars.BACKFILL_FUTURE_DAYS || '3' }}
           PROB_SCALE: "12"
           PROB_FLOOR: "0.12"
           PROB_CEIL: "0.88"
