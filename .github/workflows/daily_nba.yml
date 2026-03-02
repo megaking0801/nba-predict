@@ -15,6 +15,18 @@ on:
         description: "Optional NBA season (e.g. 2025-26)"
         required: false
         default: "2025-26"
+      backfill_past_days:
+        description: "Optional: sync past days window"
+        required: false
+        default: "45"
+      backfill_future_days:
+        description: "Optional: sync future days window"
+        required: false
+        default: "3"
+      base_min_rows:
+        description: "Optional: min rows for train_base_model"
+        required: false
+        default: "200"
   schedule:
     - cron: "30 10 * * *"
 
@@ -35,6 +47,9 @@ jobs:
           echo "run=${{ inputs.run }}"
           echo "verify_us_date=${{ inputs.verify_us_date }}"
           echo "season=${{ inputs.season }}"
+          echo "backfill_past_days=${{ inputs.backfill_past_days }}"
+          echo "backfill_future_days=${{ inputs.backfill_future_days }}"
+          echo "base_min_rows=${{ inputs.base_min_rows }}"
           echo "NBA_SEASON(resolved)=${NBA_SEASON}"
 
       - name: Setup Python
@@ -112,8 +127,8 @@ jobs:
           OVERRIDE_US_DATE: ${{ inputs.verify_us_date }}
           FAST_MODE: "0"
           USE_ODDS: "0"
-          BACKFILL_PAST_DAYS: ${{ vars.BACKFILL_PAST_DAYS || '45' }}
-          BACKFILL_FUTURE_DAYS: ${{ vars.BACKFILL_FUTURE_DAYS || '3' }}
+          BACKFILL_PAST_DAYS: ${{ inputs.backfill_past_days || vars.BACKFILL_PAST_DAYS || '45' }}
+          BACKFILL_FUTURE_DAYS: ${{ inputs.backfill_future_days || vars.BACKFILL_FUTURE_DAYS || '3' }}
           PROB_SCALE: "12"
           PROB_FLOOR: "0.12"
           PROB_CEIL: "0.88"
@@ -191,6 +206,7 @@ jobs:
           SUPABASE_USER: ${{ secrets.SUPABASE_USER }}
           SUPABASE_PASSWORD: ${{ secrets.SUPABASE_PASSWORD }}
           SUPABASE_PORT: ${{ secrets.SUPABASE_PORT }}
+          BASE_MIN_ROWS: ${{ inputs.base_min_rows || vars.BASE_MIN_ROWS || '200' }}
         run: |
           python -u -m jobs.train_base_model
 
@@ -207,8 +223,8 @@ jobs:
           OVERRIDE_US_DATE: ${{ inputs.verify_us_date }}
           FAST_MODE: "0"
           USE_ODDS: "0"
-          BACKFILL_PAST_DAYS: ${{ vars.BACKFILL_PAST_DAYS || '45' }}
-          BACKFILL_FUTURE_DAYS: ${{ vars.BACKFILL_FUTURE_DAYS || '3' }}
+          BACKFILL_PAST_DAYS: ${{ inputs.backfill_past_days || vars.BACKFILL_PAST_DAYS || '45' }}
+          BACKFILL_FUTURE_DAYS: ${{ inputs.backfill_future_days || vars.BACKFILL_FUTURE_DAYS || '3' }}
           PROB_SCALE: "12"
           PROB_FLOOR: "0.12"
           PROB_CEIL: "0.88"
