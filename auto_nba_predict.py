@@ -245,8 +245,25 @@ def bulk_upsert(rows: list[dict]):
     if not rows:
         return
 
+    # Dedup by game_id first to prevent
+    # ON CONFLICT ... cannot affect row a second time
+    dedup = {}
+    for r in rows:
+        gid = str((r or {}).get("game_id") or "").strip()
+        if not gid:
+            continue
+        dedup[gid] = dict(r)
+
+    if not dedup:
+        return
+
+    if len(dedup) != len(rows):
+        st.info(f"ℹ️ DB bulk_upsert 去重：{len(rows)} -> {len(dedup)}（game_id）")
+
     now_tw = datetime.now(tw_tz).strftime("%Y-%m-%d %H:%M:%S")
-    all_cols = sorted(set().union(*[r.keys() for r in rows]))
+    rows_dedup = list(dedup.values())
+
+    all_cols = sorted(set().union(*[r.keys() for r in rows_dedup]))
     if "game_id" not in all_cols:
         return
     if "created_at_tw" not in all_cols:
@@ -255,7 +272,7 @@ def bulk_upsert(rows: list[dict]):
         all_cols.append("updated_at_tw")
 
     values = []
-    for r in rows:
+    for r in rows_dedup:
         rr = dict(r)
         rr.setdefault("created_at_tw", now_tw)
         rr["updated_at_tw"] = now_tw
