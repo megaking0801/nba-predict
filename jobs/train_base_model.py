@@ -6,6 +6,7 @@ import json
 import base64
 import pickle
 import datetime as dt
+import traceback
 
 import numpy as np
 import psycopg2
@@ -378,4 +379,10 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as e:
+        # Ensure GitHub Actions logs contain actionable failure details.
+        print(f"[FATAL] train_base_model failed: {e}", flush=True)
+        print(traceback.format_exc(), flush=True)
+        raise
