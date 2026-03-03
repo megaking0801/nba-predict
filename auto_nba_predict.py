@@ -245,8 +245,25 @@ def bulk_upsert(rows: list[dict]):
     if not rows:
         return
 
+    # Dedup by game_id first to prevent
+    # ON CONFLICT ... cannot affect row a second time
+    dedup = {}
+    for r in rows:
+        gid = str((r or {}).get("game_id") or "").strip()
+        if not gid:
+            continue
+        dedup[gid] = dict(r)
+
+    if not dedup:
+        return
+
+    if len(dedup) != len(rows):
+        st.info(f"ℹ️ DB bulk_upsert 去重：{len(rows)} -> {len(dedup)}（game_id）")
+
     now_tw = datetime.now(tw_tz).strftime("%Y-%m-%d %H:%M:%S")
-    all_cols = sorted(set().union(*[r.keys() for r in rows]))
+    rows_dedup = list(dedup.values())
+
+    all_cols = sorted(set().union(*[r.keys() for r in rows_dedup]))
     if "game_id" not in all_cols:
         return
     if "created_at_tw" not in all_cols:
@@ -255,7 +272,7 @@ def bulk_upsert(rows: list[dict]):
         all_cols.append("updated_at_tw")
 
     values = []
-    for r in rows:
+    for r in rows_dedup:
         rr = dict(r)
         rr.setdefault("created_at_tw", now_tw)
         rr["updated_at_tw"] = now_tw
@@ -428,6 +445,19 @@ def load_model_from_registry(model_name: str):
     except Exception as e:
         return None, {"ok": False, "reason": f"load_error: {e}"}
 
+def load_first_available_model(model_names: list[str]):
+    last_info = {"ok": False, "reason": "no_model_candidates"}
+    for name in model_names:
+        model, info = load_model_from_registry(name)
+        if info.get("ok"):
+            info = dict(info)
+            info["selected_from"] = model_names
+            return model, info
+        last_info = info
+    merged = dict(last_info)
+    merged["selected_from"] = model_names
+    return None, merged
+
 def clamp01(x: float, lo: float = 0.001, hi: float = 0.999) -> float:
     try:
         x = float(x)
@@ -443,12 +473,28 @@ def predict_p_raw(base_model, feats: dict, fallback_edge: float) -> float:
     else => fallback sigmoid from f_edge
     """
     if base_model is not None:
-        try:
-            X = pd.DataFrame([feats])
-            p = float(base_model.predict_proba(X)[0, 1])
-            return clamp01(p)
-        except Exception:
-            pass
+        # legacy classifier path
+        if hasattr(base_model, "predict_proba"):
+            try:
+                X = pd.DataFrame([feats])
+                p = float(base_model.predict_proba(X)[0, 1])
+                return clamp01(p)
+            except Exception:
+                pass
+
+        # regressor / generic predictor fallback (e.g. margin-like output)
+        if hasattr(base_model, "predict"):
+            try:
+                X = pd.DataFrame([feats])
+                pred = float(base_model.predict(X)[0])
+                # If model output already looks like probability, use it directly
+                if 0.0 <= pred <= 1.0:
+                    return clamp01(pred)
+                # Otherwise treat as margin-like signal and map by logistic curve
+                return clamp01(calc_cover_prob(pred + float(feats.get("home_spread") or 0.0)))
+            except Exception:
+                pass
+
     return clamp01(calc_cover_prob(fallback_edge))
 
 def calibrate_p(iso_model, p_raw: float) -> float:
@@ -738,9 +784,9 @@ except Exception as e:
     st.error(f"❌ Supabase DB 初始化失敗：{e}")
     st.stop()
 
-# NEW: load models
-base_model, base_info = load_model_from_registry("cover_prob_base_model")
-iso_model, iso_info   = load_model_from_registry("cover_prob_calibrator")
+# NEW: load models (compatible with both legacy cover-prob and new margin pipeline names)
+base_model, base_info = load_first_available_model(["cover_prob_base_model", "margin_base_model"])
+iso_model, iso_info   = load_first_available_model(["cover_prob_calibrator", "margin_calibrator"])
 
 h1, h2 = st.columns([0.8, 0.2])
 with h1:
@@ -753,12 +799,18 @@ with h2:
         st.rerun()
     with st.popover("🧠 模型狀態 / 判讀指南"):
         if base_info.get("ok"):
-            st.success(f"✅ Base model 已載入：{base_info.get('model_version')} | rows={base_info.get('trained_rows')}")
+            st.success(
+                f"✅ Base model 已載入：{base_info.get('model_name')} | "
+                f"{base_info.get('model_version')} | rows={base_info.get('trained_rows')}"
+            )
         else:
             st.warning(f"⚠️ Base model 未載入（改用 fallback sigmoid）。原因：{base_info.get('reason')}")
 
         if iso_info.get("ok"):
-            st.success(f"✅ Calibrator 已載入：{iso_info.get('model_version')} | rows={iso_info.get('trained_rows')}")
+            st.success(
+                f"✅ Calibrator 已載入：{iso_info.get('model_name')} | "
+                f"{iso_info.get('model_version')} | rows={iso_info.get('trained_rows')}"
+            )
         else:
             st.warning(f"⚠️ Calibrator 未載入（p_cal=p_raw）。原因：{iso_info.get('reason')}")
 
@@ -911,9 +963,20 @@ def get_market_inputs_for_game(g):
     oh_default = g["pin_home_od"]
     oa_default = g["pin_away_od"]
 
-    sp = safe_float(st.session_state.get(f"sp_{gid}", sp_default), sp_default)
-    oh = safe_float(st.session_state.get(f"oh_{gid}", oh_default), oh_default)
-    oa = safe_float(st.session_state.get(f"oa_{gid}", oa_default), oa_default)
+    def _pick_state(prefix: str, default_val: float) -> float:
+        direct_key = f"{prefix}_{gid}"
+        if direct_key in st.session_state:
+            return safe_float(st.session_state.get(direct_key), default_val)
+
+        cand = [k for k in st.session_state.keys() if str(k).startswith(f"{prefix}_{gid}__")]
+        if cand:
+            cand.sort()
+            return safe_float(st.session_state.get(cand[-1]), default_val)
+        return safe_float(default_val, default_val)
+
+    sp = _pick_state("sp", sp_default)
+    oh = _pick_state("oh", oh_default)
+    oa = _pick_state("oa", oa_default)
 
     manual = (abs(sp - sp_default) > 1e-9) or (abs(oh - oh_default) > 1e-9) or (abs(oa - oa_default) > 1e-9)
 
@@ -1019,6 +1082,17 @@ try:
 except Exception as e:
     st.warning(f"⚠️ DB 自動建檔失敗（不影響前端運作）：{e}")
 
+with st.expander("ℹ️ 系統主流程 / 數據分析邏輯（點我看）", expanded=False):
+    st.markdown(
+        "1. **賽程與盤口**：抓取今日賽程 + Pinnacle 盤口（若無則 fallback）。\n"
+        "2. **球員與傷病**：整合球員 per-game 與傷病，先做可出賽名單過濾。\n"
+        "3. **特徵計算**：為每場建構隊伍特徵（分數、impact、近況、b2b 等）並推導 `base_diff`。\n"
+        "4. **機率推論**：先算 `p_raw`，再用 calibrator 得到 `p_cal`。\n"
+        "5. **價值計算**：由 `p_cal` 與賠率算 `implied_prob / edge_value / EV`，輸出推薦。\n"
+        "6. **資料回寫**：頁面載入與你手動改盤時，會自動 upsert 回 DB。"
+    )
+    st.caption("補充：下方『更新賽果/結算』只在你要立即手動結算 final 比賽時使用；平常可不按。")
+
 # =========================================================
 # 12) 🔥 今日最能買（候選池=真盤；排序=你輸入）
 # =========================================================
@@ -1077,21 +1151,23 @@ else:
                 st.caption(f"p_raw={item['p_raw']:.3f} → p_cal={item['p_cal']:.3f}")
 
 # =========================================================
-# 13) 結算按鈕：更新比分/cover 寫入 DB
+# 13) 手動結算（可選）：平常可不按
 # =========================================================
 st.divider()
-cA, cB = st.columns([0.55, 0.45])
-with cA:
-    if st.button("🧾 更新賽果 / 結算（Final 後寫入 cover）"):
-        try:
-            n = update_results_and_settle(target_date_us)
-            st.success(f"已掃描並更新 {n} 筆（非 Final 的 cover 會維持空值）")
-            # 若你剛好同日重訓模型，這裡也順便清 cache
-            st.cache_data.clear()
-        except Exception as e:
-            st.error(f"結算失敗：{e}")
-with cB:
-    st.caption("cover 定義：home_score + home_spread vs away_score；相等為 push(2)")
+st.caption("✅ 本頁面會自動寫入 DB。下方結算按鈕僅用於你想『立即』把 final 比賽寫入 cover。")
+with st.expander("🧾 手動更新賽果 / 結算（可選）", expanded=False):
+    cA, cB = st.columns([0.6, 0.4])
+    with cA:
+        if st.button("立即結算 Final 比賽（寫入 cover）"):
+            try:
+                n = update_results_and_settle(target_date_us)
+                st.success(f"已掃描並更新 {n} 筆（非 Final 的 cover 會維持空值）")
+                # 若你剛好同日重訓模型，這裡也順便清 cache
+                st.cache_data.clear()
+            except Exception as e:
+                st.error(f"結算失敗：{e}")
+    with cB:
+        st.caption("cover 定義：home_score + home_spread vs away_score；相等為 push(2)")
 
 st.divider()
 
@@ -1107,6 +1183,7 @@ for i in range(0, len(all_games_data), 3):
             with st.container(border=True):
                 st.subheader(g["label"])
                 gid = g["game_id"]
+                gid_key = f"{gid}__{i}_{j}"
 
                 sp_default = g["pin_home_sp"]
                 oh_default = g["pin_home_od"]
@@ -1116,25 +1193,25 @@ for i in range(0, len(all_games_data), 3):
                     "主隊盤口（主讓分填負｜主受讓填正）",
                     min_value=-60.0,
                     max_value=60.0,
-                    value=safe_float(st.session_state.get(f"sp_{gid}", sp_default), sp_default),
+                    value=safe_float(st.session_state.get(f"sp_{gid_key}", sp_default), sp_default),
                     step=0.5,
-                    key=f"sp_{gid}",
+                    key=f"sp_{gid_key}",
                 )
                 u_oh = st.number_input(
                     "主賠（可手動改運彩）",
                     min_value=1.01,
                     max_value=10.0,
-                    value=safe_float(st.session_state.get(f"oh_{gid}", oh_default), oh_default),
+                    value=safe_float(st.session_state.get(f"oh_{gid_key}", oh_default), oh_default),
                     step=0.01,
-                    key=f"oh_{gid}",
+                    key=f"oh_{gid_key}",
                 )
                 u_oa = st.number_input(
                     "客賠（可手動改運彩）",
                     min_value=1.01,
                     max_value=10.0,
-                    value=safe_float(st.session_state.get(f"oa_{gid}", oa_default), oa_default),
+                    value=safe_float(st.session_state.get(f"oa_{gid_key}", oa_default), oa_default),
                     step=0.01,
-                    key=f"oa_{gid}",
+                    key=f"oa_{gid_key}",
                 )
 
                 manual = (abs(float(u_sp) - sp_default) > 1e-9) or (abs(float(u_oh) - oh_default) > 1e-9) or (abs(float(u_oa) - oa_default) > 1e-9)
