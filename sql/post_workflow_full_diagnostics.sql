@@ -27,7 +27,10 @@ SELECT
   metrics
 FROM ranked
 WHERE rn = 1
-  AND model_name IN ('margin_base_model', 'margin_calibrator', 'cover_prob_calibrator')
+  AND (
+    model_name IN ('margin_base_model', 'margin_calibrator', 'cover_prob_calibrator')
+    OR model_name LIKE 'margin_calibrator_spread_%'
+  )
 ORDER BY model_name;
 
 -- 2) games freshness and status distribution
@@ -116,6 +119,8 @@ WITH base AS (
     game_date_us,
     cover,
     cover_prob,
+    pred_margin,
+    base_diff,
     margin,
     home_score,
     away_score,
@@ -129,7 +134,7 @@ scored AS (
     *,
     CASE WHEN cover IN (0,1) AND cover_prob IS NOT NULL THEN ABS(cover_prob - cover::float) END AS abs_prob_err,
     CASE WHEN cover IN (0,1) AND cover_prob IS NOT NULL THEN POWER((cover_prob - cover::float), 2) END AS brier_item,
-    CASE WHEN margin IS NOT NULL THEN ABS(margin - actual_margin) END AS margin_abs_err,
+    CASE WHEN COALESCE(pred_margin, base_diff) IS NOT NULL THEN ABS(COALESCE(pred_margin, base_diff) - actual_margin) END AS margin_abs_err,
     CASE
       WHEN cover IN (0,1) AND cover_prob IS NOT NULL THEN
         CASE WHEN (cover_prob >= 0.5 AND cover = 1) OR (cover_prob < 0.5 AND cover = 0) THEN 1 ELSE 0 END
@@ -158,6 +163,8 @@ WITH base AS (
     ABS(COALESCE(home_spread, 0)) AS abs_spread,
     cover,
     cover_prob,
+    pred_margin,
+    base_diff,
     margin,
     (home_score - away_score) AS actual_margin
   FROM public.games
@@ -179,7 +186,7 @@ expanded AS (
 SELECT
   slice_name,
   COUNT(*) AS rows,
-  ROUND(AVG(CASE WHEN margin IS NOT NULL THEN ABS(margin - actual_margin) END)::numeric, 4) AS mae_margin,
+  ROUND(AVG(CASE WHEN COALESCE(pred_margin, base_diff) IS NOT NULL THEN ABS(COALESCE(pred_margin, base_diff) - actual_margin) END)::numeric, 4) AS mae_margin,
   ROUND(AVG(CASE WHEN cover IN (0,1) AND cover_prob IS NOT NULL THEN POWER((cover_prob - cover::float),2) END)::numeric, 6) AS brier_cover,
   ROUND(AVG(CASE WHEN cover IN (0,1) AND cover_prob IS NOT NULL
                  THEN CASE WHEN (cover_prob>=0.5 AND cover=1) OR (cover_prob<0.5 AND cover=0) THEN 1 ELSE 0 END

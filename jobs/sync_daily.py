@@ -195,6 +195,10 @@ def ensure_schema():
                 cur.execute("ALTER TABLE public.games ADD COLUMN IF NOT EXISTS spread_move DOUBLE PRECISION;")
                 cur.execute("ALTER TABLE public.games ADD COLUMN IF NOT EXISTS home_odds_move DOUBLE PRECISION;")
                 cur.execute("ALTER TABLE public.games ADD COLUMN IF NOT EXISTS away_odds_move DOUBLE PRECISION;")
+                cur.execute("ALTER TABLE public.games ADD COLUMN IF NOT EXISTS pred_margin DOUBLE PRECISION;")
+                cur.execute("ALTER TABLE public.games ADD COLUMN IF NOT EXISTS open_home_spread DOUBLE PRECISION;")
+                cur.execute("ALTER TABLE public.games ADD COLUMN IF NOT EXISTS open_home_odds DOUBLE PRECISION;")
+                cur.execute("ALTER TABLE public.games ADD COLUMN IF NOT EXISTS open_away_odds DOUBLE PRECISION;")
         print("[INFO] schema ensured")
     finally:
         conn.close()
@@ -209,6 +213,37 @@ def cache_get(cache_key: str) -> Optional[dict]:
             if not row or not row[0]:
                 return None
             return json.loads(row[0])
+    finally:
+        conn.close()
+
+
+def get_existing_market_snapshot(game_ids: List[str]) -> Dict[str, dict]:
+    if not game_ids:
+        return {}
+    conn = db_connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT game_id, home_spread, home_odds, away_odds,
+                       open_home_spread, open_home_odds, open_away_odds
+                FROM public.games
+                WHERE game_id = ANY(%s)
+                """,
+                (game_ids,),
+            )
+            rows = cur.fetchall()
+        out = {}
+        for gid, hsp, hod, aod, ohsp, ohod, oaod in rows:
+            out[str(gid)] = {
+                "home_spread": hsp,
+                "home_odds": hod,
+                "away_odds": aod,
+                "open_home_spread": ohsp,
+                "open_home_odds": ohod,
+                "open_away_odds": oaod,
+            }
+        return out
     finally:
         conn.close()
 
@@ -578,7 +613,8 @@ UPSERT_COLUMNS = [
     "home_usage_proxy", "away_usage_proxy", "home_onoff_proxy", "away_onoff_proxy",
     "home_starters_out", "away_starters_out", "home_minutes_proj", "away_minutes_proj",
     "spread_move", "home_odds_move", "away_odds_move",
-    "base_diff", "f_edge", "cover_prob", "implied_prob", "edge_value", "ev", "pick_team", "odds_used",
+    "open_home_spread", "open_home_odds", "open_away_odds",
+    "pred_margin", "base_diff", "f_edge", "cover_prob", "implied_prob", "edge_value", "ev", "pick_team", "odds_used",
     "created_at_tw", "updated_at_tw", "game_date_tw",
 ]
 
@@ -686,7 +722,8 @@ def upsert_games(rows: List[dict]) -> None:
         home_usage_proxy, away_usage_proxy, home_onoff_proxy, away_onoff_proxy,
         home_starters_out, away_starters_out, home_minutes_proj, away_minutes_proj,
         spread_move, home_odds_move, away_odds_move,
-        base_diff, f_edge, cover_prob, implied_prob, edge_value, ev, pick_team, odds_used,
+        open_home_spread, open_home_odds, open_away_odds,
+        pred_margin, base_diff, f_edge, cover_prob, implied_prob, edge_value, ev, pick_team, odds_used,
         created_at_tw, updated_at_tw, game_date_tw
     ) VALUES (
         %(game_id)s, %(game_date_us)s, %(season)s,
@@ -699,7 +736,8 @@ def upsert_games(rows: List[dict]) -> None:
         %(home_usage_proxy)s, %(away_usage_proxy)s, %(home_onoff_proxy)s, %(away_onoff_proxy)s,
         %(home_starters_out)s, %(away_starters_out)s, %(home_minutes_proj)s, %(away_minutes_proj)s,
         %(spread_move)s, %(home_odds_move)s, %(away_odds_move)s,
-        %(base_diff)s, %(f_edge)s, %(cover_prob)s, %(implied_prob)s, %(edge_value)s, %(ev)s, %(pick_team)s, %(odds_used)s,
+        %(open_home_spread)s, %(open_home_odds)s, %(open_away_odds)s,
+        %(pred_margin)s, %(base_diff)s, %(f_edge)s, %(cover_prob)s, %(implied_prob)s, %(edge_value)s, %(ev)s, %(pick_team)s, %(odds_used)s,
         %(created_at_tw)s, %(updated_at_tw)s, %(game_date_tw)s
     )
     ON CONFLICT (game_id)
@@ -743,7 +781,11 @@ def upsert_games(rows: List[dict]) -> None:
         spread_move = COALESCE(EXCLUDED.spread_move, public.games.spread_move),
         home_odds_move = COALESCE(EXCLUDED.home_odds_move, public.games.home_odds_move),
         away_odds_move = COALESCE(EXCLUDED.away_odds_move, public.games.away_odds_move),
+        open_home_spread = COALESCE(public.games.open_home_spread, EXCLUDED.open_home_spread),
+        open_home_odds = COALESCE(public.games.open_home_odds, EXCLUDED.open_home_odds),
+        open_away_odds = COALESCE(public.games.open_away_odds, EXCLUDED.open_away_odds),
 
+        pred_margin = COALESCE(EXCLUDED.pred_margin, public.games.pred_margin),
         base_diff = COALESCE(EXCLUDED.base_diff, public.games.base_diff),
         f_edge = COALESCE(EXCLUDED.f_edge, public.games.f_edge),
         cover_prob = COALESCE(EXCLUDED.cover_prob, public.games.cover_prob),
@@ -993,6 +1035,9 @@ def main():
         if not games:
             continue
 
+        game_ids_for_day = [str(g.get("espn_event_id") or "").strip() or f"{d.strftime('%Y%m%d')}_{g['away_abbr']}_{g['home_abbr']}" for g in games]
+        existing_market_map = get_existing_market_snapshot(game_ids_for_day)
+
         rows: List[dict] = []
         game_day = d
 
@@ -1009,6 +1054,31 @@ def main():
                     oh = float(od["home_odds"])
                     oa = float(od["away_odds"])
                     src = od["line_source"]
+
+            game_id = str(g.get("espn_event_id") or "").strip() or f"{d.strftime('%Y%m%d')}_{away_abbr}_{home_abbr}"
+            prev = existing_market_map.get(game_id, {})
+
+            open_home_spread = prev.get("open_home_spread")
+            open_home_odds = prev.get("open_home_odds")
+            open_away_odds = prev.get("open_away_odds")
+
+            if open_home_spread is None:
+                open_home_spread = prev.get("home_spread")
+            if open_home_odds is None:
+                open_home_odds = prev.get("home_odds")
+            if open_away_odds is None:
+                open_away_odds = prev.get("away_odds")
+
+            if open_home_spread is None:
+                open_home_spread = sp
+            if open_home_odds is None:
+                open_home_odds = oh
+            if open_away_odds is None:
+                open_away_odds = oa
+
+            spread_move = float(sp - open_home_spread) if (sp is not None and open_home_spread is not None) else 0.0
+            home_odds_move = float(oh - open_home_odds) if (oh is not None and open_home_odds is not None) else 0.0
+            away_odds_move = float(oa - open_away_odds) if (oa is not None and open_away_odds is not None) else 0.0
 
             # features (for base model): we want them even for past games
             home_pkg = {"pts_sum": None, "impact_mean": None, "b2b": None, "recent_w": None, "ts_pct": None, "orb_rate": None, "usage_proxy": None, "onoff_proxy": None}
@@ -1027,9 +1097,9 @@ def main():
                     home_spread=sp,
                     home_odds=oh,
                     away_odds=oa,
-                    spread_move=0.0,
-                    home_odds_move=0.0,
-                    away_odds_move=0.0,
+                    spread_move=spread_move,
+                    home_odds_move=home_odds_move,
+                    away_odds_move=away_odds_move,
                 )
 
                 if base_diff is None:
@@ -1039,8 +1109,6 @@ def main():
                     mm = compute_market_metrics(home_abbr, away_abbr, sp, oh, oa, base_diff, calibrator)
                 else:
                     mm = compute_data_only_metrics(home_abbr, away_abbr, base_diff)
-
-            game_id = str(g.get("espn_event_id") or "").strip() or f"{d.strftime('%Y%m%d')}_{away_abbr}_{home_abbr}"
 
             rows.append({
                 "game_id": game_id,
@@ -1081,10 +1149,14 @@ def main():
                 "away_starters_out": away_pkg.get("starters_out"),
                 "home_minutes_proj": home_pkg.get("minutes_proj"),
                 "away_minutes_proj": away_pkg.get("minutes_proj"),
-                "spread_move": 0.0,
-                "home_odds_move": 0.0,
-                "away_odds_move": 0.0,
+                "spread_move": spread_move,
+                "home_odds_move": home_odds_move,
+                "away_odds_move": away_odds_move,
+                "open_home_spread": open_home_spread,
+                "open_home_odds": open_home_odds,
+                "open_away_odds": open_away_odds,
 
+                "pred_margin": base_diff,
                 "base_diff": base_diff,
                 "f_edge": mm["f_edge"],
                 "cover_prob": mm["cover_prob"],

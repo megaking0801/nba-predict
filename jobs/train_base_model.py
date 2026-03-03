@@ -345,6 +345,14 @@ def main():
         feature_health = compute_feature_health_report(X, game_dates)
         slices = slice_eval(y_margin, pred_margin, y_cover, p_cover, X)
 
+        # P2: bucket-specific calibrators by spread bands (if enough rows)
+        bucket_defs = {
+            "spread_0_3": np.abs(X[:, spread_idx]) < 3,
+            "spread_3_6": (np.abs(X[:, spread_idx]) >= 3) & (np.abs(X[:, spread_idx]) < 6),
+            "spread_6p": np.abs(X[:, spread_idx]) >= 6,
+        }
+        bucket_cal_metrics = {}
+
         metrics_margin = {
             "mae_in_sample": mae,
             "rows": int(len(rows)),
@@ -368,6 +376,33 @@ def main():
                 # keep both names for backward compatibility
                 upsert_model(conn2, "margin_calibrator", calibrator, int(cover_mask.sum()), metrics_cal)
                 upsert_model(conn2, "cover_prob_calibrator", calibrator, int(cover_mask.sum()), metrics_cal)
+
+            for bname, bmask_all in bucket_defs.items():
+                bmask = cover_mask & bmask_all
+                b_rows = int(bmask.sum())
+                if b_rows < max(80, min_rows // 4):
+                    bucket_cal_metrics[bname] = {"rows": b_rows, "trained": False}
+                    continue
+                bcal = IsotonicRegression(out_of_bounds="clip")
+                bcal.fit(pred_edge[bmask], y_cover[bmask])
+                bp = bcal.predict(pred_edge[bmask])
+                bbrier = float(brier_score_loss(y_cover[bmask].astype(int), bp))
+                bacc = float(np.mean((bp >= 0.5) == (y_cover[bmask] == 1.0)))
+                bmet = {
+                    "rows": b_rows,
+                    "trained": True,
+                    "bucket": bname,
+                    "brier_in_sample": bbrier,
+                    "acc_in_sample": bacc,
+                    "calibration_input": "pred_margin_plus_home_spread",
+                }
+                upsert_model(conn2, f"margin_calibrator_{bname}", bcal, b_rows, bmet)
+                bucket_cal_metrics[bname] = bmet
+
+        # refresh margin metrics with bucket calibrator status
+        metrics_margin["bucket_calibrators"] = bucket_cal_metrics
+        with db_connect() as conn3:
+            upsert_model(conn3, "margin_base_model", margin_model, len(rows), metrics_margin)
 
         print(f"[OK] trained margin_base_model rows={len(rows)} mae={mae:.3f}")
         if calibrator is not None:
