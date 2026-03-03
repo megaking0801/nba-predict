@@ -265,21 +265,21 @@ def slice_eval(y_margin, pred_margin, y_cover01, p_cover, X):
 
 def upsert_model(conn, model_name, payload_obj, trained_rows, metrics):
     payload = base64.b64encode(pickle.dumps(payload_obj)).decode("utf-8")
-    with conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                INSERT INTO public.model_registry(model_name, model_version, payload_base64, trained_rows, metrics, created_at_tw)
-                VALUES (%s,%s,%s,%s,%s,%s)
-                ON CONFLICT(model_name) DO UPDATE SET
-                  model_version=EXCLUDED.model_version,
-                  payload_base64=EXCLUDED.payload_base64,
-                  trained_rows=EXCLUDED.trained_rows,
-                  metrics=EXCLUDED.metrics,
-                  created_at_tw=EXCLUDED.created_at_tw
-                """,
-                (model_name, now_tw_str(), payload, int(trained_rows), json.dumps(metrics), now_tw_str())
-            )
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO public.model_registry(model_name, model_version, payload_base64, trained_rows, metrics, created_at_tw)
+            VALUES (%s,%s,%s,%s,%s,%s)
+            ON CONFLICT(model_name) DO UPDATE SET
+              model_version=EXCLUDED.model_version,
+              payload_base64=EXCLUDED.payload_base64,
+              trained_rows=EXCLUDED.trained_rows,
+              metrics=EXCLUDED.metrics,
+              created_at_tw=EXCLUDED.created_at_tw
+            """,
+            (model_name, now_tw_str(), payload, int(trained_rows), json.dumps(metrics), now_tw_str())
+        )
+    conn.commit()
 
 
 def main():
