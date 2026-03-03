@@ -946,9 +946,20 @@ def get_market_inputs_for_game(g):
     oh_default = g["pin_home_od"]
     oa_default = g["pin_away_od"]
 
-    sp = safe_float(st.session_state.get(f"sp_{gid}", sp_default), sp_default)
-    oh = safe_float(st.session_state.get(f"oh_{gid}", oh_default), oh_default)
-    oa = safe_float(st.session_state.get(f"oa_{gid}", oa_default), oa_default)
+    def _pick_state(prefix: str, default_val: float) -> float:
+        direct_key = f"{prefix}_{gid}"
+        if direct_key in st.session_state:
+            return safe_float(st.session_state.get(direct_key), default_val)
+
+        cand = [k for k in st.session_state.keys() if str(k).startswith(f"{prefix}_{gid}__")]
+        if cand:
+            cand.sort()
+            return safe_float(st.session_state.get(cand[-1]), default_val)
+        return safe_float(default_val, default_val)
+
+    sp = _pick_state("sp", sp_default)
+    oh = _pick_state("oh", oh_default)
+    oa = _pick_state("oa", oa_default)
 
     manual = (abs(sp - sp_default) > 1e-9) or (abs(oh - oh_default) > 1e-9) or (abs(oa - oa_default) > 1e-9)
 
@@ -1135,8 +1146,6 @@ st.divider()
 # =========================================================
 st.header("🎯 全部場次與實時計算")
 
-ui_seen_game_ids: dict[str, int] = {}
-
 for i in range(0, len(all_games_data), 3):
     cols = st.columns(3)
     for j, g in enumerate(all_games_data[i : i + 3]):
@@ -1144,8 +1153,7 @@ for i in range(0, len(all_games_data), 3):
             with st.container(border=True):
                 st.subheader(g["label"])
                 gid = g["game_id"]
-                ui_seen_game_ids[gid] = ui_seen_game_ids.get(gid, 0) + 1
-                gid_key = f"{gid}__{ui_seen_game_ids[gid]}"
+                gid_key = f"{gid}__{i}_{j}"
 
                 sp_default = g["pin_home_sp"]
                 oh_default = g["pin_home_od"]
@@ -1155,7 +1163,7 @@ for i in range(0, len(all_games_data), 3):
                     "主隊盤口（主讓分填負｜主受讓填正）",
                     min_value=-60.0,
                     max_value=60.0,
-                    value=safe_float(st.session_state.get(f"sp_{gid}", sp_default), sp_default),
+                    value=safe_float(st.session_state.get(f"sp_{gid_key}", sp_default), sp_default),
                     step=0.5,
                     key=f"sp_{gid_key}",
                 )
@@ -1163,7 +1171,7 @@ for i in range(0, len(all_games_data), 3):
                     "主賠（可手動改運彩）",
                     min_value=1.01,
                     max_value=10.0,
-                    value=safe_float(st.session_state.get(f"oh_{gid}", oh_default), oh_default),
+                    value=safe_float(st.session_state.get(f"oh_{gid_key}", oh_default), oh_default),
                     step=0.01,
                     key=f"oh_{gid_key}",
                 )
@@ -1171,7 +1179,7 @@ for i in range(0, len(all_games_data), 3):
                     "客賠（可手動改運彩）",
                     min_value=1.01,
                     max_value=10.0,
-                    value=safe_float(st.session_state.get(f"oa_{gid}", oa_default), oa_default),
+                    value=safe_float(st.session_state.get(f"oa_{gid_key}", oa_default), oa_default),
                     step=0.01,
                     key=f"oa_{gid_key}",
                 )
