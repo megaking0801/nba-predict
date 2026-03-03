@@ -1135,6 +1135,8 @@ st.divider()
 # =========================================================
 st.header("🎯 全部場次與實時計算")
 
+ui_seen_game_ids: dict[str, int] = {}
+
 for i in range(0, len(all_games_data), 3):
     cols = st.columns(3)
     for j, g in enumerate(all_games_data[i : i + 3]):
@@ -1142,6 +1144,8 @@ for i in range(0, len(all_games_data), 3):
             with st.container(border=True):
                 st.subheader(g["label"])
                 gid = g["game_id"]
+                ui_seen_game_ids[gid] = ui_seen_game_ids.get(gid, 0) + 1
+                gid_key = f"{gid}__{ui_seen_game_ids[gid]}"
 
                 sp_default = g["pin_home_sp"]
                 oh_default = g["pin_home_od"]
@@ -1153,7 +1157,7 @@ for i in range(0, len(all_games_data), 3):
                     max_value=60.0,
                     value=safe_float(st.session_state.get(f"sp_{gid}", sp_default), sp_default),
                     step=0.5,
-                    key=f"sp_{gid}",
+                    key=f"sp_{gid_key}",
                 )
                 u_oh = st.number_input(
                     "主賠（可手動改運彩）",
@@ -1161,7 +1165,7 @@ for i in range(0, len(all_games_data), 3):
                     max_value=10.0,
                     value=safe_float(st.session_state.get(f"oh_{gid}", oh_default), oh_default),
                     step=0.01,
-                    key=f"oh_{gid}",
+                    key=f"oh_{gid_key}",
                 )
                 u_oa = st.number_input(
                     "客賠（可手動改運彩）",
@@ -1169,7 +1173,7 @@ for i in range(0, len(all_games_data), 3):
                     max_value=10.0,
                     value=safe_float(st.session_state.get(f"oa_{gid}", oa_default), oa_default),
                     step=0.01,
-                    key=f"oa_{gid}",
+                    key=f"oa_{gid_key}",
                 )
 
                 manual = (abs(float(u_sp) - sp_default) > 1e-9) or (abs(float(u_oh) - oh_default) > 1e-9) or (abs(float(u_oa) - oa_default) > 1e-9)
