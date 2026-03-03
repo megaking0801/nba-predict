@@ -547,7 +547,7 @@ def clamp01(x: float, lo: float = 0.001, hi: float = 0.999) -> float:
     if x > hi: return hi
     return x
 
-def predict_p_raw(base_model, feats: dict, fallback_edge: float) -> float:
+def predict_p_raw(base_model, feats: dict, fallback_edge: float, model_info: dict | None = None) -> float:
     """
     base model exists => predict_proba
     else => fallback sigmoid from f_edge
@@ -565,7 +565,12 @@ def predict_p_raw(base_model, feats: dict, fallback_edge: float) -> float:
         # regressor / generic predictor fallback (e.g. margin-like output)
         if hasattr(base_model, "predict"):
             try:
-                X = pd.DataFrame([feats])
+                model_feats = ((model_info or {}).get("metrics") or {}).get("features") or []
+                if isinstance(model_feats, list) and len(model_feats) > 0:
+                    row = {k: float(feats.get(k) or 0.0) for k in model_feats}
+                    X = pd.DataFrame([row], columns=model_feats)
+                else:
+                    X = pd.DataFrame([feats])
                 pred = float(base_model.predict(X)[0])
                 # If model output already looks like probability, use it directly
                 if 0.0 <= pred <= 1.0:
@@ -577,14 +582,16 @@ def predict_p_raw(base_model, feats: dict, fallback_edge: float) -> float:
 
     return clamp01(calc_cover_prob(fallback_edge))
 
-def calibrate_p(iso_model, p_raw: float) -> float:
+def calibrate_p(iso_model, p_raw: float, edge_input: float | None = None, iso_info: dict | None = None) -> float:
     """
     calibrator exists => iso.predict
     else => return p_raw
     """
     if iso_model is not None:
         try:
-            p = float(iso_model.predict([float(p_raw)])[0])
+            cal_input_mode = ((iso_info or {}).get("metrics") or {}).get("calibration_input")
+            x = float(edge_input) if (cal_input_mode == "pred_margin_plus_home_spread" and edge_input is not None) else float(p_raw)
+            p = float(iso_model.predict([x])[0])
             return clamp01(p)
         except Exception:
             pass
@@ -1141,8 +1148,8 @@ def compute_metrics(g, home_spread_input, home_odds, away_odds, base_model, iso_
         "f_edge": float(f_edge),
     }
 
-    p_raw = predict_p_raw(base_model, feats, fallback_edge=f_edge)
-    p_cal = calibrate_p(iso_model, p_raw)
+    p_raw = predict_p_raw(base_model, feats, fallback_edge=f_edge, model_info=base_info)
+    p_cal = calibrate_p(iso_model, p_raw, edge_input=f_edge, iso_info=iso_info)
 
     pick_team = g["h_cn"] if f_edge > 0 else g["a_cn"]
     odds = home_odds if f_edge > 0 else away_odds

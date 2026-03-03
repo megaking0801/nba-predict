@@ -188,6 +188,13 @@ def ensure_schema():
                 cur.execute("ALTER TABLE public.games ADD COLUMN IF NOT EXISTS away_usage_proxy DOUBLE PRECISION;")
                 cur.execute("ALTER TABLE public.games ADD COLUMN IF NOT EXISTS home_onoff_proxy DOUBLE PRECISION;")
                 cur.execute("ALTER TABLE public.games ADD COLUMN IF NOT EXISTS away_onoff_proxy DOUBLE PRECISION;")
+                cur.execute("ALTER TABLE public.games ADD COLUMN IF NOT EXISTS home_starters_out DOUBLE PRECISION;")
+                cur.execute("ALTER TABLE public.games ADD COLUMN IF NOT EXISTS away_starters_out DOUBLE PRECISION;")
+                cur.execute("ALTER TABLE public.games ADD COLUMN IF NOT EXISTS home_minutes_proj DOUBLE PRECISION;")
+                cur.execute("ALTER TABLE public.games ADD COLUMN IF NOT EXISTS away_minutes_proj DOUBLE PRECISION;")
+                cur.execute("ALTER TABLE public.games ADD COLUMN IF NOT EXISTS spread_move DOUBLE PRECISION;")
+                cur.execute("ALTER TABLE public.games ADD COLUMN IF NOT EXISTS home_odds_move DOUBLE PRECISION;")
+                cur.execute("ALTER TABLE public.games ADD COLUMN IF NOT EXISTS away_odds_move DOUBLE PRECISION;")
         print("[INFO] schema ensured")
     finally:
         conn.close()
@@ -221,7 +228,7 @@ def load_models() -> Tuple[Optional[Any], Optional[Any]]:
             obj = pickle.loads(base64.b64decode(b64))
             if name == "margin_base_model":
                 base_model = obj
-            elif name == "cover_prob_calibrator":
+            elif name in ("margin_calibrator", "cover_prob_calibrator"):
                 calibrator = obj
         return base_model, calibrator
     except Exception as e:
@@ -486,6 +493,10 @@ MODEL_FEATURE_ORDER = [
     "home_orb_rate", "away_orb_rate",
     "home_usage_proxy", "away_usage_proxy",
     "home_onoff_proxy", "away_onoff_proxy",
+    "home_starters_out", "away_starters_out",
+    "home_minutes_proj", "away_minutes_proj",
+    "home_spread", "home_odds", "away_odds",
+    "spread_move", "home_odds_move", "away_odds_move",
 ]
 
 def fallback_cover_prob(edge_points_signed: float) -> float:
@@ -565,6 +576,8 @@ UPSERT_COLUMNS = [
     "home_b2b", "away_b2b", "home_recent_w", "away_recent_w",
     "home_ts_pct", "away_ts_pct", "home_orb_rate", "away_orb_rate",
     "home_usage_proxy", "away_usage_proxy", "home_onoff_proxy", "away_onoff_proxy",
+    "home_starters_out", "away_starters_out", "home_minutes_proj", "away_minutes_proj",
+    "spread_move", "home_odds_move", "away_odds_move",
     "base_diff", "f_edge", "cover_prob", "implied_prob", "edge_value", "ev", "pick_team", "odds_used",
     "created_at_tw", "updated_at_tw", "game_date_tw",
 ]
@@ -671,6 +684,8 @@ def upsert_games(rows: List[dict]) -> None:
         home_b2b, away_b2b, home_recent_w, away_recent_w,
         home_ts_pct, away_ts_pct, home_orb_rate, away_orb_rate,
         home_usage_proxy, away_usage_proxy, home_onoff_proxy, away_onoff_proxy,
+        home_starters_out, away_starters_out, home_minutes_proj, away_minutes_proj,
+        spread_move, home_odds_move, away_odds_move,
         base_diff, f_edge, cover_prob, implied_prob, edge_value, ev, pick_team, odds_used,
         created_at_tw, updated_at_tw, game_date_tw
     ) VALUES (
@@ -682,6 +697,8 @@ def upsert_games(rows: List[dict]) -> None:
         %(home_b2b)s, %(away_b2b)s, %(home_recent_w)s, %(away_recent_w)s,
         %(home_ts_pct)s, %(away_ts_pct)s, %(home_orb_rate)s, %(away_orb_rate)s,
         %(home_usage_proxy)s, %(away_usage_proxy)s, %(home_onoff_proxy)s, %(away_onoff_proxy)s,
+        %(home_starters_out)s, %(away_starters_out)s, %(home_minutes_proj)s, %(away_minutes_proj)s,
+        %(spread_move)s, %(home_odds_move)s, %(away_odds_move)s,
         %(base_diff)s, %(f_edge)s, %(cover_prob)s, %(implied_prob)s, %(edge_value)s, %(ev)s, %(pick_team)s, %(odds_used)s,
         %(created_at_tw)s, %(updated_at_tw)s, %(game_date_tw)s
     )
@@ -719,6 +736,13 @@ def upsert_games(rows: List[dict]) -> None:
         away_usage_proxy = COALESCE(EXCLUDED.away_usage_proxy, public.games.away_usage_proxy),
         home_onoff_proxy = COALESCE(EXCLUDED.home_onoff_proxy, public.games.home_onoff_proxy),
         away_onoff_proxy = COALESCE(EXCLUDED.away_onoff_proxy, public.games.away_onoff_proxy),
+        home_starters_out = COALESCE(EXCLUDED.home_starters_out, public.games.home_starters_out),
+        away_starters_out = COALESCE(EXCLUDED.away_starters_out, public.games.away_starters_out),
+        home_minutes_proj = COALESCE(EXCLUDED.home_minutes_proj, public.games.home_minutes_proj),
+        away_minutes_proj = COALESCE(EXCLUDED.away_minutes_proj, public.games.away_minutes_proj),
+        spread_move = COALESCE(EXCLUDED.spread_move, public.games.spread_move),
+        home_odds_move = COALESCE(EXCLUDED.home_odds_move, public.games.home_odds_move),
+        away_odds_move = COALESCE(EXCLUDED.away_odds_move, public.games.away_odds_move),
 
         base_diff = COALESCE(EXCLUDED.base_diff, public.games.base_diff),
         f_edge = COALESCE(EXCLUDED.f_edge, public.games.f_edge),
@@ -792,9 +816,11 @@ def compute_team_package(abbr: str, season: str, ps_df: pd.DataFrame, inj_df: pd
             team_id = int(rows.iloc[0]["TEAM_ID"])
 
     active = pd.DataFrame()
+    team_all = pd.DataFrame()
     if team_id is not None and "TEAM_ID" in ps_df.columns and "NORM" in ps_df.columns:
+        team_all = ps_df[(ps_df["TEAM_ID"] == team_id)].copy()
         active = (
-            ps_df[(ps_df["TEAM_ID"] == team_id) & (~ps_df["NORM"].isin(out_list))]
+            team_all[(~team_all["NORM"].isin(out_list))]
             .sort_values("IMPACT", ascending=False)
             .copy()
         )
@@ -811,6 +837,13 @@ def compute_team_package(abbr: str, season: str, ps_df: pd.DataFrame, inj_df: pd
     orb_rate = float(team_oreb / max(1.0, (team_oreb + team_dreb)))
     usage_proxy = float(team_fga + 0.44 * team_fta + team_tov)
     onoff_proxy = float(active["PLUS_MINUS"].mean()) if (not active.empty and "PLUS_MINUS" in active.columns) else 0.0
+    minutes_proj = float(active["MIN"].sort_values(ascending=False).head(8).sum()) if (not active.empty and "MIN" in active.columns) else 0.0
+
+    starters_out = 0.0
+    if (not team_all.empty) and ("NORM" in team_all.columns):
+        top5 = team_all.sort_values("IMPACT", ascending=False).head(5)
+        if not top5.empty:
+            starters_out = float(top5["NORM"].isin(set(out_list)).sum())
 
     # 3) team context from cached log
     log_payload = cache_get(f"team_log:{season}:{abbr}") or {}
@@ -827,6 +860,8 @@ def compute_team_package(abbr: str, season: str, ps_df: pd.DataFrame, inj_df: pd
         "orb_rate": orb_rate,
         "usage_proxy": usage_proxy,
         "onoff_proxy": onoff_proxy,
+        "starters_out": starters_out,
+        "minutes_proj": minutes_proj,
     }
 
 
@@ -834,6 +869,12 @@ def predict_margin_from_model(
     base_model: Optional[Any],
     home_pkg: Dict[str, Any],
     away_pkg: Dict[str, Any],
+    home_spread: Optional[float] = None,
+    home_odds: Optional[float] = None,
+    away_odds: Optional[float] = None,
+    spread_move: float = 0.0,
+    home_odds_move: float = 0.0,
+    away_odds_move: float = 0.0,
 ) -> Optional[float]:
     if base_model is None:
         return None
@@ -855,6 +896,16 @@ def predict_margin_from_model(
         "away_usage_proxy": float(away_pkg.get("usage_proxy") or 0.0),
         "home_onoff_proxy": float(home_pkg.get("onoff_proxy") or 0.0),
         "away_onoff_proxy": float(away_pkg.get("onoff_proxy") or 0.0),
+        "home_starters_out": float(home_pkg.get("starters_out") or 0.0),
+        "away_starters_out": float(away_pkg.get("starters_out") or 0.0),
+        "home_minutes_proj": float(home_pkg.get("minutes_proj") or 0.0),
+        "away_minutes_proj": float(away_pkg.get("minutes_proj") or 0.0),
+        "home_spread": float(home_spread or 0.0),
+        "home_odds": float(home_odds or 1.9),
+        "away_odds": float(away_odds or 1.9),
+        "spread_move": float(spread_move or 0.0),
+        "home_odds_move": float(home_odds_move or 0.0),
+        "away_odds_move": float(away_odds_move or 0.0),
     }
     feature_row = [feature_map[k] for k in MODEL_FEATURE_ORDER]
     try:
@@ -969,7 +1020,17 @@ def main():
                 home_pkg = compute_team_package(home_abbr, season, ps_df, inj_df, game_day)
                 away_pkg = compute_team_package(away_abbr, season, ps_df, inj_df, game_day)
 
-                base_diff = predict_margin_from_model(base_model, home_pkg, away_pkg)
+                base_diff = predict_margin_from_model(
+                    base_model,
+                    home_pkg,
+                    away_pkg,
+                    home_spread=sp,
+                    home_odds=oh,
+                    away_odds=oa,
+                    spread_move=0.0,
+                    home_odds_move=0.0,
+                    away_odds_move=0.0,
+                )
 
                 if base_diff is None:
                     print(f"[WARN] margin_base_model unavailable; skip edge metrics game={away_abbr}@{home_abbr}", flush=True)
@@ -1016,6 +1077,13 @@ def main():
                 "away_usage_proxy": away_pkg.get("usage_proxy"),
                 "home_onoff_proxy": home_pkg.get("onoff_proxy"),
                 "away_onoff_proxy": away_pkg.get("onoff_proxy"),
+                "home_starters_out": home_pkg.get("starters_out"),
+                "away_starters_out": away_pkg.get("starters_out"),
+                "home_minutes_proj": home_pkg.get("minutes_proj"),
+                "away_minutes_proj": away_pkg.get("minutes_proj"),
+                "spread_move": 0.0,
+                "home_odds_move": 0.0,
+                "away_odds_move": 0.0,
 
                 "base_diff": base_diff,
                 "f_edge": mm["f_edge"],
