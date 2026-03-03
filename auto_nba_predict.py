@@ -428,6 +428,19 @@ def load_model_from_registry(model_name: str):
     except Exception as e:
         return None, {"ok": False, "reason": f"load_error: {e}"}
 
+def load_first_available_model(model_names: list[str]):
+    last_info = {"ok": False, "reason": "no_model_candidates"}
+    for name in model_names:
+        model, info = load_model_from_registry(name)
+        if info.get("ok"):
+            info = dict(info)
+            info["selected_from"] = model_names
+            return model, info
+        last_info = info
+    merged = dict(last_info)
+    merged["selected_from"] = model_names
+    return None, merged
+
 def clamp01(x: float, lo: float = 0.001, hi: float = 0.999) -> float:
     try:
         x = float(x)
@@ -443,12 +456,28 @@ def predict_p_raw(base_model, feats: dict, fallback_edge: float) -> float:
     else => fallback sigmoid from f_edge
     """
     if base_model is not None:
-        try:
-            X = pd.DataFrame([feats])
-            p = float(base_model.predict_proba(X)[0, 1])
-            return clamp01(p)
-        except Exception:
-            pass
+        # legacy classifier path
+        if hasattr(base_model, "predict_proba"):
+            try:
+                X = pd.DataFrame([feats])
+                p = float(base_model.predict_proba(X)[0, 1])
+                return clamp01(p)
+            except Exception:
+                pass
+
+        # regressor / generic predictor fallback (e.g. margin-like output)
+        if hasattr(base_model, "predict"):
+            try:
+                X = pd.DataFrame([feats])
+                pred = float(base_model.predict(X)[0])
+                # If model output already looks like probability, use it directly
+                if 0.0 <= pred <= 1.0:
+                    return clamp01(pred)
+                # Otherwise treat as margin-like signal and map by logistic curve
+                return clamp01(calc_cover_prob(pred + float(feats.get("home_spread") or 0.0)))
+            except Exception:
+                pass
+
     return clamp01(calc_cover_prob(fallback_edge))
 
 def calibrate_p(iso_model, p_raw: float) -> float:
@@ -738,9 +767,9 @@ except Exception as e:
     st.error(f"❌ Supabase DB 初始化失敗：{e}")
     st.stop()
 
-# NEW: load models
-base_model, base_info = load_model_from_registry("cover_prob_base_model")
-iso_model, iso_info   = load_model_from_registry("cover_prob_calibrator")
+# NEW: load models (compatible with both legacy cover-prob and new margin pipeline names)
+base_model, base_info = load_first_available_model(["cover_prob_base_model", "margin_base_model"])
+iso_model, iso_info   = load_first_available_model(["cover_prob_calibrator", "margin_calibrator"])
 
 h1, h2 = st.columns([0.8, 0.2])
 with h1:
@@ -753,12 +782,18 @@ with h2:
         st.rerun()
     with st.popover("🧠 模型狀態 / 判讀指南"):
         if base_info.get("ok"):
-            st.success(f"✅ Base model 已載入：{base_info.get('model_version')} | rows={base_info.get('trained_rows')}")
+            st.success(
+                f"✅ Base model 已載入：{base_info.get('model_name')} | "
+                f"{base_info.get('model_version')} | rows={base_info.get('trained_rows')}"
+            )
         else:
             st.warning(f"⚠️ Base model 未載入（改用 fallback sigmoid）。原因：{base_info.get('reason')}")
 
         if iso_info.get("ok"):
-            st.success(f"✅ Calibrator 已載入：{iso_info.get('model_version')} | rows={iso_info.get('trained_rows')}")
+            st.success(
+                f"✅ Calibrator 已載入：{iso_info.get('model_name')} | "
+                f"{iso_info.get('model_version')} | rows={iso_info.get('trained_rows')}"
+            )
         else:
             st.warning(f"⚠️ Calibrator 未載入（p_cal=p_raw）。原因：{iso_info.get('reason')}")
 
@@ -1100,6 +1135,8 @@ st.divider()
 # =========================================================
 st.header("🎯 全部場次與實時計算")
 
+ui_seen_game_ids: dict[str, int] = {}
+
 for i in range(0, len(all_games_data), 3):
     cols = st.columns(3)
     for j, g in enumerate(all_games_data[i : i + 3]):
@@ -1107,6 +1144,8 @@ for i in range(0, len(all_games_data), 3):
             with st.container(border=True):
                 st.subheader(g["label"])
                 gid = g["game_id"]
+                ui_seen_game_ids[gid] = ui_seen_game_ids.get(gid, 0) + 1
+                gid_key = f"{gid}__{ui_seen_game_ids[gid]}"
 
                 sp_default = g["pin_home_sp"]
                 oh_default = g["pin_home_od"]
@@ -1118,7 +1157,7 @@ for i in range(0, len(all_games_data), 3):
                     max_value=60.0,
                     value=safe_float(st.session_state.get(f"sp_{gid}", sp_default), sp_default),
                     step=0.5,
-                    key=f"sp_{gid}",
+                    key=f"sp_{gid_key}",
                 )
                 u_oh = st.number_input(
                     "主賠（可手動改運彩）",
@@ -1126,7 +1165,7 @@ for i in range(0, len(all_games_data), 3):
                     max_value=10.0,
                     value=safe_float(st.session_state.get(f"oh_{gid}", oh_default), oh_default),
                     step=0.01,
-                    key=f"oh_{gid}",
+                    key=f"oh_{gid_key}",
                 )
                 u_oa = st.number_input(
                     "客賠（可手動改運彩）",
@@ -1134,7 +1173,7 @@ for i in range(0, len(all_games_data), 3):
                     max_value=10.0,
                     value=safe_float(st.session_state.get(f"oa_{gid}", oa_default), oa_default),
                     step=0.01,
-                    key=f"oa_{gid}",
+                    key=f"oa_{gid_key}",
                 )
 
                 manual = (abs(float(u_sp) - sp_default) > 1e-9) or (abs(float(u_oh) - oh_default) > 1e-9) or (abs(float(u_oa) - oa_default) > 1e-9)
