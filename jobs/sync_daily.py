@@ -628,7 +628,10 @@ INSERT INTO public.games (
     home_b2b, away_b2b, home_recent_w, away_recent_w,
     home_ts_pct, away_ts_pct, home_orb_rate, away_orb_rate,
     home_usage_proxy, away_usage_proxy, home_onoff_proxy, away_onoff_proxy,
-    base_diff, f_edge, cover_prob, implied_prob, edge_value, ev, pick_team, odds_used,
+    home_starters_out, away_starters_out, home_minutes_proj, away_minutes_proj,
+    spread_move, home_odds_move, away_odds_move,
+    open_home_spread, open_home_odds, open_away_odds,
+    pred_margin, base_diff, f_edge, cover_prob, implied_prob, edge_value, ev, pick_team, odds_used,
     created_at_tw, updated_at_tw, game_date_tw
 ) VALUES %s
 ON CONFLICT (game_id)
@@ -665,7 +668,18 @@ DO UPDATE SET
     away_usage_proxy = COALESCE(EXCLUDED.away_usage_proxy, public.games.away_usage_proxy),
     home_onoff_proxy = COALESCE(EXCLUDED.home_onoff_proxy, public.games.home_onoff_proxy),
     away_onoff_proxy = COALESCE(EXCLUDED.away_onoff_proxy, public.games.away_onoff_proxy),
+    home_starters_out = COALESCE(EXCLUDED.home_starters_out, public.games.home_starters_out),
+    away_starters_out = COALESCE(EXCLUDED.away_starters_out, public.games.away_starters_out),
+    home_minutes_proj = COALESCE(EXCLUDED.home_minutes_proj, public.games.home_minutes_proj),
+    away_minutes_proj = COALESCE(EXCLUDED.away_minutes_proj, public.games.away_minutes_proj),
+    spread_move = COALESCE(EXCLUDED.spread_move, public.games.spread_move),
+    home_odds_move = COALESCE(EXCLUDED.home_odds_move, public.games.home_odds_move),
+    away_odds_move = COALESCE(EXCLUDED.away_odds_move, public.games.away_odds_move),
+    open_home_spread = COALESCE(public.games.open_home_spread, EXCLUDED.open_home_spread),
+    open_home_odds = COALESCE(public.games.open_home_odds, EXCLUDED.open_home_odds),
+    open_away_odds = COALESCE(public.games.open_away_odds, EXCLUDED.open_away_odds),
 
+    pred_margin = COALESCE(EXCLUDED.pred_margin, public.games.pred_margin),
     base_diff = COALESCE(EXCLUDED.base_diff, public.games.base_diff),
     f_edge = COALESCE(EXCLUDED.f_edge, public.games.f_edge),
     cover_prob = COALESCE(EXCLUDED.cover_prob, public.games.cover_prob),
