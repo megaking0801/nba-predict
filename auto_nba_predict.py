@@ -1082,6 +1082,17 @@ try:
 except Exception as e:
     st.warning(f"⚠️ DB 自動建檔失敗（不影響前端運作）：{e}")
 
+with st.expander("ℹ️ 系統主流程 / 數據分析邏輯（點我看）", expanded=False):
+    st.markdown(
+        "1. **賽程與盤口**：抓取今日賽程 + Pinnacle 盤口（若無則 fallback）。\n"
+        "2. **球員與傷病**：整合球員 per-game 與傷病，先做可出賽名單過濾。\n"
+        "3. **特徵計算**：為每場建構隊伍特徵（分數、impact、近況、b2b 等）並推導 `base_diff`。\n"
+        "4. **機率推論**：先算 `p_raw`，再用 calibrator 得到 `p_cal`。\n"
+        "5. **價值計算**：由 `p_cal` 與賠率算 `implied_prob / edge_value / EV`，輸出推薦。\n"
+        "6. **資料回寫**：頁面載入與你手動改盤時，會自動 upsert 回 DB。"
+    )
+    st.caption("補充：下方『更新賽果/結算』只在你要立即手動結算 final 比賽時使用；平常可不按。")
+
 # =========================================================
 # 12) 🔥 今日最能買（候選池=真盤；排序=你輸入）
 # =========================================================
@@ -1140,21 +1151,23 @@ else:
                 st.caption(f"p_raw={item['p_raw']:.3f} → p_cal={item['p_cal']:.3f}")
 
 # =========================================================
-# 13) 結算按鈕：更新比分/cover 寫入 DB
+# 13) 手動結算（可選）：平常可不按
 # =========================================================
 st.divider()
-cA, cB = st.columns([0.55, 0.45])
-with cA:
-    if st.button("🧾 更新賽果 / 結算（Final 後寫入 cover）"):
-        try:
-            n = update_results_and_settle(target_date_us)
-            st.success(f"已掃描並更新 {n} 筆（非 Final 的 cover 會維持空值）")
-            # 若你剛好同日重訓模型，這裡也順便清 cache
-            st.cache_data.clear()
-        except Exception as e:
-            st.error(f"結算失敗：{e}")
-with cB:
-    st.caption("cover 定義：home_score + home_spread vs away_score；相等為 push(2)")
+st.caption("✅ 本頁面會自動寫入 DB。下方結算按鈕僅用於你想『立即』把 final 比賽寫入 cover。")
+with st.expander("🧾 手動更新賽果 / 結算（可選）", expanded=False):
+    cA, cB = st.columns([0.6, 0.4])
+    with cA:
+        if st.button("立即結算 Final 比賽（寫入 cover）"):
+            try:
+                n = update_results_and_settle(target_date_us)
+                st.success(f"已掃描並更新 {n} 筆（非 Final 的 cover 會維持空值）")
+                # 若你剛好同日重訓模型，這裡也順便清 cache
+                st.cache_data.clear()
+            except Exception as e:
+                st.error(f"結算失敗：{e}")
+    with cB:
+        st.caption("cover 定義：home_score + home_spread vs away_score；相等為 push(2)")
 
 st.divider()
 
