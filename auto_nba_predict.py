@@ -1,5 +1,5 @@
 import streamlit as st
-from nba_api.stats.endpoints import scoreboardv2, leaguedashplayerstats, teamgamelog
+from nba_api.stats.endpoints import scoreboardv2, leaguedashplayerstats, teamgamelog, playercareerstats
 from nba_api.stats.static import teams
 import pandas as pd
 import pytz, warnings, requests, re, unicodedata, time, math
@@ -138,6 +138,50 @@ def pg_conn():
         sslmode="require",
     )
 
+def norm_team_abbr(a: str) -> str:
+    x = str(a or "").strip().upper()
+    if x in ("GS", "GSW"):
+        return "GSW"
+    if x in ("NO", "NOP"):
+        return "NOP"
+    if x in ("NY", "NYK"):
+        return "NYK"
+    if x in ("SA", "SAS"):
+        return "SAS"
+    if x in ("UTAH", "UTA"):
+        return "UTA"
+    return x
+
+
+def load_existing_game_id_map(game_date_us: str, season: str) -> dict:
+    """Map (away_abbr, home_abbr) -> existing game_id in DB for that date/season."""
+    conn = pg_conn()
+    out = {}
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT game_id, away_abbr, home_abbr
+                FROM games
+                WHERE season=%s AND game_date_us=%s
+                """,
+                (season, game_date_us),
+            )
+            rows = cur.fetchall()
+
+        for gid, away, home in rows:
+            key = (norm_team_abbr(away), norm_team_abbr(home))
+            # prefer numeric/event-like ids when multiple rows exist for same matchup/date
+            gid_txt = str(gid)
+            prev = out.get(key)
+            if prev is None:
+                out[key] = gid_txt
+            elif (not str(prev).isdigit()) and gid_txt.isdigit():
+                out[key] = gid_txt
+        return out
+    finally:
+        conn.close()
+
 def ensure_model_registry():
     sql = """
     CREATE TABLE IF NOT EXISTS model_registry (
@@ -238,24 +282,42 @@ def upsert_game_row(row: dict):
         with conn.cursor() as cur:
             cur.execute(sql, vals)
         conn.commit()
+        return 1
     finally:
         conn.close()
 
 def bulk_upsert(rows: list[dict]):
     if not rows:
-        return
+        return 0
+
+    # Dedup by game_id first to prevent
+    # ON CONFLICT ... cannot affect row a second time
+    dedup = {}
+    for r in rows:
+        gid = str((r or {}).get("game_id") or "").strip()
+        if not gid:
+            continue
+        dedup[gid] = dict(r)
+
+    if not dedup:
+        return 0
+
+    if len(dedup) != len(rows):
+        st.info(f"ℹ️ DB bulk_upsert 去重：{len(rows)} -> {len(dedup)}（game_id）")
 
     now_tw = datetime.now(tw_tz).strftime("%Y-%m-%d %H:%M:%S")
-    all_cols = sorted(set().union(*[r.keys() for r in rows]))
+    rows_dedup = list(dedup.values())
+
+    all_cols = sorted(set().union(*[r.keys() for r in rows_dedup]))
     if "game_id" not in all_cols:
-        return
+        return 0
     if "created_at_tw" not in all_cols:
         all_cols.append("created_at_tw")
     if "updated_at_tw" not in all_cols:
         all_cols.append("updated_at_tw")
 
     values = []
-    for r in rows:
+    for r in rows_dedup:
         rr = dict(r)
         rr.setdefault("created_at_tw", now_tw)
         rr["updated_at_tw"] = now_tw
@@ -274,8 +336,43 @@ def bulk_upsert(rows: list[dict]):
         with conn.cursor() as cur:
             execute_values(cur, sql, values, page_size=200)
         conn.commit()
+        return len(values)
     finally:
         conn.close()
+
+
+def init_db_write_stats():
+    st.session_state.setdefault("db_write_stats", {
+        "auto_ok": 0,
+        "auto_fail": 0,
+        "manual_ok": 0,
+        "manual_fail": 0,
+        "last_error": "",
+    })
+
+
+def add_db_write_stats(channel: str, ok: int = 0, fail: int = 0, err: str = ""):
+    init_db_write_stats()
+    stats = st.session_state["db_write_stats"]
+    ok_key = f"{channel}_ok"
+    fail_key = f"{channel}_fail"
+    stats[ok_key] = int(stats.get(ok_key, 0)) + int(ok)
+    stats[fail_key] = int(stats.get(fail_key, 0)) + int(fail)
+    if err:
+        stats["last_error"] = str(err)
+
+
+def render_db_write_stats_panel():
+    init_db_write_stats()
+    s = st.session_state["db_write_stats"]
+    with st.expander("🗄️ DB 寫入狀態", expanded=False):
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Auto 寫入成功", int(s.get("auto_ok", 0)))
+        c2.metric("Auto 寫入失敗", int(s.get("auto_fail", 0)))
+        c3.metric("Manual 寫入成功", int(s.get("manual_ok", 0)))
+        c4.metric("Manual 寫入失敗", int(s.get("manual_fail", 0)))
+        if s.get("last_error"):
+            st.caption(f"最近錯誤：{s['last_error']}")
 
 def get_scoreboard_status_map(game_date_us: str) -> dict:
     """
@@ -428,6 +525,19 @@ def load_model_from_registry(model_name: str):
     except Exception as e:
         return None, {"ok": False, "reason": f"load_error: {e}"}
 
+def load_first_available_model(model_names: list[str]):
+    last_info = {"ok": False, "reason": "no_model_candidates"}
+    for name in model_names:
+        model, info = load_model_from_registry(name)
+        if info.get("ok"):
+            info = dict(info)
+            info["selected_from"] = model_names
+            return model, info
+        last_info = info
+    merged = dict(last_info)
+    merged["selected_from"] = model_names
+    return None, merged
+
 def clamp01(x: float, lo: float = 0.001, hi: float = 0.999) -> float:
     try:
         x = float(x)
@@ -437,28 +547,51 @@ def clamp01(x: float, lo: float = 0.001, hi: float = 0.999) -> float:
     if x > hi: return hi
     return x
 
-def predict_p_raw(base_model, feats: dict, fallback_edge: float) -> float:
+def predict_p_raw(base_model, feats: dict, fallback_edge: float, model_info: dict | None = None) -> float:
     """
     base model exists => predict_proba
     else => fallback sigmoid from f_edge
     """
     if base_model is not None:
-        try:
-            X = pd.DataFrame([feats])
-            p = float(base_model.predict_proba(X)[0, 1])
-            return clamp01(p)
-        except Exception:
-            pass
+        # legacy classifier path
+        if hasattr(base_model, "predict_proba"):
+            try:
+                X = pd.DataFrame([feats])
+                p = float(base_model.predict_proba(X)[0, 1])
+                return clamp01(p)
+            except Exception:
+                pass
+
+        # regressor / generic predictor fallback (e.g. margin-like output)
+        if hasattr(base_model, "predict"):
+            try:
+                model_feats = ((model_info or {}).get("metrics") or {}).get("features") or []
+                if isinstance(model_feats, list) and len(model_feats) > 0:
+                    row = {k: float(feats.get(k) or 0.0) for k in model_feats}
+                    X = pd.DataFrame([row], columns=model_feats)
+                else:
+                    X = pd.DataFrame([feats])
+                pred = float(base_model.predict(X)[0])
+                # If model output already looks like probability, use it directly
+                if 0.0 <= pred <= 1.0:
+                    return clamp01(pred)
+                # Otherwise treat as margin-like signal and map by logistic curve
+                return clamp01(calc_cover_prob(pred + float(feats.get("home_spread") or 0.0)))
+            except Exception:
+                pass
+
     return clamp01(calc_cover_prob(fallback_edge))
 
-def calibrate_p(iso_model, p_raw: float) -> float:
+def calibrate_p(iso_model, p_raw: float, edge_input: float | None = None, iso_info: dict | None = None) -> float:
     """
     calibrator exists => iso.predict
     else => return p_raw
     """
     if iso_model is not None:
         try:
-            p = float(iso_model.predict([float(p_raw)])[0])
+            cal_input_mode = ((iso_info or {}).get("metrics") or {}).get("calibration_input")
+            x = float(edge_input) if (cal_input_mode == "pred_margin_plus_home_spread" and edge_input is not None) else float(p_raw)
+            p = float(iso_model.predict([x])[0])
             return clamp01(p)
         except Exception:
             pass
@@ -487,6 +620,41 @@ def get_target_scoreboard() -> tuple[str, pd.DataFrame]:
 # 4) 球員資料（全聯盟）— cache
 # =========================================================
 @st.cache_data(ttl=3600)
+def get_player_career_per_game(player_id: int) -> dict:
+    """Return career per-game box profile for a player. Empty dict means unavailable."""
+    df = fetch_safe_df(playercareerstats.PlayerCareerStats, player_id=str(player_id), per_mode36="PerGame")
+    if df.empty:
+        return {}
+
+    # Prefer NBA regular season career total row if provided.
+    if "LEAGUE_ID" in df.columns:
+        nba = df[df["LEAGUE_ID"].astype(str) == "00"].copy()
+        if not nba.empty:
+            df = nba
+
+    if "GP" not in df.columns:
+        return {}
+
+    # In some API shapes there is a single career row already; otherwise aggregate weighted per-game by GP.
+    keep_cols = [c for c in ["GP", "MIN", "PTS", "REB", "AST", "STL", "BLK", "TOV"] if c in df.columns]
+    if "GP" not in keep_cols:
+        return {}
+
+    part = df[keep_cols].copy()
+    part["GP"] = pd.to_numeric(part["GP"], errors="coerce").fillna(0)
+    total_gp = float(part["GP"].sum())
+    if total_gp <= 0:
+        return {}
+
+    out = {"GP": total_gp}
+    for c in ["MIN", "PTS", "REB", "AST", "STL", "BLK", "TOV"]:
+        if c in part.columns:
+            v = pd.to_numeric(part[c], errors="coerce").fillna(0)
+            out[c] = float((v * part["GP"]).sum() / total_gp)
+    return out
+
+
+@st.cache_data(ttl=3600)
 def get_player_stats(season: str = "2025-26") -> pd.DataFrame:
     ps = fetch_safe_df(
         leaguedashplayerstats.LeagueDashPlayerStats,
@@ -496,11 +664,26 @@ def get_player_stats(season: str = "2025-26") -> pd.DataFrame:
     if ps.empty or "TEAM_ID" not in ps.columns or "PLAYER_NAME" not in ps.columns:
         return pd.DataFrame(columns=["PLAYER_NAME", "TEAM_ID", "PTS", "IMPACT", "NORM", "GP", "MIN"])
 
-    for c in ["GP", "MIN", "PTS", "REB", "AST", "STL", "BLK", "TOV"]:
+    for c in ["PLAYER_ID", "GP", "MIN", "PTS", "REB", "AST", "STL", "BLK", "TOV"]:
         if c not in ps.columns:
             ps[c] = 0
 
     ps = ps[(ps["GP"] >= 5) & (ps["MIN"] >= 10)].copy()
+
+    if not ps.empty and "PLAYER_ID" in ps.columns:
+        career_rows = []
+        for pid in ps["PLAYER_ID"].tolist():
+            prof = get_player_career_per_game(int(pid))
+            if prof:
+                career_rows.append({"PLAYER_ID": int(pid), **prof})
+
+        if career_rows:
+            career_df = pd.DataFrame(career_rows)
+            ps = ps.merge(career_df, on="PLAYER_ID", how="left", suffixes=("", "_career"))
+            for c in ["MIN", "PTS", "REB", "AST", "STL", "BLK", "TOV"]:
+                c2 = f"{c}_career"
+                if c2 in ps.columns:
+                    ps[c] = pd.to_numeric(ps[c2], errors="coerce").fillna(pd.to_numeric(ps[c], errors="coerce").fillna(0))
 
     ps["IMPACT"] = (
         ps["PTS"]
@@ -738,27 +921,37 @@ except Exception as e:
     st.error(f"❌ Supabase DB 初始化失敗：{e}")
     st.stop()
 
-# NEW: load models
-base_model, base_info = load_model_from_registry("cover_prob_base_model")
-iso_model, iso_info   = load_model_from_registry("cover_prob_calibrator")
+# NEW: load models (compatible with both legacy cover-prob and new margin pipeline names)
+base_model, base_info = load_first_available_model(["cover_prob_base_model", "margin_base_model"])
+iso_model, iso_info   = load_first_available_model(["cover_prob_calibrator", "margin_calibrator"])
 
 h1, h2 = st.columns([0.8, 0.2])
 with h1:
     now_tw_str = datetime.now(tw_tz).strftime("%m/%d %H:%M")
     st.title("🏀 NBA Edge 數據預測系統")
     st.caption(f"台灣現在時間：{now_tw_str}")
+
+SEASON_OPTIONS = ["2025-26", "2024-25", "2023-24"]
+APP_SEASON = st.sidebar.selectbox("賽季", SEASON_OPTIONS, index=0)
+st.sidebar.caption("球員特徵固定使用生涯場均（抓不到時自動回退當季場均）。")
 with h2:
     if st.button("🔄 強制更新（傷病/盤口/數據/模型）"):
         st.cache_data.clear()
         st.rerun()
     with st.popover("🧠 模型狀態 / 判讀指南"):
         if base_info.get("ok"):
-            st.success(f"✅ Base model 已載入：{base_info.get('model_version')} | rows={base_info.get('trained_rows')}")
+            st.success(
+                f"✅ Base model 已載入：{base_info.get('model_name')} | "
+                f"{base_info.get('model_version')} | rows={base_info.get('trained_rows')}"
+            )
         else:
             st.warning(f"⚠️ Base model 未載入（改用 fallback sigmoid）。原因：{base_info.get('reason')}")
 
         if iso_info.get("ok"):
-            st.success(f"✅ Calibrator 已載入：{iso_info.get('model_version')} | rows={iso_info.get('trained_rows')}")
+            st.success(
+                f"✅ Calibrator 已載入：{iso_info.get('model_name')} | "
+                f"{iso_info.get('model_version')} | rows={iso_info.get('trained_rows')}"
+            )
         else:
             st.warning(f"⚠️ Calibrator 未載入（p_cal=p_raw）。原因：{iso_info.get('reason')}")
 
@@ -775,7 +968,7 @@ with h2:
 
 with st.spinner("⚡ 正在同步美東數據中心..."):
     target_date_us, sb = get_target_scoreboard()
-    ps_db = get_player_stats(season="2025-26")
+    ps_db = get_player_stats(season=APP_SEASON)
     inj_db = get_injuries()
 
 if sb.empty or "HOME_TEAM_ID" not in sb.columns:
@@ -795,7 +988,7 @@ else:
         st.success(f"📅 正在分析美東今日賽程：{target_date_us}")
 
 today_team_ids = sorted(set(sb_filtered["HOME_TEAM_ID"].tolist() + sb_filtered["VISITOR_TEAM_ID"].tolist()))
-ctx_db = get_team_context(today_team_ids, game_date_us=target_date_us, season="2025-26")
+ctx_db = get_team_context(today_team_ids, game_date_us=target_date_us, season=APP_SEASON)
 
 if inj_db.empty:
     st.warning("⚠️ 傷病名單目前抓不到（ESPN 可能改版或暫時阻擋），推薦將不會排除傷兵。")
@@ -806,6 +999,7 @@ pinnacle_map = get_pinnacle_odds_for_date(target_date_us)
 # 9) 主計算：建立每場 pkg + base_diff（保留你的核心公式）
 # =========================================================
 all_games_data = []
+existing_game_id_map = load_existing_game_id_map(target_date_us, APP_SEASON)
 
 for _, row in sb_filtered.iterrows():
     h_id, a_id = row["HOME_TEAM_ID"], row["VISITOR_TEAM_ID"]
@@ -848,7 +1042,7 @@ for _, row in sb_filtered.iterrows():
 
     base_diff = (h_p["pts"] - a_p["pts"]) * 0.09 + (h_p["impact"] - a_p["impact"]) * 3.8 + 2.5 + b2b_v + recent_v
 
-    game_id = f"{a_abbr}_{h_abbr}_{target_date_us.replace('/','')}"
+    game_id = existing_game_id_map.get((norm_team_abbr(a_abbr), norm_team_abbr(h_abbr))) or f"{a_abbr}_{h_abbr}_{target_date_us.replace('/','')}"
     a_cn = TEAM_NAME_CH.get(a_abbr, a_abbr)
     h_cn = TEAM_NAME_CH.get(h_abbr, h_abbr)
 
@@ -911,9 +1105,20 @@ def get_market_inputs_for_game(g):
     oh_default = g["pin_home_od"]
     oa_default = g["pin_away_od"]
 
-    sp = safe_float(st.session_state.get(f"sp_{gid}", sp_default), sp_default)
-    oh = safe_float(st.session_state.get(f"oh_{gid}", oh_default), oh_default)
-    oa = safe_float(st.session_state.get(f"oa_{gid}", oa_default), oa_default)
+    def _pick_state(prefix: str, default_val: float) -> float:
+        direct_key = f"{prefix}_{gid}"
+        if direct_key in st.session_state:
+            return safe_float(st.session_state.get(direct_key), default_val)
+
+        cand = [k for k in st.session_state.keys() if str(k).startswith(f"{prefix}_{gid}__")]
+        if cand:
+            cand.sort()
+            return safe_float(st.session_state.get(cand[-1]), default_val)
+        return safe_float(default_val, default_val)
+
+    sp = _pick_state("sp", sp_default)
+    oh = _pick_state("oh", oh_default)
+    oa = _pick_state("oa", oa_default)
 
     manual = (abs(sp - sp_default) > 1e-9) or (abs(oh - oh_default) > 1e-9) or (abs(oa - oa_default) > 1e-9)
 
@@ -943,8 +1148,8 @@ def compute_metrics(g, home_spread_input, home_odds, away_odds, base_model, iso_
         "f_edge": float(f_edge),
     }
 
-    p_raw = predict_p_raw(base_model, feats, fallback_edge=f_edge)
-    p_cal = calibrate_p(iso_model, p_raw)
+    p_raw = predict_p_raw(base_model, feats, fallback_edge=f_edge, model_info=base_info)
+    p_cal = calibrate_p(iso_model, p_raw, edge_input=f_edge, iso_info=iso_info)
 
     pick_team = g["h_cn"] if f_edge > 0 else g["a_cn"]
     odds = home_odds if f_edge > 0 else away_odds
@@ -969,6 +1174,7 @@ def compute_metrics(g, home_spread_input, home_odds, away_odds, base_model, iso_
 # =========================================================
 # 11) 自動寫入 DB：把今日賽程先建檔（預設 Pinnacle / fallback）
 # =========================================================
+init_db_write_stats()
 try:
     auto_rows = []
     for g in all_games_data:
@@ -981,7 +1187,7 @@ try:
         auto_rows.append({
             "game_id": g["game_id"],
             "game_date_us": target_date_us,
-            "season": "2025-26",
+            "season": APP_SEASON,
             "away_abbr": g["a_abbr"],
             "home_abbr": g["h_abbr"],
             "away_name": g["a_cn"],
@@ -1015,9 +1221,24 @@ try:
             "cover": None,
             "settled_at_tw": None,
         })
-    bulk_upsert(auto_rows)
+    n_auto = bulk_upsert(auto_rows)
+    add_db_write_stats("auto", ok=int(n_auto or 0), fail=0)
 except Exception as e:
+    add_db_write_stats("auto", ok=0, fail=max(1, len(all_games_data)), err=str(e))
     st.warning(f"⚠️ DB 自動建檔失敗（不影響前端運作）：{e}")
+
+with st.expander("ℹ️ 系統主流程 / 數據分析邏輯（點我看）", expanded=False):
+    st.markdown(
+        "1. **賽程與盤口**：抓取今日賽程 + Pinnacle 盤口（若無則 fallback）。\n"
+        "2. **球員與傷病**：整合球員 per-game 與傷病，先做可出賽名單過濾。\n"
+        "3. **特徵計算**：為每場建構隊伍特徵（分數、impact、近況、b2b 等）並推導 `base_diff`。\n"
+        "4. **機率推論**：先算 `p_raw`，再用 calibrator 得到 `p_cal`。\n"
+        "5. **價值計算**：由 `p_cal` 與賠率算 `implied_prob / edge_value / EV`，輸出推薦。\n"
+        "6. **資料回寫**：頁面載入與你手動改盤時，會自動 upsert 回 DB。"
+    )
+    st.caption("補充：下方『更新賽果/結算』只在你要立即手動結算 final 比賽時使用；平常可不按。")
+
+render_db_write_stats_panel()
 
 # =========================================================
 # 12) 🔥 今日最能買（候選池=真盤；排序=你輸入）
@@ -1077,21 +1298,23 @@ else:
                 st.caption(f"p_raw={item['p_raw']:.3f} → p_cal={item['p_cal']:.3f}")
 
 # =========================================================
-# 13) 結算按鈕：更新比分/cover 寫入 DB
+# 13) 手動結算（可選）：平常可不按
 # =========================================================
 st.divider()
-cA, cB = st.columns([0.55, 0.45])
-with cA:
-    if st.button("🧾 更新賽果 / 結算（Final 後寫入 cover）"):
-        try:
-            n = update_results_and_settle(target_date_us)
-            st.success(f"已掃描並更新 {n} 筆（非 Final 的 cover 會維持空值）")
-            # 若你剛好同日重訓模型，這裡也順便清 cache
-            st.cache_data.clear()
-        except Exception as e:
-            st.error(f"結算失敗：{e}")
-with cB:
-    st.caption("cover 定義：home_score + home_spread vs away_score；相等為 push(2)")
+st.caption("✅ 本頁面會自動寫入 DB。下方結算按鈕僅用於你想『立即』把 final 比賽寫入 cover。")
+with st.expander("🧾 手動更新賽果 / 結算（可選）", expanded=False):
+    cA, cB = st.columns([0.6, 0.4])
+    with cA:
+        if st.button("立即結算 Final 比賽（寫入 cover）"):
+            try:
+                n = update_results_and_settle(target_date_us)
+                st.success(f"已掃描並更新 {n} 筆（非 Final 的 cover 會維持空值）")
+                # 若你剛好同日重訓模型，這裡也順便清 cache
+                st.cache_data.clear()
+            except Exception as e:
+                st.error(f"結算失敗：{e}")
+    with cB:
+        st.caption("cover 定義：home_score + home_spread vs away_score；相等為 push(2)")
 
 st.divider()
 
@@ -1107,6 +1330,7 @@ for i in range(0, len(all_games_data), 3):
             with st.container(border=True):
                 st.subheader(g["label"])
                 gid = g["game_id"]
+                gid_key = f"{gid}__{i}_{j}"
 
                 sp_default = g["pin_home_sp"]
                 oh_default = g["pin_home_od"]
@@ -1116,25 +1340,25 @@ for i in range(0, len(all_games_data), 3):
                     "主隊盤口（主讓分填負｜主受讓填正）",
                     min_value=-60.0,
                     max_value=60.0,
-                    value=safe_float(st.session_state.get(f"sp_{gid}", sp_default), sp_default),
+                    value=safe_float(st.session_state.get(f"sp_{gid_key}", sp_default), sp_default),
                     step=0.5,
-                    key=f"sp_{gid}",
+                    key=f"sp_{gid_key}",
                 )
                 u_oh = st.number_input(
                     "主賠（可手動改運彩）",
                     min_value=1.01,
                     max_value=10.0,
-                    value=safe_float(st.session_state.get(f"oh_{gid}", oh_default), oh_default),
+                    value=safe_float(st.session_state.get(f"oh_{gid_key}", oh_default), oh_default),
                     step=0.01,
-                    key=f"oh_{gid}",
+                    key=f"oh_{gid_key}",
                 )
                 u_oa = st.number_input(
                     "客賠（可手動改運彩）",
                     min_value=1.01,
                     max_value=10.0,
-                    value=safe_float(st.session_state.get(f"oa_{gid}", oa_default), oa_default),
+                    value=safe_float(st.session_state.get(f"oa_{gid_key}", oa_default), oa_default),
                     step=0.01,
-                    key=f"oa_{gid}",
+                    key=f"oa_{gid_key}",
                 )
 
                 manual = (abs(float(u_sp) - sp_default) > 1e-9) or (abs(float(u_oh) - oh_default) > 1e-9) or (abs(float(u_oa) - oa_default) > 1e-9)
@@ -1162,7 +1386,7 @@ for i in range(0, len(all_games_data), 3):
                     upsert_game_row({
                         "game_id": gid,
                         "game_date_us": target_date_us,
-                        "season": "2025-26",
+                        "season": APP_SEASON,
                         "away_abbr": g["a_abbr"],
                         "home_abbr": g["h_abbr"],
                         "away_name": g["a_cn"],
@@ -1189,7 +1413,9 @@ for i in range(0, len(all_games_data), 3):
                         "p_raw": float(m["p_raw"]),
                         "p_cal": float(m["p_cal"]),
                     })
-                except Exception:
+                    add_db_write_stats("manual", ok=1, fail=0)
+                except Exception as e:
+                    add_db_write_stats("manual", ok=0, fail=1, err=str(e))
                     # 不要讓 DB 問題把 UI 卡死
                     pass
 
