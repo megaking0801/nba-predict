@@ -186,6 +186,8 @@ def nba_stats_get_json(
 
     url = f"{NBA_STATS_BASE}/{endpoint}"
 
+    last_err: Optional[Exception] = None
+
     for attempt in range(retries + 1):
         try:
             # small randomness to avoid fixed request rhythm
@@ -201,18 +203,18 @@ def nba_stats_get_json(
                 cb.record_success()
             return data
         except Exception as e:
-            if cb:
-                cb.record_failure()
-                if not cb.allow():
-                    print(f"[WARN] circuit breaker OPEN after err={e}", flush=True)
-                    return None
+            last_err = e
 
             if attempt < retries:
                 print(f"[WARN] retry {attempt+1}/{retries} endpoint={endpoint} err={e}", flush=True)
                 _sleep_backoff(attempt, backoff_base, backoff_cap)
             else:
                 print(f"[WARN] FAILED endpoint={endpoint} err={e}", flush=True)
-                return None
+
+    if cb:
+        cb.record_failure()
+        if not cb.allow():
+            print(f"[WARN] circuit breaker OPEN after err={last_err}", flush=True)
 
     return None
 
