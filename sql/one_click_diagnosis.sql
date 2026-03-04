@@ -6,6 +6,9 @@
 -- =========================================================
 SELECT NOW() AS server_time_utc;
 
+-- 0.1) Preflight: keep diagnostics SQL backward-compatible with older schema
+ALTER TABLE public.games ADD COLUMN IF NOT EXISTS pred_margin DOUBLE PRECISION;
+
 -- =========================================================
 -- 1) Data freshness and row counts
 -- =========================================================

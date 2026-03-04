@@ -8,6 +8,17 @@ SELECT
   NOW() AS server_now,
   NOW() AT TIME ZONE 'Asia/Taipei' AS server_now_tw;
 
+-- 0.1) Preflight: ensure diagnostic columns exist (idempotent)
+ALTER TABLE public.games ADD COLUMN IF NOT EXISTS pred_margin DOUBLE PRECISION;
+ALTER TABLE public.games ADD COLUMN IF NOT EXISTS base_diff DOUBLE PRECISION;
+ALTER TABLE public.games ADD COLUMN IF NOT EXISTS home_starters_out DOUBLE PRECISION;
+ALTER TABLE public.games ADD COLUMN IF NOT EXISTS away_starters_out DOUBLE PRECISION;
+ALTER TABLE public.games ADD COLUMN IF NOT EXISTS home_minutes_proj DOUBLE PRECISION;
+ALTER TABLE public.games ADD COLUMN IF NOT EXISTS away_minutes_proj DOUBLE PRECISION;
+ALTER TABLE public.games ADD COLUMN IF NOT EXISTS spread_move DOUBLE PRECISION;
+ALTER TABLE public.games ADD COLUMN IF NOT EXISTS home_odds_move DOUBLE PRECISION;
+ALTER TABLE public.games ADD COLUMN IF NOT EXISTS away_odds_move DOUBLE PRECISION;
+
 -- 1) model registry latest status (base/calibrator)
 WITH ranked AS (
   SELECT
