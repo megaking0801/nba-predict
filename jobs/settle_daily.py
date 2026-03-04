@@ -66,6 +66,7 @@ def fetch_espn_scoreboard(date_us: dt.date) -> List[dict]:
 def parse_finals(events: List[dict], date_us: dt.date) -> List[Dict[str, Any]]:
     out = []
     for ev in events:
+        espn_event_id = str(ev.get("id") or "").strip()
         competitions = ev.get("competitions") or []
         if not competitions:
             continue
@@ -102,8 +103,9 @@ def parse_finals(events: List[dict], date_us: dt.date) -> List[Dict[str, Any]]:
         if hs is None or as_ is None:
             continue
 
+        game_id = espn_event_id or f"{date_us.strftime('%Y%m%d')}_{away_abbr}_{home_abbr}"
         out.append({
-            "game_id": f"{date_us.strftime('%Y%m%d')}_{away_abbr}_{home_abbr}",
+            "game_id": game_id,
             "home_abbr": home_abbr,
             "away_abbr": away_abbr,
             "home_score": hs,
