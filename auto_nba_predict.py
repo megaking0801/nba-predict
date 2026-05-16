@@ -3,6 +3,7 @@ from nba_api.stats.endpoints import scoreboardv2, leaguedashplayerstats, teamgam
 from nba_api.stats.static import teams
 import pandas as pd
 import pytz, warnings, requests, re, unicodedata, time, math
+import os
 from datetime import datetime, timedelta
 from bs4 import BeautifulSoup
 
@@ -36,7 +37,11 @@ TEAM_MAP = {
 }
 TEAM_NAME_CH = {k: v[1] for k, v in TEAM_MAP.items()}
 
-ALL_TEAMS = teams.get_teams()
+@st.cache_resource
+def _load_all_teams():
+    return teams.get_teams()
+
+ALL_TEAMS = _load_all_teams()
 VALID_TEAM_IDS = [t["id"] for t in ALL_TEAMS]
 ID_MAP = {t["id"]: t["abbreviation"] for t in ALL_TEAMS}
 
@@ -122,11 +127,19 @@ def calc_cover_prob(edge_points: float) -> float:
 # NEW) Supabase(Postgres) DB：連線 / 建表 / upsert / bulk / 結算
 # =========================================================
 def pg_conn():
+    db_url = (os.environ.get("DATABASE_URL") or "").strip()
+    if not db_url and "DATABASE_URL" in st.secrets:
+        db_url = str(st.secrets["DATABASE_URL"]).strip()
+    if "DATABASE_URL" in st.secrets:
+        db_url = db_url or str(st.secrets["DATABASE_URL"]).strip()
+    if db_url:
+        return psycopg2.connect(db_url, connect_timeout=8)
+
     host = st.secrets["SUPABASE_HOST"]
-    db   = st.secrets.get("SUPABASE_DB", "postgres")
+    db = str(st.secrets["SUPABASE_DB"]) if "SUPABASE_DB" in st.secrets else "postgres"
     user = st.secrets["SUPABASE_USER"]
-    pw   = st.secrets["SUPABASE_PASSWORD"]
-    port = int(st.secrets.get("SUPABASE_PORT", 5432))
+    pw = st.secrets["SUPABASE_PASSWORD"]
+    port = int(st.secrets["SUPABASE_PORT"]) if "SUPABASE_PORT" in st.secrets else 5432
 
     return psycopg2.connect(
         host=host,
@@ -137,6 +150,25 @@ def pg_conn():
         connect_timeout=8,
         sslmode="require",
     )
+
+def nba_cache_get(cache_key: str) -> dict | None:
+    """從 nba_cache 表讀取 cache_nba.py 寫入的快取，找不到回傳 None。"""
+    try:
+        conn = pg_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT payload_json FROM public.nba_cache WHERE cache_key = %s LIMIT 1",
+                    (cache_key,),
+                )
+                row = cur.fetchone()
+        finally:
+            conn.close()
+        if row and row[0]:
+            return json.loads(row[0])
+    except Exception:
+        pass
+    return None
 
 def norm_team_abbr(a: str) -> str:
     x = str(a or "").strip().upper()
@@ -249,6 +281,27 @@ def db_init():
     ALTER TABLE games ADD COLUMN IF NOT EXISTS p_raw DOUBLE PRECISION;
     ALTER TABLE games ADD COLUMN IF NOT EXISTS p_cal DOUBLE PRECISION;
 
+    -- ✅ player stats cache: store league-wide player features in Supabase
+    CREATE TABLE IF NOT EXISTS player_stats_cache (
+        season TEXT NOT NULL,
+        player_id INTEGER NOT NULL,
+        player_name TEXT,
+        team_id INTEGER,
+        gp DOUBLE PRECISION,
+        min DOUBLE PRECISION,
+        pts DOUBLE PRECISION,
+        reb DOUBLE PRECISION,
+        ast DOUBLE PRECISION,
+        stl DOUBLE PRECISION,
+        blk DOUBLE PRECISION,
+        tov DOUBLE PRECISION,
+        impact DOUBLE PRECISION,
+        norm TEXT,
+        updated_at_tw TEXT,
+        PRIMARY KEY (season, player_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_player_stats_cache_season_team ON player_stats_cache (season, team_id);
+
     CREATE INDEX IF NOT EXISTS idx_games_date ON games (game_date_us);
     """
     conn = pg_conn()
@@ -258,6 +311,119 @@ def db_init():
         conn.commit()
     finally:
         conn.close()
+
+def load_player_stats_cache(season: str) -> pd.DataFrame:
+    conn = pg_conn()
+    try:
+        sql = """
+        SELECT season, player_id, player_name, team_id, gp, min, pts, reb, ast, stl, blk, tov, impact, norm, updated_at_tw
+        FROM player_stats_cache
+        WHERE season = %s
+        ORDER BY impact DESC NULLS LAST, gp DESC NULLS LAST, player_name ASC NULLS LAST
+        """
+        df = pd.read_sql(sql, conn, params=(season,))
+        if not df.empty:
+            df.columns = [str(c).upper() for c in df.columns]
+        return df
+    except Exception:
+        return pd.DataFrame()
+    finally:
+        conn.close()
+
+def load_player_stats_cache_updated_at(season: str) -> str:
+    conn = pg_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT MAX(updated_at_tw)
+                FROM player_stats_cache
+                WHERE season = %s
+                """,
+                (season,),
+            )
+            row = cur.fetchone()
+        return str(row[0]) if row and row[0] else ""
+    except Exception:
+        return ""
+    finally:
+        conn.close()
+
+def save_player_stats_cache(season: str, ps: pd.DataFrame) -> int:
+    if ps is None or ps.empty:
+        return 0
+
+    now_tw = datetime.now(tw_tz).strftime("%Y-%m-%d %H:%M:%S")
+    df = ps.copy()
+    if "PLAYER_ID" not in df.columns:
+        return 0
+
+    df["season"] = season
+    df["player_id"] = pd.to_numeric(df["PLAYER_ID"], errors="coerce").fillna(0).astype(int)
+    df["player_name"] = df.get("PLAYER_NAME", pd.Series([None] * len(df)))
+    df["team_id"] = pd.to_numeric(df.get("TEAM_ID"), errors="coerce") if "TEAM_ID" in df.columns else None
+    df["gp"] = pd.to_numeric(df.get("GP"), errors="coerce")
+    df["min"] = pd.to_numeric(df.get("MIN"), errors="coerce")
+    df["pts"] = pd.to_numeric(df.get("PTS"), errors="coerce")
+    df["reb"] = pd.to_numeric(df.get("REB"), errors="coerce")
+    df["ast"] = pd.to_numeric(df.get("AST"), errors="coerce")
+    df["stl"] = pd.to_numeric(df.get("STL"), errors="coerce")
+    df["blk"] = pd.to_numeric(df.get("BLK"), errors="coerce")
+    df["tov"] = pd.to_numeric(df.get("TOV"), errors="coerce")
+    df["impact"] = pd.to_numeric(df.get("IMPACT"), errors="coerce")
+    df["norm"] = df.get("NORM", pd.Series([None] * len(df)))
+    df["updated_at_tw"] = now_tw
+
+    payload_cols = ["season", "player_id", "player_name", "team_id", "gp", "min", "pts", "reb", "ast", "stl", "blk", "tov", "impact", "norm", "updated_at_tw"]
+    rows = []
+    for _, r in df[payload_cols].iterrows():
+        rows.append(tuple(None if pd.isna(v) else v for v in r.tolist()))
+
+    sql = """
+    INSERT INTO player_stats_cache (
+        season, player_id, player_name, team_id, gp, min, pts, reb, ast, stl, blk, tov, impact, norm, updated_at_tw
+    ) VALUES %s
+    ON CONFLICT (season, player_id) DO UPDATE SET
+        player_name = EXCLUDED.player_name,
+        team_id = EXCLUDED.team_id,
+        gp = EXCLUDED.gp,
+        min = EXCLUDED.min,
+        pts = EXCLUDED.pts,
+        reb = EXCLUDED.reb,
+        ast = EXCLUDED.ast,
+        stl = EXCLUDED.stl,
+        blk = EXCLUDED.blk,
+        tov = EXCLUDED.tov,
+        impact = EXCLUDED.impact,
+        norm = EXCLUDED.norm,
+        updated_at_tw = EXCLUDED.updated_at_tw
+    """
+    conn = pg_conn()
+    try:
+        with conn.cursor() as cur:
+            execute_values(cur, sql, rows, page_size=500)
+        conn.commit()
+        return len(rows)
+    finally:
+        conn.close()
+
+def get_player_stats_cached(season: str = "2025-26", force_refresh: bool = False) -> pd.DataFrame:
+    today_tw = datetime.now(tw_tz).strftime("%Y-%m-%d")
+    cached = load_player_stats_cache(season)
+
+    if not force_refresh and not cached.empty:
+        updated_at = load_player_stats_cache_updated_at(season)
+        if updated_at.startswith(today_tw):
+            return cached
+
+    ps = get_player_stats(season=season)
+    if not ps.empty:
+        try:
+            save_player_stats_cache(season, ps)
+        except Exception:
+            pass
+    cached = load_player_stats_cache(season)
+    return cached if not cached.empty else ps
 
 def upsert_game_row(row: dict):
     now_tw = datetime.now(tw_tz).strftime("%Y-%m-%d %H:%M:%S")
@@ -597,13 +763,59 @@ def calibrate_p(iso_model, p_raw: float, edge_input: float | None = None, iso_in
             pass
     return clamp01(p_raw)
 
+
+def fetch_scoreboard_with_fallback(game_date_us: str) -> pd.DataFrame:
+    """Prefer nba_api scoreboardv2; fallback to ESPN scoreboard when nba_api is empty."""
+    sb = fetch_safe_df(scoreboardv2.ScoreboardV2, game_date=game_date_us)
+    if not sb.empty and "HOME_TEAM_ID" in sb.columns and "VISITOR_TEAM_ID" in sb.columns:
+        return sb
+
+    # ESPN fallback to reduce blank-page incidents when nba_api intermittently returns empty.
+    try:
+        ymd = datetime.strptime(str(game_date_us), "%m/%d/%Y").strftime("%Y%m%d")
+        r = requests.get(
+            "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard",
+            params={"dates": ymd, "limit": 300},
+            timeout=20,
+        )
+        r.raise_for_status()
+        events = (r.json() or {}).get("events") or []
+
+        abbr_to_id = {v: k for k, v in ID_MAP.items()}
+        rows = []
+        for ev in events:
+            comps = ev.get("competitions") or []
+            if not comps:
+                continue
+            comp = comps[0]
+            home_id, away_id = None, None
+            for c in (comp.get("competitors") or []):
+                team = c.get("team") or {}
+                abbr = norm_team_abbr(team.get("abbreviation"))
+                tid = abbr_to_id.get(abbr)
+                if tid is None:
+                    continue
+                if (c.get("homeAway") or "").lower() == "home":
+                    home_id = int(tid)
+                else:
+                    away_id = int(tid)
+            if home_id is not None and away_id is not None:
+                rows.append({"HOME_TEAM_ID": home_id, "VISITOR_TEAM_ID": away_id})
+
+        if rows:
+            return pd.DataFrame(rows)
+    except Exception:
+        pass
+
+    return sb
+
 # =========================================================
 # 3) 賽程抓取（先決定目標日期，再拉賽程）
 # =========================================================
 def get_target_scoreboard() -> tuple[str, pd.DataFrame]:
     now_us = datetime.now(us_east_tz)
     target_date_us = now_us.strftime("%m/%d/%Y")
-    sb = fetch_safe_df(scoreboardv2.ScoreboardV2, game_date=target_date_us)
+    sb = fetch_scoreboard_with_fallback(target_date_us)
 
     valid = False
     if not sb.empty and "HOME_TEAM_ID" in sb.columns:
@@ -612,9 +824,136 @@ def get_target_scoreboard() -> tuple[str, pd.DataFrame]:
 
     if not valid:
         target_date_us = (now_us + timedelta(days=1)).strftime("%m/%d/%Y")
-        sb = fetch_safe_df(scoreboardv2.ScoreboardV2, game_date=target_date_us)
+        sb = fetch_scoreboard_with_fallback(target_date_us)
 
     return target_date_us, sb
+
+
+def load_games_for_date_from_db(game_date_us: str, season: str) -> pd.DataFrame:
+    conn = pg_conn()
+    try:
+        sql = """
+        SELECT
+            game_id,
+            game_date_us,
+            season,
+            away_abbr,
+            home_abbr,
+            away_name,
+            home_name,
+            home_spread,
+            home_odds,
+            away_odds,
+            line_source,
+            base_diff,
+            diff_pts,
+            diff_impact,
+            diff_recent_w,
+            diff_b2b,
+            pin_ok,
+            p_raw,
+            p_cal,
+            status,
+            updated_at_tw
+        FROM games
+        WHERE season = %s AND game_date_us = %s
+        ORDER BY game_id ASC
+        """
+        return pd.read_sql(sql, conn, params=(season, game_date_us))
+    except Exception:
+        return pd.DataFrame()
+    finally:
+        conn.close()
+
+
+def get_target_games_from_db(season: str) -> tuple[str, pd.DataFrame]:
+    now_us = datetime.now(us_east_tz)
+    d0 = now_us.strftime("%m/%d/%Y")
+    d1 = (now_us + timedelta(days=1)).strftime("%m/%d/%Y")
+
+    g0 = load_games_for_date_from_db(d0, season)
+    if not g0.empty:
+        return d0, g0
+
+    g1 = load_games_for_date_from_db(d1, season)
+    if not g1.empty:
+        return d1, g1
+
+    # 最後退而求其次：回傳最近更新的一天，避免整頁空白
+    conn = pg_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT game_date_us
+                FROM games
+                WHERE season=%s
+                GROUP BY game_date_us
+                ORDER BY MAX(updated_at_tw) DESC NULLS LAST
+                LIMIT 1
+                """,
+                (season,),
+            )
+            row = cur.fetchone()
+        if row and row[0]:
+            d2 = str(row[0])
+            g2 = load_games_for_date_from_db(d2, season)
+            if not g2.empty:
+                return d2, g2
+    except Exception:
+        pass
+    finally:
+        conn.close()
+
+    return d0, pd.DataFrame()
+
+
+def build_all_games_data_from_db_rows(df_games: pd.DataFrame) -> list[dict]:
+    all_games = []
+    if df_games is None or df_games.empty:
+        return all_games
+
+    for _, r in df_games.iterrows():
+        h_abbr = norm_team_abbr(r.get("home_abbr"))
+        a_abbr = norm_team_abbr(r.get("away_abbr"))
+
+        h_cn = TEAM_NAME_CH.get(h_abbr, h_abbr)
+        a_cn = TEAM_NAME_CH.get(a_abbr, a_abbr)
+
+        line_source = str(r.get("line_source") or "")
+        pin_ok_raw = r.get("pin_ok")
+        pin_ok = bool(pin_ok_raw) if pin_ok_raw is not None and not pd.isna(pin_ok_raw) else ("pinnacle" in line_source.lower())
+
+        sp = r.get("home_spread")
+        oh = r.get("home_odds")
+        oa = r.get("away_odds")
+        base_diff = r.get("base_diff")
+
+        all_games.append(
+            {
+                "game_id": str(r.get("game_id")),
+                "label": f"{a_cn}(客) @ {h_cn}(主)",
+                "base_diff": float(base_diff) if base_diff is not None and not pd.isna(base_diff) else 0.0,
+                "h_pkg": {"pts": 0.0, "impact": 0.0, "df": pd.DataFrame(), "inj": pd.DataFrame(), "b2b": False, "recent_w": 0.5},
+                "a_pkg": {"pts": 0.0, "impact": 0.0, "df": pd.DataFrame(), "inj": pd.DataFrame(), "b2b": False, "recent_w": 0.5},
+                "h_cn": h_cn,
+                "a_cn": a_cn,
+                "h_abbr": h_abbr,
+                "a_abbr": a_abbr,
+                "pin_ok": bool(pin_ok),
+                "pin_ok_int": 1 if pin_ok else 0,
+                "pin_home_sp": float(sp) if sp is not None and not pd.isna(sp) else 0.0,
+                "pin_home_od": float(oh) if oh is not None and not pd.isna(oh) else 1.90,
+                "pin_away_od": float(oa) if oa is not None and not pd.isna(oa) else 1.90,
+                "diff_pts": float(r.get("diff_pts")) if r.get("diff_pts") is not None and not pd.isna(r.get("diff_pts")) else 0.0,
+                "diff_impact": float(r.get("diff_impact")) if r.get("diff_impact") is not None and not pd.isna(r.get("diff_impact")) else 0.0,
+                "diff_recent_w": float(r.get("diff_recent_w")) if r.get("diff_recent_w") is not None and not pd.isna(r.get("diff_recent_w")) else 0.0,
+                "diff_b2b": float(r.get("diff_b2b")) if r.get("diff_b2b") is not None and not pd.isna(r.get("diff_b2b")) else 0.0,
+                "db_line_source": line_source,
+            }
+        )
+
+    return all_games
 
 # =========================================================
 # 4) 球員資料（全聯盟）— cache
@@ -656,11 +995,19 @@ def get_player_career_per_game(player_id: int) -> dict:
 
 @st.cache_data(ttl=3600)
 def get_player_stats(season: str = "2025-26") -> pd.DataFrame:
-    ps = fetch_safe_df(
-        leaguedashplayerstats.LeagueDashPlayerStats,
-        season=season,
-        per_mode_detailed="PerGame",
-    )
+    # ── 優先從 nba_cache（由 cache_nba.py 背景工作寫入）讀取，避免 500+ 次 PlayerCareerStats API ──
+    from_cache = False
+    cached_payload = nba_cache_get(f"player_stats:{season}")
+    if cached_payload and cached_payload.get("rows"):
+        ps = pd.DataFrame(cached_payload["rows"])
+        from_cache = True
+    else:
+        ps = fetch_safe_df(
+            leaguedashplayerstats.LeagueDashPlayerStats,
+            season=season,
+            per_mode_detailed="PerGame",
+        )
+
     if ps.empty or "TEAM_ID" not in ps.columns or "PLAYER_NAME" not in ps.columns:
         return pd.DataFrame(columns=["PLAYER_NAME", "TEAM_ID", "PTS", "IMPACT", "NORM", "GP", "MIN"])
 
@@ -670,7 +1017,9 @@ def get_player_stats(season: str = "2025-26") -> pd.DataFrame:
 
     ps = ps[(ps["GP"] >= 5) & (ps["MIN"] >= 10)].copy()
 
-    if not ps.empty and "PLAYER_ID" in ps.columns:
+    # 只有在即時拉 NBA API 時才額外查詢 PlayerCareerStats（每位球員一次請求）
+    # 從 nba_cache 讀取時直接用賽季統計計算 IMPACT，跳過 500+ 次 API 呼叫
+    if not from_cache and not ps.empty and "PLAYER_ID" in ps.columns:
         career_rows = []
         for pid in ps["PLAYER_ID"].tolist():
             prof = get_player_career_per_game(int(pid))
@@ -785,7 +1134,19 @@ def get_team_context(team_ids: list[int], game_date_us: str, season: str = "2025
     prev_day = game_day - timedelta(days=1)
 
     for tid in team_ids:
-        log = fetch_safe_df(teamgamelog.TeamGameLog, team_id=tid, season=season)
+        abbr = ID_MAP.get(tid)
+        log = pd.DataFrame()
+
+        # 優先從 nba_cache 讀取（由 cache_nba.py 背景工作寫入），避免即時打 NBA API
+        if abbr:
+            cached = nba_cache_get(f"team_log:{season}:{norm_team_abbr(abbr)}")
+            if cached and cached.get("rows"):
+                log = pd.DataFrame(cached["rows"])
+
+        # Fallback：直接打 NBA API
+        if log.empty:
+            log = fetch_safe_df(teamgamelog.TeamGameLog, team_id=tid, season=season)
+
         is_b2b, recent_w = False, 0.5
 
         if not log.empty and "GAME_DATE" in log.columns and "WL" in log.columns:
@@ -933,10 +1294,18 @@ with h1:
 
 SEASON_OPTIONS = ["2025-26", "2024-25", "2023-24"]
 APP_SEASON = st.sidebar.selectbox("賽季", SEASON_OPTIONS, index=0)
+db_only_default = (os.environ.get("APP_DB_ONLY", "1").strip() == "1")
+USE_DB_ONLY = st.sidebar.toggle(
+    "DB-only 模式（只讀資料庫）",
+    value=db_only_default,
+    help="開啟後頁面不再即時抓 ESPN/NBA/Odds，改為讀取背景 job 寫入的 games 與 cache。",
+)
 st.sidebar.caption("球員特徵固定使用生涯場均（抓不到時自動回退當季場均）。")
 with h2:
     if st.button("🔄 強制更新（傷病/盤口/數據/模型）"):
         st.cache_data.clear()
+        if not USE_DB_ONLY:
+            st.session_state["force_player_stats_refresh"] = True
         st.rerun()
     with st.popover("🧠 模型狀態 / 判讀指南"):
         if base_info.get("ok"):
@@ -962,124 +1331,141 @@ with h2:
             "**Top picks**：\n"
             "- 候選池：只用 Pinnacle 真盤\n"
             "- 排序：用你輸入的盤口/賠率重新計算（p_cal、EV、edge_value）\n\n"
-            "**DB**：每日自動寫入今日賽程；你手動改運彩會寫回；結算後 cover 進入訓練資料。\n\n"
+            "**DB**：每日自動寫入今日賽程；你手動改運彩會寫回；結算後 cover 進入訓練資料。\n"
+            "- 建議正式環境使用 DB-only 模式（網站只讀 DB，更新交給背景 job）。\n\n"
             "**模型學習**：Base model 用 DB 已結算資料訓練；Calibrator 校正 p_raw。\n"
         )
 
-with st.spinner("⚡ 正在同步美東數據中心..."):
-    target_date_us, sb = get_target_scoreboard()
-    ps_db = get_player_stats(season=APP_SEASON)
-    inj_db = get_injuries()
+# =========================================================
+# 9) 主計算：DB-only（只讀資料庫）或 Live API（舊模式）
+# =========================================================
+if USE_DB_ONLY:
+    with st.spinner("⚡ 讀取資料庫快取中..."):
+        target_date_us, db_games = get_target_games_from_db(APP_SEASON)
 
-if sb.empty or "HOME_TEAM_ID" not in sb.columns:
-    st.info("📅 目前抓不到賽程資料（Scoreboard API 回傳空）。請稍後重試。")
-    st.stop()
+    if db_games.empty:
+        st.info("📅 目前資料庫還沒有可用賽程，請先跑 preload/sync job。")
+        st.stop()
 
-sb_filtered = sb[sb["HOME_TEAM_ID"].isin(VALID_TEAM_IDS)].copy()
-
-if sb_filtered.empty:
-    st.info(f"📅 {target_date_us}（美東）無有效 NBA 賽程。")
-    st.stop()
-else:
     now_us_str = datetime.now(us_east_tz).strftime("%m/%d/%Y")
     if target_date_us != now_us_str:
-        st.info(f"📅 今日美東無賽程，已為您自動跳轉至明日：{target_date_us}")
+        st.info(f"📅 DB-only：目前顯示 {target_date_us}（資料庫最近可用日期）。")
     else:
-        st.success(f"📅 正在分析美東今日賽程：{target_date_us}")
+        st.success(f"📅 DB-only：正在分析美東今日賽程：{target_date_us}")
 
-today_team_ids = sorted(set(sb_filtered["HOME_TEAM_ID"].tolist() + sb_filtered["VISITOR_TEAM_ID"].tolist()))
-ctx_db = get_team_context(today_team_ids, game_date_us=target_date_us, season=APP_SEASON)
+    all_games_data = build_all_games_data_from_db_rows(db_games)
+else:
+    with st.spinner("⚡ 正在同步美東數據中心..."):
+        target_date_us, sb = get_target_scoreboard()
+        ps_db = get_player_stats_cached(season=APP_SEASON, force_refresh=bool(st.session_state.pop("force_player_stats_refresh", False)))
+        inj_db = get_injuries()
 
-if inj_db.empty:
-    st.warning("⚠️ 傷病名單目前抓不到（ESPN 可能改版或暫時阻擋），推薦將不會排除傷兵。")
+    if sb.empty or "HOME_TEAM_ID" not in sb.columns:
+        st.info("📅 目前抓不到賽程資料（NBA/ESPN scoreboard 皆回傳空）。請稍後重試。")
+        st.stop()
 
-pinnacle_map = get_pinnacle_odds_for_date(target_date_us)
+    sb_filtered = sb[sb["HOME_TEAM_ID"].isin(VALID_TEAM_IDS)].copy()
 
-# =========================================================
-# 9) 主計算：建立每場 pkg + base_diff（保留你的核心公式）
-# =========================================================
-all_games_data = []
-existing_game_id_map = load_existing_game_id_map(target_date_us, APP_SEASON)
-
-for _, row in sb_filtered.iterrows():
-    h_id, a_id = row["HOME_TEAM_ID"], row["VISITOR_TEAM_ID"]
-    h_abbr, a_abbr = ID_MAP.get(h_id, str(h_id)), ID_MAP.get(a_id, str(a_id))
-
-    def build_pkg(tid: int, abbr: str):
-        ctx = ctx_db.get(tid, {"b2b": False, "recent_w": 0.5})
-
-        t_inj = inj_db[inj_db["球隊"] == abbr] if not inj_db.empty else pd.DataFrame()
-        out_list = t_inj[t_inj["IS_OUT"]]["NORM"].tolist() if not t_inj.empty else []
-
-        if not ps_db.empty and "TEAM_ID" in ps_db.columns and "NORM" in ps_db.columns:
-            active = (
-                ps_db[(ps_db["TEAM_ID"] == tid) & (~ps_db["NORM"].isin(out_list))]
-                .sort_values("IMPACT", ascending=False)
-                .copy()
-            )
+    if sb_filtered.empty:
+        st.info(f"📅 {target_date_us}（美東）無有效 NBA 賽程。")
+        st.stop()
+    else:
+        now_us_str = datetime.now(us_east_tz).strftime("%m/%d/%Y")
+        if target_date_us != now_us_str:
+            st.info(f"📅 今日美東無賽程，已為您自動跳轉至明日：{target_date_us}")
         else:
-            active = pd.DataFrame()
+            st.success(f"📅 正在分析美東今日賽程：{target_date_us}")
 
-        return {
-            "pts": float(active["PTS"].sum()) if not active.empty and "PTS" in active.columns else 0.0,
-            "impact": float(active["IMPACT"].mean()) if not active.empty and "IMPACT" in active.columns else 0.0,
-            "df": active,
-            "inj": t_inj,
-            "b2b": bool(ctx["b2b"]),
-            "recent_w": float(ctx["recent_w"]),
-        }
+    today_team_ids = sorted(set(sb_filtered["HOME_TEAM_ID"].tolist() + sb_filtered["VISITOR_TEAM_ID"].tolist()))
+    ctx_db = get_team_context(today_team_ids, game_date_us=target_date_us, season=APP_SEASON)
 
-    h_p, a_p = build_pkg(h_id, h_abbr), build_pkg(a_id, a_abbr)
+    if inj_db.empty:
+        st.warning("⚠️ 傷病名單目前抓不到（ESPN 可能改版或暫時阻擋），推薦將不會排除傷兵。")
 
-    # diffs (✅ will be stored for ML training)
-    diff_pts = float(h_p["pts"] - a_p["pts"])
-    diff_impact = float(h_p["impact"] - a_p["impact"])
-    diff_recent_w = float(h_p["recent_w"] - a_p["recent_w"])
-    diff_b2b = float((1.0 if h_p["b2b"] else 0.0) - (1.0 if a_p["b2b"] else 0.0))
+    pinnacle_map = get_pinnacle_odds_for_date(target_date_us)
 
-    b2b_v = (-2.5 if h_p["b2b"] else 0) - (-2.5 if a_p["b2b"] else 0)
-    recent_v = (h_p["recent_w"] - a_p["recent_w"]) * 5
+    all_games_data = []
+    existing_game_id_map = load_existing_game_id_map(target_date_us, APP_SEASON)
 
-    base_diff = (h_p["pts"] - a_p["pts"]) * 0.09 + (h_p["impact"] - a_p["impact"]) * 3.8 + 2.5 + b2b_v + recent_v
+    for _, row in sb_filtered.iterrows():
+        h_id, a_id = row["HOME_TEAM_ID"], row["VISITOR_TEAM_ID"]
+        h_abbr, a_abbr = ID_MAP.get(h_id, str(h_id)), ID_MAP.get(a_id, str(a_id))
 
-    game_id = existing_game_id_map.get((norm_team_abbr(a_abbr), norm_team_abbr(h_abbr))) or f"{a_abbr}_{h_abbr}_{target_date_us.replace('/','')}"
-    a_cn = TEAM_NAME_CH.get(a_abbr, a_abbr)
-    h_cn = TEAM_NAME_CH.get(h_abbr, h_abbr)
+        def build_pkg(tid: int, abbr: str):
+            ctx = ctx_db.get(tid, {"b2b": False, "recent_w": 0.5})
 
-    pin = pinnacle_map.get((a_abbr, h_abbr), None)
-    pin_ok = bool(pin and pin.get("ok"))
-    pin_home_sp = float(pin["home_spread"]) if pin_ok else 0.0
-    pin_home_od = float(pin["home_odds"]) if pin_ok else 1.90
-    pin_away_od = float(pin["away_odds"]) if pin_ok else 1.90
+            t_inj = inj_db[inj_db["球隊"] == abbr] if not inj_db.empty else pd.DataFrame()
+            out_list = t_inj[t_inj["IS_OUT"]]["NORM"].tolist() if not t_inj.empty else []
 
-    all_games_data.append(
-        {
-            "game_id": game_id,
-            "label": f"{a_cn}(客) @ {h_cn}(主)",
-            "base_diff": float(base_diff),
-            "h_pkg": h_p,
-            "a_pkg": a_p,
-            "h_cn": h_cn,
-            "a_cn": a_cn,
-            "h_abbr": h_abbr,
-            "a_abbr": a_abbr,
-            "pin_ok": pin_ok,
-            "pin_ok_int": 1 if pin_ok else 0,
-            "pin_home_sp": pin_home_sp,
-            "pin_home_od": pin_home_od,
-            "pin_away_od": pin_away_od,
-            "diff_pts": diff_pts,
-            "diff_impact": diff_impact,
-            "diff_recent_w": diff_recent_w,
-            "diff_b2b": diff_b2b,
-        }
-    )
+            if not ps_db.empty and "TEAM_ID" in ps_db.columns and "NORM" in ps_db.columns:
+                active = (
+                    ps_db[(ps_db["TEAM_ID"] == tid) & (~ps_db["NORM"].isin(out_list))]
+                    .sort_values("IMPACT", ascending=False)
+                    .copy()
+                )
+            else:
+                active = pd.DataFrame()
+
+            return {
+                "pts": float(active["PTS"].sum()) if not active.empty and "PTS" in active.columns else 0.0,
+                "impact": float(active["IMPACT"].mean()) if not active.empty and "IMPACT" in active.columns else 0.0,
+                "df": active,
+                "inj": t_inj,
+                "b2b": bool(ctx["b2b"]),
+                "recent_w": float(ctx["recent_w"]),
+            }
+
+        h_p, a_p = build_pkg(h_id, h_abbr), build_pkg(a_id, a_abbr)
+
+        diff_pts = float(h_p["pts"] - a_p["pts"])
+        diff_impact = float(h_p["impact"] - a_p["impact"])
+        diff_recent_w = float(h_p["recent_w"] - a_p["recent_w"])
+        diff_b2b = float((1.0 if h_p["b2b"] else 0.0) - (1.0 if a_p["b2b"] else 0.0))
+
+        b2b_v = (-2.5 if h_p["b2b"] else 0) - (-2.5 if a_p["b2b"] else 0)
+        recent_v = (h_p["recent_w"] - a_p["recent_w"]) * 5
+
+        base_diff = (h_p["pts"] - a_p["pts"]) * 0.09 + (h_p["impact"] - a_p["impact"]) * 3.8 + 2.5 + b2b_v + recent_v
+
+        game_id = existing_game_id_map.get((norm_team_abbr(a_abbr), norm_team_abbr(h_abbr))) or f"{a_abbr}_{h_abbr}_{target_date_us.replace('/','')}"
+        a_cn = TEAM_NAME_CH.get(a_abbr, a_abbr)
+        h_cn = TEAM_NAME_CH.get(h_abbr, h_abbr)
+
+        pin = pinnacle_map.get((a_abbr, h_abbr), None)
+        pin_ok = bool(pin and pin.get("ok"))
+        pin_home_sp = float(pin["home_spread"]) if pin_ok else 0.0
+        pin_home_od = float(pin["home_odds"]) if pin_ok else 1.90
+        pin_away_od = float(pin["away_odds"]) if pin_ok else 1.90
+
+        all_games_data.append(
+            {
+                "game_id": game_id,
+                "label": f"{a_cn}(客) @ {h_cn}(主)",
+                "base_diff": float(base_diff),
+                "h_pkg": h_p,
+                "a_pkg": a_p,
+                "h_cn": h_cn,
+                "a_cn": a_cn,
+                "h_abbr": h_abbr,
+                "a_abbr": a_abbr,
+                "pin_ok": pin_ok,
+                "pin_ok_int": 1 if pin_ok else 0,
+                "pin_home_sp": pin_home_sp,
+                "pin_home_od": pin_home_od,
+                "pin_away_od": pin_away_od,
+                "diff_pts": diff_pts,
+                "diff_impact": diff_impact,
+                "diff_recent_w": diff_recent_w,
+                "diff_b2b": diff_b2b,
+            }
+        )
 
 # =========================================================
 # 10) 指標計算（✅ 使用 Base model + Calibrator）
 # =========================================================
 EDGE_THRESHOLD = 0.05
-MAX_PICKS = 3
+EDGE_THRESHOLD_LOW = 0.02  # secondary fallback threshold when < MAX_PICKS qualify at 5%
+MAX_PICKS = 4
 MAX_GAMES_FOR_PICK = 10
 
 BASE_FEATURES = [
@@ -1175,57 +1561,60 @@ def compute_metrics(g, home_spread_input, home_odds, away_odds, base_model, iso_
 # 11) 自動寫入 DB：把今日賽程先建檔（預設 Pinnacle / fallback）
 # =========================================================
 init_db_write_stats()
-try:
-    auto_rows = []
-    for g in all_games_data:
-        sp = float(g["pin_home_sp"])
-        oh = float(g["pin_home_od"])
-        oa = float(g["pin_away_od"])
-        src = "Pinnacle ✅" if g["pin_ok"] else "Fallback ⚠️"
-        m = compute_metrics(g, sp, oh, oa, base_model, iso_model)
+if USE_DB_ONLY:
+    st.caption("🗄️ DB-only 模式：頁面載入時不做自動建檔寫回。")
+else:
+    try:
+        auto_rows = []
+        for g in all_games_data:
+            sp = float(g["pin_home_sp"])
+            oh = float(g["pin_home_od"])
+            oa = float(g["pin_away_od"])
+            src = "Pinnacle ✅" if g["pin_ok"] else "Fallback ⚠️"
+            m = compute_metrics(g, sp, oh, oa, base_model, iso_model)
 
-        auto_rows.append({
-            "game_id": g["game_id"],
-            "game_date_us": target_date_us,
-            "season": APP_SEASON,
-            "away_abbr": g["a_abbr"],
-            "home_abbr": g["h_abbr"],
-            "away_name": g["a_cn"],
-            "home_name": g["h_cn"],
+            auto_rows.append({
+                "game_id": g["game_id"],
+                "game_date_us": target_date_us,
+                "season": APP_SEASON,
+                "away_abbr": g["a_abbr"],
+                "home_abbr": g["h_abbr"],
+                "away_name": g["a_cn"],
+                "home_name": g["h_cn"],
 
-            "home_spread": sp,
-            "home_odds": oh,
-            "away_odds": oa,
-            "line_source": src,
+                "home_spread": sp,
+                "home_odds": oh,
+                "away_odds": oa,
+                "line_source": src,
 
-            "base_diff": float(g["base_diff"]),
-            "f_edge": float(m["f_edge"]),
-            "cover_prob": float(m["cover_prob"]),
-            "implied_prob": float(m["implied_prob"]),
-            "edge_value": float(m["edge_value"]),
-            "ev": float(m["ev"]),
-            "pick_team": str(m["pick_team"]),
+                "base_diff": float(g["base_diff"]),
+                "f_edge": float(m["f_edge"]),
+                "cover_prob": float(m["cover_prob"]),
+                "implied_prob": float(m["implied_prob"]),
+                "edge_value": float(m["edge_value"]),
+                "ev": float(m["ev"]),
+                "pick_team": str(m["pick_team"]),
 
-            # ✅ ML features + outputs
-            "diff_pts": float(g["diff_pts"]),
-            "diff_impact": float(g["diff_impact"]),
-            "diff_recent_w": float(g["diff_recent_w"]),
-            "diff_b2b": float(g["diff_b2b"]),
-            "pin_ok": int(g["pin_ok_int"]),
-            "p_raw": float(m["p_raw"]),
-            "p_cal": float(m["p_cal"]),
+                # ✅ ML features + outputs
+                "diff_pts": float(g["diff_pts"]),
+                "diff_impact": float(g["diff_impact"]),
+                "diff_recent_w": float(g["diff_recent_w"]),
+                "diff_b2b": float(g["diff_b2b"]),
+                "pin_ok": int(g["pin_ok_int"]),
+                "p_raw": float(m["p_raw"]),
+                "p_cal": float(m["p_cal"]),
 
-            "status": "scheduled",
-            "away_score": None,
-            "home_score": None,
-            "cover": None,
-            "settled_at_tw": None,
-        })
-    n_auto = bulk_upsert(auto_rows)
-    add_db_write_stats("auto", ok=int(n_auto or 0), fail=0)
-except Exception as e:
-    add_db_write_stats("auto", ok=0, fail=max(1, len(all_games_data)), err=str(e))
-    st.warning(f"⚠️ DB 自動建檔失敗（不影響前端運作）：{e}")
+                "status": "scheduled",
+                "away_score": None,
+                "home_score": None,
+                "cover": None,
+                "settled_at_tw": None,
+            })
+        n_auto = bulk_upsert(auto_rows)
+        add_db_write_stats("auto", ok=int(n_auto or 0), fail=0)
+    except Exception as e:
+        add_db_write_stats("auto", ok=0, fail=max(1, len(all_games_data)), err=str(e))
+        st.warning(f"⚠️ DB 自動建檔失敗（不影響前端運作）：{e}")
 
 with st.expander("ℹ️ 系統主流程 / 數據分析邏輯（點我看）", expanded=False):
     st.markdown(
@@ -1260,20 +1649,67 @@ for g in pool_games:
         "home_spread_input": u_sp,
         "home_odds": u_oh,
         "away_odds": u_oa,
+        "no_odds_mode": False,
         **m
     })
 
-qualified = [x for x in pick_pool if x["edge_value"] > EDGE_THRESHOLD]
-qualified.sort(key=lambda x: (x["cover_prob"], x["edge_value"], x["ev"]), reverse=True)
-picks = qualified[:MAX_PICKS]
+# No-odds fallback pool: games without Pinnacle data, ranked by model confidence
+no_odds_pool = []
+for g in pool_games:
+    if g["pin_ok"]:
+        continue
+    m_fallback = compute_metrics(g, 0.0, g["pin_home_od"], g["pin_away_od"], base_model, iso_model)
+    no_odds_pool.append({
+        "g": g,
+        "src": "純勝率 ⚠️",
+        "manual": False,
+        "home_spread_input": 0.0,
+        "home_odds": g["pin_home_od"],
+        "away_odds": g["pin_away_od"],
+        "no_odds_mode": True,
+        **m_fallback
+    })
+
+# Primary: edge > 5%
+primary = [x for x in pick_pool if x["edge_value"] > EDGE_THRESHOLD]
+primary.sort(key=lambda x: (x["cover_prob"], x["edge_value"], x["ev"]), reverse=True)
+picks = primary[:MAX_PICKS]
+
+# Secondary: relax to 2% to fill up to MAX_PICKS
+if len(picks) < MAX_PICKS:
+    existing_gids = {p["g"]["game_id"] for p in picks}
+    secondary = [
+        x for x in pick_pool
+        if EDGE_THRESHOLD_LOW < x["edge_value"] <= EDGE_THRESHOLD
+        and x["g"]["game_id"] not in existing_gids
+    ]
+    secondary.sort(key=lambda x: (x["cover_prob"], x["edge_value"], x["ev"]), reverse=True)
+    picks += secondary[:MAX_PICKS - len(picks)]
+
+# Pure win-rate fallback: fill remaining with no-odds games sorted by model confidence
+if len(picks) < MAX_PICKS:
+    existing_gids = {p["g"]["game_id"] for p in picks}
+    no_odds_sorted = sorted(
+        [x for x in no_odds_pool if x["g"]["game_id"] not in existing_gids],
+        key=lambda x: abs(x["p_cal"] - 0.5),
+        reverse=True,
+    )
+    picks += no_odds_sorted[:MAX_PICKS - len(picks)]
 
 if len(picks) == 0:
-    st.info("依挑場規則：前 10 場「Pinnacle 真盤」裡，沒有任何一場盤口優勢 > 5%。建議不買、不硬湊。")
+    st.info("依挑場規則：前 10 場裡，沒有任何一場符合門檻（盤口優勢 > 5% 或模型信心足夠）。建議不買、不硬湊。")
 else:
     if len(picks) == 1:
         st.success("🎯 今日只有 1 場符合門檻：建議只買單場（或分注單場），不要硬湊串關。")
     else:
-        st.success(f"🎯 今日最能買：已依規則挑出 {len(picks)} 場（最多三場）。")
+        n_no_odds = sum(1 for p in picks if p.get("no_odds_mode"))
+        n_secondary = sum(1 for p in picks if not p.get("no_odds_mode") and EDGE_THRESHOLD_LOW < p["edge_value"] <= EDGE_THRESHOLD)
+        note = f"已依規則挑出 {len(picks)} 場（最多四場）"
+        if n_secondary:
+            note += f"，其中 {n_secondary} 場為放寬門檻（盤口優勢 2-5%）"
+        if n_no_odds:
+            note += f"，其中 {n_no_odds} 場為純勝率補位（無真實盤口）"
+        st.success(f"🎯 今日最能買：{note}。")
 
     cols = st.columns(len(picks))
     for idx, item in enumerate(picks):
@@ -1283,7 +1719,12 @@ else:
                 st.subheader(f"精選 {idx+1}")
                 st.write(f"**{g['label']}**")
                 st.success(f"首選：{item['pick_team']}")
-                st.caption(f"盤口來源：{item['src']}（候選池=真盤；排序=你輸入的盤口/賠率）")
+                if item.get("no_odds_mode"):
+                    st.warning("⚠️ 純勝率模式（無盤口）")
+                    st.caption(f"盤口來源：{item['src']}（依模型勝率排序）")
+                else:
+                    label = "放寬門檻" if EDGE_THRESHOLD_LOW < item["edge_value"] <= EDGE_THRESHOLD else "主力門檻"
+                    st.caption(f"盤口來源：{item['src']}（{label}；候選池=真盤；排序=你輸入的盤口/賠率）")
 
                 st.write(
                     f"過盤機率(校正)：**{item['cover_prob']*100:.1f}%** | "
@@ -1382,42 +1823,43 @@ for i in range(0, len(all_games_data), 3):
                     st.info(f"建議：{m['pick_team']}")
 
                 # ✅ 寫回 DB：你手動輸入的盤口/賠率 + 最新機率 + features
-                try:
-                    upsert_game_row({
-                        "game_id": gid,
-                        "game_date_us": target_date_us,
-                        "season": APP_SEASON,
-                        "away_abbr": g["a_abbr"],
-                        "home_abbr": g["h_abbr"],
-                        "away_name": g["a_cn"],
-                        "home_name": g["h_cn"],
+                if not USE_DB_ONLY:
+                    try:
+                        upsert_game_row({
+                            "game_id": gid,
+                            "game_date_us": target_date_us,
+                            "season": APP_SEASON,
+                            "away_abbr": g["a_abbr"],
+                            "home_abbr": g["h_abbr"],
+                            "away_name": g["a_cn"],
+                            "home_name": g["h_cn"],
 
-                        "home_spread": float(u_sp),
-                        "home_odds": float(u_oh),
-                        "away_odds": float(u_oa),
-                        "line_source": src,
+                            "home_spread": float(u_sp),
+                            "home_odds": float(u_oh),
+                            "away_odds": float(u_oa),
+                            "line_source": src,
 
-                        "base_diff": float(g["base_diff"]),
-                        "f_edge": float(m["f_edge"]),
-                        "cover_prob": float(m["cover_prob"]),
-                        "implied_prob": float(m["implied_prob"]),
-                        "edge_value": float(m["edge_value"]),
-                        "ev": float(m["ev"]),
-                        "pick_team": str(m["pick_team"]),
+                            "base_diff": float(g["base_diff"]),
+                            "f_edge": float(m["f_edge"]),
+                            "cover_prob": float(m["cover_prob"]),
+                            "implied_prob": float(m["implied_prob"]),
+                            "edge_value": float(m["edge_value"]),
+                            "ev": float(m["ev"]),
+                            "pick_team": str(m["pick_team"]),
 
-                        "diff_pts": float(g["diff_pts"]),
-                        "diff_impact": float(g["diff_impact"]),
-                        "diff_recent_w": float(g["diff_recent_w"]),
-                        "diff_b2b": float(g["diff_b2b"]),
-                        "pin_ok": int(g["pin_ok_int"]),
-                        "p_raw": float(m["p_raw"]),
-                        "p_cal": float(m["p_cal"]),
-                    })
-                    add_db_write_stats("manual", ok=1, fail=0)
-                except Exception as e:
-                    add_db_write_stats("manual", ok=0, fail=1, err=str(e))
-                    # 不要讓 DB 問題把 UI 卡死
-                    pass
+                            "diff_pts": float(g["diff_pts"]),
+                            "diff_impact": float(g["diff_impact"]),
+                            "diff_recent_w": float(g["diff_recent_w"]),
+                            "diff_b2b": float(g["diff_b2b"]),
+                            "pin_ok": int(g["pin_ok_int"]),
+                            "p_raw": float(m["p_raw"]),
+                            "p_cal": float(m["p_cal"]),
+                        })
+                        add_db_write_stats("manual", ok=1, fail=0)
+                    except Exception as e:
+                        add_db_write_stats("manual", ok=0, fail=1, err=str(e))
+                        # 不要讓 DB 問題把 UI 卡死
+                        pass
 
 # =========================================================
 # 15) 🔍 深度查詢（保留原 UI）
