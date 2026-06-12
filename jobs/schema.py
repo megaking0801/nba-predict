@@ -124,6 +124,7 @@ CREATE TABLE IF NOT EXISTS public.predictions (
   home_price_used  DOUBLE PRECISION,
   away_price_used  DOUBLE PRECISION,
   pred_margin      DOUBLE PRECISION NOT NULL,
+  p_raw            DOUBLE PRECISION,     -- uncalibrated cover prob (calibrator training input)
   p_home_cover     DOUBLE PRECISION,
   edge_prob        DOUBLE PRECISION,
   ev_home          DOUBLE PRECISION,
