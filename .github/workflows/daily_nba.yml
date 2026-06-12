@@ -4,44 +4,59 @@ on:
   workflow_dispatch:
     inputs:
       run:
-        description: "preload | cache | sync | settle | train_base | train_cal | all"
+        description: >-
+          legacy: preload | cache | sync | settle | train_base | all —
+          v2: v2_daily | v2_schema | v2_backfill | v2_ingest | v2_lines |
+          v2_injuries | v2_predict | v2_settle | v2_train | backup_legacy
         required: true
-        default: "preload"
-      verify_us_date:
-        description: "Optional: override US date (MM/DD/YYYY)"
-        required: false
-        default: ""
+        default: "v2_daily"
       season:
-        description: "Optional NBA season (e.g. 2025-26)"
+        description: "NBA season (e.g. 2025-26)"
         required: false
         default: "2025-26"
+      seasons:
+        description: "v2_backfill: comma-separated seasons"
+        required: false
+        default: "2023-24,2024-25,2025-26"
+      verify_us_date:
+        description: "legacy: override US date (MM/DD/YYYY)"
+        required: false
+        default: ""
       cache_past_days:
-        description: "Optional: cache past days window"
+        description: "legacy: cache past days window"
         required: false
         default: "14"
       cache_future_days:
-        description: "Optional: cache future days window"
+        description: "legacy: cache future days window"
         required: false
         default: "7"
       backfill_past_days:
-        description: "Optional: sync past days window"
+        description: "legacy: sync past days window"
         required: false
         default: "30"
       backfill_future_days:
-        description: "Optional: sync future days window"
+        description: "legacy: sync future days window"
         required: false
         default: "2"
       settle_past_days:
-        description: "Optional: settle past days window"
+        description: "legacy: settle past days window"
         required: false
         default: "180"
       base_min_rows:
-        description: "Optional: min rows for train_base_model"
+        description: "legacy: min rows for train_base_model"
         required: false
         default: "200"
   schedule:
-    # 10:30 UTC = 18:30 Asia/Taipei
+    # 10:30 UTC = 18:30 Asia/Taipei — full daily run (legacy preload + v2 daily)
     - cron: "30 10 * * *"
+    # 22:00 UTC = 06:00 Asia/Taipei (near tipoff) — v2 line snapshot + re-predict
+    - cron: "0 22 * * *"
+    # Monday 12:00 UTC — weekly v2 retrain (no-ops below MIN_TRAIN_ROWS)
+    - cron: "0 12 * * 1"
+
+concurrency:
+  group: daily-nba
+  cancel-in-progress: false
 
 jobs:
   nba:
@@ -82,15 +97,14 @@ jobs:
 
       - name: Show resolved config
         run: |
-          echo "event=${{ github.event_name }}"
-          echo "run=${{ inputs.run || 'preload(schedule default)' }}"
+          echo "event=${{ github.event_name }} schedule=${{ github.event.schedule }}"
+          echo "run=${{ inputs.run || '(schedule)' }}"
           echo "season=${NBA_SEASON}"
-          echo "cache_window=${CACHE_PAST_DAYS}/${CACHE_FUTURE_DAYS}"
-          echo "backfill_window=${BACKFILL_PAST_DAYS}/${BACKFILL_FUTURE_DAYS}"
-          echo "settle_past_days=${SETTLE_PAST_DAYS}"
 
-      - name: Daily preload to DB
-        if: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && (inputs.run == 'preload' || inputs.run == 'all')) }}
+      # ---------- legacy pipeline (parallel-run period; removed at cutover) ----------
+
+      - name: Legacy daily preload to DB
+        if: ${{ github.event.schedule == '30 10 * * *' || (github.event_name == 'workflow_dispatch' && (inputs.run == 'preload' || inputs.run == 'all')) }}
         run: |
           EXTRA_ARGS=""
           if [ "${USE_ODDS}" = "1" ]; then
@@ -105,32 +119,84 @@ jobs:
             --settle-past-days "${SETTLE_PAST_DAYS}" \
             $EXTRA_ARGS
 
-      - name: Cache snapshots only
-        if: ${{ github.event_name == 'workflow_dispatch' && (inputs.run == 'cache') }}
-        run: |
-          python -u -m jobs.cache_nba
+      - name: Legacy cache snapshots only
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.run == 'cache' }}
+        run: python -u -m jobs.cache_nba
 
-      - name: Sync games only
-        if: ${{ github.event_name == 'workflow_dispatch' && (inputs.run == 'sync') }}
+      - name: Legacy sync games only
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.run == 'sync' }}
         env:
           FAST_MODE: "0"
-        run: |
-          python -u -m jobs.sync_daily
+        run: python -u -m jobs.sync_daily
 
-      - name: Settle results only
-        if: ${{ github.event_name == 'workflow_dispatch' && (inputs.run == 'settle') }}
-        run: |
-          python -u -m jobs.settle_daily
+      - name: Legacy settle results only
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.run == 'settle' }}
+        run: python -u -m jobs.settle_daily
 
-      - name: Train base model
-        if: ${{ github.event_name == 'workflow_dispatch' && (inputs.run == 'train_base' || inputs.run == 'all') }}
+      - name: Legacy train base model
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.run == 'train_base' }}
         run: |
           python -u -m jobs.cache_boxscore
           python -u -m jobs.rebuild_features_from_boxscore
           python -u -m jobs.fill_b2b_nulls
           python -u -m jobs.train_base_model
 
-      - name: Train calibrator
-        if: ${{ github.event_name == 'workflow_dispatch' && (inputs.run == 'train_cal' || inputs.run == 'all') }}
+      # NOTE: the legacy "train_cal" step was removed deliberately — it
+      # overwrote cover_prob_calibrator with a wrong-scale isotonic and broke
+      # the app's calibration whenever it ran.
+
+      # ---------- v2 pipeline ----------
+
+      - name: v2 schema
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.run == 'v2_schema' }}
+        run: python -u -m jobs.schema
+
+      - name: v2 backup legacy lines (CSV artifact)
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.run == 'backup_legacy' }}
+        run: python -u -m jobs.export_legacy_csv --out games_legacy_backup.csv
+
+      - name: Upload legacy backup artifact
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.run == 'backup_legacy' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: games-legacy-backup
+          path: games_legacy_backup.csv
+          retention-days: 90
+
+      - name: v2 historical backfill
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.run == 'v2_backfill' }}
+        run: python -u -m jobs.backfill --seasons "${{ inputs.seasons }}"
+
+      - name: v2 daily pipeline
+        if: ${{ github.event.schedule == '30 10 * * *' || (github.event_name == 'workflow_dispatch' && (inputs.run == 'v2_daily' || inputs.run == 'all')) }}
+        run: python -u -m jobs.run_daily
+
+      - name: v2 ingest only (schedule + stats)
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.run == 'v2_ingest' }}
         run: |
-          python -u -m jobs.train_calibrator
+          python -u -m jobs.ingest_games
+          python -u -m jobs.ingest_stats --season "${NBA_SEASON}"
+
+      - name: v2 near-tipoff lines + re-predict
+        if: ${{ github.event.schedule == '0 22 * * *' || (github.event_name == 'workflow_dispatch' && inputs.run == 'v2_lines') }}
+        run: |
+          python -u -m jobs.snapshot_lines
+          python -u -m jobs.predict_daily
+
+      - name: v2 injuries only
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.run == 'v2_injuries' }}
+        run: python -u -m jobs.snapshot_injuries
+
+      - name: v2 predict only
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.run == 'v2_predict' }}
+        run: python -u -m jobs.predict_daily
+
+      - name: v2 settle only
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.run == 'v2_settle' }}
+        run: python -u -m jobs.settle
+
+      - name: v2 train + calibrate
+        if: ${{ github.event.schedule == '0 12 * * 1' || (github.event_name == 'workflow_dispatch' && inputs.run == 'v2_train') }}
+        run: |
+          python -u -m jobs.train
+          python -u -m jobs.calibrate
