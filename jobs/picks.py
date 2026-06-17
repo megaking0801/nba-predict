@@ -11,7 +11,8 @@ import datetime as dt
 from typing import Dict, List, Optional
 
 from jobs.config import CONFIG
-from jobs.model import apply_calibrator, devig, expected_value, margin_to_cover_prob
+from jobs.model import (apply_calibrator, devig, expected_value,
+                        margin_to_cover_prob, margin_to_win_prob)
 
 
 def decide_game(mu: float, sigma: float, *,
@@ -29,6 +30,7 @@ def decide_game(mu: float, sigma: float, *,
     passes and the edge clears the threshold."""
     out: Dict = {
         "pred_margin": float(mu),
+        "p_home_win": margin_to_win_prob(mu, sigma),  # straight-up, line-independent
         "p_raw": None, "p_cal": None,
         "edge_home": None, "edge_away": None,
         "ev_home": None, "ev_away": None,

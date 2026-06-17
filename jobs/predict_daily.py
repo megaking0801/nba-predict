@@ -171,13 +171,13 @@ def main() -> None:
                     INSERT INTO public.predictions
                       (game_id, model_name, model_version, line_id_used,
                        home_spread_used, home_price_used, away_price_used,
-                       pred_margin, p_raw, p_home_cover, edge_prob, ev_home,
+                       pred_margin, p_raw, p_home_cover, p_home_win, edge_prob, ev_home,
                        pick_side, abstain_reason, is_paper)
-                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                     """,
                     (d["game_id"], MODEL_NAME, model_version, d["line_id"],
                      d["home_spread"], d["home_price"], d["away_price"],
-                     d["pred_margin"], d["p_raw"], d["p_cal"], edge,
+                     d["pred_margin"], d["p_raw"], d["p_cal"], d["p_home_win"], edge,
                      d["ev_home"], d["pick_side"], d["abstain_reason"], paper),
                 )
                 cur.execute(

@@ -17,6 +17,7 @@ from jobs.config import CONFIG
 from jobs.db_utils import db_connect
 from jobs.features import FEATURE_NAMES, build_feature_table, load_bundles
 from jobs.model import devig, estimate_sigma, fit_candidate, margin_to_cover_prob
+from jobs.picks import cap_picks_per_day, decide_game
 
 BASELINE_KINDS = ("const", "elo")
 
@@ -149,6 +150,99 @@ def cover_metrics(preds: pd.DataFrame, lines: pd.DataFrame) -> Optional[dict]:
     return out
 
 
+def straight_up_accuracy(preds: pd.DataFrame) -> Optional[dict]:
+    """How often sign(mu) matches sign(margin) — the moneyline 'pick the
+    winner' hit-rate. NBA has no ties, so every game is graded."""
+    if preds.empty:
+        return None
+    pred_home = preds["mu"] > 0
+    actual_home = preds["margin"] > 0
+    return {
+        "n": int(len(preds)),
+        "winner_accuracy": float((pred_home == actual_home).mean()),
+    }
+
+
+def _simulate_policy(preds: pd.DataFrame, lines: pd.DataFrame, min_edge: float,
+                     cfg=CONFIG) -> dict:
+    """Replay the real pick policy (decide_game + cap_picks_per_day) over
+    walk-forward predictions joined to their lines, then settle ATS results.
+
+    Conservative, leakage-free by construction: identity calibrator (no
+    forward-fit that could peek), closing lines so no stale guard, and the
+    early-season/injury guards are already handled by walk-forward eligibility
+    and unavailable history respectively — so both are left off here."""
+    df = preds.merge(lines, on="game_id", how="inner")
+    if df.empty:
+        return {"n_picks": 0}
+
+    decisions: List[dict] = []
+    for _, r in df.iterrows():
+        if r["home_spread"] is None or pd.isna(r["home_spread"]):
+            continue
+        d = decide_game(
+            r["mu"], r["sigma"],
+            home_spread=float(r["home_spread"]),
+            home_price=(float(r["home_price"]) if pd.notna(r["home_price"]) else None),
+            away_price=(float(r["away_price"]) if pd.notna(r["away_price"]) else None),
+            calibrator=None, min_edge=min_edge,
+            line_age_hours=None, games_played_min=None, injury_veto=False, cfg=cfg)
+        d["game_date_et"] = r["date"]
+        d["_margin"] = float(r["margin"])
+        d["_home_spread"] = float(r["home_spread"])
+        d["_home_price"] = float(r["home_price"]) if pd.notna(r["home_price"]) else None
+        d["_away_price"] = float(r["away_price"]) if pd.notna(r["away_price"]) else None
+        decisions.append(d)
+
+    cap_picks_per_day(decisions, cfg=cfg)
+
+    n_graded = wins = pushes = 0
+    pnl = 0.0
+    for d in decisions:
+        if not d.get("pick_side"):
+            continue
+        actual = d["_margin"] + d["_home_spread"]
+        if abs(actual) < 1e-9:
+            pushes += 1
+            continue  # refunded: no stake at risk
+        home_covers = actual > 0
+        won = (d["pick_side"] == "HOME") == home_covers
+        price = d["_home_price"] if d["pick_side"] == "HOME" else d["_away_price"]
+        if not price or price <= 1.0:
+            price = 1.91  # -110 fallback when the book price is missing
+        pnl += (price - 1.0) if won else -1.0
+        n_graded += 1
+        wins += int(won)
+
+    n_picks = sum(1 for d in decisions if d.get("pick_side"))
+    return {
+        "min_edge": round(float(min_edge), 4),
+        "n_picks": n_picks,            # picks placed (incl. eventual pushes)
+        "n_graded": n_graded,          # excludes pushes
+        "pushes": pushes,
+        "hit_rate": (wins / n_graded) if n_graded else None,
+        "roi": (pnl / n_graded) if n_graded else None,   # flat 1u stake
+        "units_pnl": round(pnl, 3),
+        "breakeven_110": 0.524,
+    }
+
+
+def betting_backtest(preds: pd.DataFrame, lines: pd.DataFrame, cfg=CONFIG) -> Optional[dict]:
+    """Honest 'would this have made money?' report: ATS hit-rate + flat-stake
+    ROI under the live pick policy, a min_edge sensitivity sweep, and the
+    straight-up winner-prediction accuracy. Built only on walk-forward
+    out-of-time predictions, so it cannot flatter itself with future data."""
+    if preds.empty:
+        return None
+    grid = sorted({0.02, 0.03, 0.04, 0.05, 0.06, round(float(cfg.MIN_EDGE), 4)})
+    sweep = [_simulate_policy(preds, lines, e, cfg) for e in grid]
+    return {
+        "ats": _simulate_policy(preds, lines, cfg.MIN_EDGE, cfg),  # at the live threshold
+        "edge_sweep": sweep,
+        "straight_up": straight_up_accuracy(preds),
+    }
+
+
 def split_tune_report(preds: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """Hyperparams are selected on the earliest evaluated season; the rest is
     the untouched report segment. With one season, split it in half by date."""
@@ -207,6 +301,7 @@ def evaluate_kind(df: pd.DataFrame, lines: pd.DataFrame, kind: str,
         "tune_margin": margin_metrics(tune),
         "report_margin": margin_metrics(report),
         "report_cover": cover_metrics(report, lines),
+        "report_betting": betting_backtest(preds, lines),
     }
 
 
@@ -232,10 +327,19 @@ def main() -> None:
             "tune_margin": r["tune_margin"],
             "report_margin": r["report_margin"],
             "report_cover": r["report_cover"],
+            "report_betting": r["report_betting"],
         }
         rm = r["report_margin"]
         print(f"[EVAL] {kind}: report MAE={rm['mae']:.3f} bias={rm['bias']:+.3f} "
               f"n={rm['n']}" if rm else f"[EVAL] {kind}: insufficient data", flush=True)
+        rb = r["report_betting"]
+        if rb:
+            ats, su = rb["ats"], rb["straight_up"]
+            hit = f"{ats['hit_rate'] * 100:.1f}%" if ats.get("hit_rate") is not None else "n/a"
+            roi = f"{ats['roi'] * 100:+.1f}%" if ats.get("roi") is not None else "n/a"
+            su_acc = f"{su['winner_accuracy'] * 100:.1f}%" if su else "n/a"
+            print(f"[BET ] {kind}: ATS picks={ats['n_graded']} hit={hit} ROI={roi} "
+                  f"(breakeven 52.4%) | winner-acc={su_acc}", flush=True)
 
     print(json.dumps(report, indent=2, default=str), flush=True)
 

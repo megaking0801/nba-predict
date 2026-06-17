@@ -7,7 +7,8 @@ on:
         description: >-
           legacy: preload | cache | sync | settle | train_base | all —
           v2: v2_daily | v2_schema | v2_backfill | v2_ingest | v2_lines |
-          v2_injuries | v2_predict | v2_settle | v2_train | backup_legacy
+          v2_injuries | v2_predict | v2_settle | v2_train | v2_diagnose |
+          v2_evaluate | backup_legacy
         required: true
         default: "v2_daily"
       season:
@@ -200,3 +201,11 @@ jobs:
         run: |
           python -u -m jobs.train
           python -u -m jobs.calibrate
+
+      - name: v2 diagnose (read-only DB state check)
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.run == 'v2_diagnose' }}
+        run: python -u -m jobs.diagnose
+
+      - name: v2 evaluate (walk-forward + ATS ROI backtest)
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.run == 'v2_evaluate' }}
+        run: python -u -m jobs.evaluate

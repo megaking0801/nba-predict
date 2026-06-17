@@ -126,6 +126,7 @@ def main() -> None:
             "config_hash": CONFIG_HASH,
             "report_margin": winner["report_margin"],
             "report_cover": winner["report_cover"],
+            "report_betting": winner["report_betting"],
             "baseline_const": baseline["report_margin"],
             "baseline_elo": elo_only["report_margin"],
             "gates_passed": passed,

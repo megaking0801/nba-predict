@@ -118,6 +118,15 @@ def margin_to_cover_prob(mu: float, sigma: float, spread: float) -> Dict[str, fl
     return {"p_win": p_win, "p_push": p_push, "p_loss": p_loss, "p_raw": p_raw}
 
 
+def margin_to_win_prob(mu: float, sigma: float) -> float:
+    """P(home wins straight up) for home margin M ~ Normal(mu, sigma).
+
+    Home wins ⇔ M > 0. NBA games cannot tie, so there is no push mass and no
+    continuity correction: p_home_win = 1 − Φ(−mu/sigma) = Φ(mu/sigma)."""
+    sigma = max(1e-6, float(sigma))
+    return _phi(float(mu) / sigma)
+
+
 def expected_value(p_win: float, p_loss: float, decimal_odds: float) -> float:
     """Flat-stake EV per unit; pushes refund the stake."""
     return p_win * (decimal_odds - 1.0) - p_loss

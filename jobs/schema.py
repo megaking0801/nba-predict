@@ -9,7 +9,7 @@ from __future__ import annotations
 from jobs.db_utils import db_connect
 from jobs.teams import seed_rows
 
-SCHEMA_VERSION = "1"
+SCHEMA_VERSION = "2"
 
 DDL = """
 CREATE TABLE IF NOT EXISTS public.schema_meta (
@@ -152,6 +152,15 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_model_active
   ON public.model_registry_v2 (model_name) WHERE is_active;
 """
 
+# Additive, re-entrant migrations for tables created by an earlier DDL run
+# (CREATE TABLE IF NOT EXISTS won't add columns to a table that already exists).
+MIGRATIONS = """
+ALTER TABLE public.predictions
+  ADD COLUMN IF NOT EXISTS p_home_win DOUBLE PRECISION;  -- straight-up win prob, line-independent
+ALTER TABLE public.predictions
+  ADD COLUMN IF NOT EXISTS win_result SMALLINT;          -- settled: 1 home won, 0 away won
+"""
+
 # Book preference order must match jobs.config.CONFIG.BOOK_PREFERENCE.
 VIEWS = """
 CREATE OR REPLACE VIEW public.v_latest_lines AS
@@ -180,8 +189,8 @@ SELECT g.game_id, g.season, g.season_type, g.game_date_et, g.tipoff_utc, g.statu
        l.home_spread, l.home_price, l.away_price, l.source AS line_source, l.book,
        l.captured_at AS line_captured_at,
        p.model_name, p.model_version, p.predicted_at, p.home_spread_used,
-       p.pred_margin, p.p_home_cover, p.edge_prob, p.ev_home, p.pick_side,
-       p.abstain_reason, p.is_paper, p.cover_result
+       p.pred_margin, p.p_home_cover, p.p_home_win, p.edge_prob, p.ev_home, p.pick_side,
+       p.abstain_reason, p.is_paper, p.cover_result, p.win_result
 FROM public.games_v2 g
 LEFT JOIN public.v_latest_lines l ON l.game_id = g.game_id
 LEFT JOIN LATERAL (
@@ -206,6 +215,7 @@ ON CONFLICT (team_abbr) DO UPDATE SET
 def ensure_schema(conn) -> None:
     with conn.cursor() as cur:
         cur.execute(DDL)
+        cur.execute(MIGRATIONS)
         for row in seed_rows():
             cur.execute(SEED_TEAMS_SQL, row)
         cur.execute(VIEWS)
