@@ -49,3 +49,11 @@ def scoreboard(date_yyyymmdd: str, **kw) -> Optional[dict]:
 
 def summary(event_id: str, **kw) -> Optional[dict]:
     return get_json(f"{ESPN_BASE}/summary?event={event_id}", **kw)
+
+
+ESPN_CORE = "https://sports.core.api.espn.com/v2/sports/basketball/leagues/nba"
+
+
+def odds(event_id: str, **kw) -> Optional[dict]:
+    """Core-API odds: historical providers with open/close spreads + prices."""
+    return get_json(f"{ESPN_CORE}/events/{event_id}/competitions/{event_id}/odds", **kw)

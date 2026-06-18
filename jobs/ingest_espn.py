@@ -18,7 +18,7 @@ from zoneinfo import ZoneInfo
 import psycopg2.extras
 
 from jobs.db_utils import db_connect
-from jobs.espn_http import scoreboard, summary
+from jobs.espn_http import odds, scoreboard, summary
 from jobs.schema import ensure_schema
 from jobs.teams import normalize_espn_abbr
 
@@ -311,17 +311,102 @@ def daily(days_back: int, days_ahead: int = 2) -> None:
     print(f"[OK] daily: games={g} team_rows={t} player_rows={p}", flush=True)
 
 
+# ----- odds (market lines) from ESPN core API -----
+
+def _spread_num(american: Optional[str]) -> Optional[float]:
+    """ESPN point-spread string ('+5.5'/'-4.5'/'PK'/'EVEN') -> float home handicap."""
+    if american is None:
+        return None
+    s = str(american).strip().upper().replace("+", "")
+    if s in ("PK", "EVEN", "EV", ""):
+        return 0.0
+    try:
+        return float(s)
+    except ValueError:
+        return None
+
+
+def parse_close_line(items: List[dict]) -> Optional[Tuple[float, float, float]]:
+    """Closing (home_spread, home_price, away_price) from the priority provider.
+    Prices are decimal odds on the spread bet; default to 1.91 (-110) if absent."""
+    prov = next((it for it in items if (it.get("provider") or {}).get("priority") == 0),
+                items[0] if items else None)
+    if not prov:
+        return None
+    hc = (prov.get("homeTeamOdds") or {}).get("close") or {}
+    ac = (prov.get("awayTeamOdds") or {}).get("close") or {}
+    hs = _spread_num((hc.get("pointSpread") or {}).get("american"))
+    if hs is None:
+        return None
+    hp = (hc.get("spread") or {}).get("decimal")
+    ap_ = (ac.get("spread") or {}).get("decimal")
+    return hs, float(hp or 1.91), float(ap_ or 1.91)
+
+
+INSERT_LINE = """
+INSERT INTO public.market_lines
+  (game_id, captured_at, source, book, home_spread, home_price, away_price)
+VALUES %s
+"""
+
+
+def backfill_odds() -> None:
+    """Fetch ESPN closing lines for every final game and (re)load market_lines.
+    captured_at is set to tipoff so v_closing_lines includes them."""
+    conn = db_connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT game_id, tipoff_utc, game_date_et FROM public.games_v2 "
+                        "WHERE status='final' ORDER BY game_date_et")
+            games = cur.fetchall()
+    finally:
+        conn.close()
+
+    def fetch(g):
+        gid, tip, gdate = g
+        d = odds(gid)
+        if not d:
+            return None
+        parsed = parse_close_line(d.get("items", []))
+        if not parsed:
+            return None
+        hs, hp, ap_ = parsed
+        captured = tip or dt.datetime.combine(gdate, dt.time(23, 0), tzinfo=ET)
+        return (gid, captured, "espn", "espn", hs, hp, ap_)
+
+    rows = []
+    total = len(games)
+    for i in range(0, total, 200):
+        chunk = games[i:i + 200]
+        with ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
+            rows.extend(r for r in ex.map(fetch, chunk) if r)
+        print(f"[..] odds {i + len(chunk)}/{total} (with line: {len(rows)})", flush=True)
+
+    conn = db_connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM public.market_lines WHERE source='espn'")  # idempotent re-load
+            psycopg2.extras.execute_values(cur, INSERT_LINE, rows, page_size=500)
+        conn.commit()
+    finally:
+        conn.close()
+    print(f"[OK] odds backfill: {len(rows)}/{total} games got a closing line", flush=True)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--seasons", help="comma-separated, e.g. 2023-24,2024-25,2025-26")
     ap.add_argument("--days-back", type=int, default=3)
+    ap.add_argument("--odds", action="store_true", help="backfill ESPN closing lines for all final games")
     args = ap.parse_args()
     conn = db_connect()
     try:
         ensure_schema(conn)
     finally:
         conn.close()
-    if args.seasons:
+    if args.odds:
+        backfill_odds()
+    elif args.seasons:
         backfill([s.strip() for s in args.seasons.split(",") if s.strip()])
     else:
         daily(args.days_back)
