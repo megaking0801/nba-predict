@@ -253,16 +253,18 @@ with st.sidebar:
         rb = m.get("report_betting") or {}
         ats = rb.get("ats") or {}
         su = rb.get("straight_up") or {}
+        # winner-prediction accuracy is line-independent — always show when present
+        if su.get("winner_accuracy") is not None:
+            st.caption(f"🎯 勝負預測（walk-forward 時間外驗證）：猜中率 "
+                       f"{su['winner_accuracy'] * 100:.1f}%（{su.get('n', 0)} 場）")
+        # ATS hit-rate/ROI needs historical lines; show only when available
         if ats.get("hit_rate") is not None:
-            su_txt = (f"・勝負猜中 {su['winner_accuracy'] * 100:.1f}%"
-                      if su.get("winner_accuracy") is not None else "")
             st.caption(
-                f"📈 歷史回測（walk-forward，誠實出手）：ATS 過盤 "
-                f"{ats['hit_rate'] * 100:.1f}%・ROI {ats['roi'] * 100:+.1f}%"
-                f"（{ats['n_graded']} 注，損益兩平 52.4%）{su_txt}"
+                f"💰 ATS 回測：過盤 {ats['hit_rate'] * 100:.1f}%・"
+                f"ROI {ats['roi'] * 100:+.1f}%（{ats['n_graded']} 注，損益兩平 52.4%）"
             )
         elif rb:
-            st.caption("📈 歷史回測：樣本不足，尚無足量出手可評估。")
+            st.caption("💰 ATS 回測：尚無歷史盤口，無法評估過盤/ROI（需接入盤口資料）。")
     else:
         st.error("尚無啟用中的 margin_model（先跑 v2_backfill + v2_train）")
     if cal_info:
