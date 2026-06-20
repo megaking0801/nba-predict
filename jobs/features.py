@@ -32,6 +32,16 @@ FEATURE_NAMES = [
     "games_played_min",
 ]
 
+# Totals (大小分) model uses LEVEL/SUM features — combined offense/defense and
+# pace drive total points, unlike the margin model's difference features.
+TOTAL_FEATURE_NAMES = [
+    "off10_home", "def10_home", "off10_away", "def10_away",
+    "off30_home", "def30_home", "off30_away", "def30_away",
+    "pace10_home", "pace10_away", "pace10_avg",
+    "rest_home", "rest_away", "home_b2b", "away_b2b",
+    "three_in_four_home", "three_in_four_away", "games_played_min",
+]
+
 _SUFFIXES = {"jr", "sr", "ii", "iii", "iv", "v"}
 
 
@@ -105,6 +115,9 @@ class FeatureBuilder:
         self.first_season: Optional[str] = None
         self._pace_sum = 0.0
         self._pace_n = 0
+        self._ortg_sum = 0.0   # league-average offensive rating (totals shrink prior)
+        self._drtg_sum = 0.0
+        self._rtg_n = 0
 
     # ----- state access -----
 
@@ -124,6 +137,12 @@ class FeatureBuilder:
 
     def _league_pace(self) -> float:
         return self._pace_sum / self._pace_n if self._pace_n else 100.0
+
+    def _league_ortg(self) -> float:
+        return self._ortg_sum / self._rtg_n if self._rtg_n else 112.0
+
+    def _league_drtg(self) -> float:
+        return self._drtg_sum / self._rtg_n if self._rtg_n else 112.0
 
     def _full_strength(self, ts: TeamState) -> float:
         cfg = self.cfg
@@ -209,6 +228,37 @@ class FeatureBuilder:
             "games_played_min": float(min(h.gp, a.gp)),
         }
 
+    def emit_totals(self, home_abbr: str, away_abbr: str, date: dt.date) -> Dict[str, float]:
+        """Level/sum features for the totals model (read state BEFORE this game)."""
+        cfg = self.cfg
+        h, a = self.team(home_abbr), self.team(away_abbr)
+        o_prior, d_prior, pace_prior = self._league_ortg(), self._league_drtg(), self._league_pace()
+
+        def s_short(ts: TeamState, key: str, prior: float) -> float:
+            return shrunk([g[key] for g in list(ts.nets)[-cfg.WINDOW_SHORT:]],
+                          cfg.SHRINK_K_SHORT, prior)
+
+        def s_long(ts: TeamState, key: str, prior: float) -> float:
+            return shrunk([g[key] for g in ts.nets], cfg.SHRINK_K_LONG, prior)
+
+        h_rest, a_rest = self._rest_days(h, date), self._rest_days(a, date)
+        h_b2b = 1 if (h.dates and (date - h.dates[-1]).days == 1) else 0
+        a_b2b = 1 if (a.dates and (date - a.dates[-1]).days == 1) else 0
+        pace_h, pace_a = s_short(h, "pace", pace_prior), s_short(a, "pace", pace_prior)
+
+        return {
+            "off10_home": s_short(h, "ortg", o_prior), "def10_home": s_short(h, "drtg", d_prior),
+            "off10_away": s_short(a, "ortg", o_prior), "def10_away": s_short(a, "drtg", d_prior),
+            "off30_home": s_long(h, "ortg", o_prior), "def30_home": s_long(h, "drtg", d_prior),
+            "off30_away": s_long(a, "ortg", o_prior), "def30_away": s_long(a, "drtg", d_prior),
+            "pace10_home": pace_h, "pace10_away": pace_a, "pace10_avg": (pace_h + pace_a) / 2.0,
+            "rest_home": float(h_rest), "rest_away": float(a_rest),
+            "home_b2b": float(h_b2b), "away_b2b": float(a_b2b),
+            "three_in_four_home": float(self._three_in_four(h, date)),
+            "three_in_four_away": float(self._three_in_four(a, date)),
+            "games_played_min": float(min(h.gp, a.gp)),
+        }
+
     # ----- update -----
 
     @staticmethod
@@ -226,6 +276,8 @@ class FeatureBuilder:
         opp_orb_pct = f(opp, "oreb") / max(1.0, f(opp, "oreb") + f(own, "dreb"))
         return {
             "net": ortg - drtg,
+            "ortg": ortg,          # absolute offensive rating (for totals model)
+            "drtg": drtg,          # absolute defensive rating (for totals model)
             "efg": efg(own) - efg(opp),
             "tov": (f(own, "tov") / own_poss) - (f(opp, "tov") / opp_poss),
             "orb": own_orb_pct - opp_orb_pct,
@@ -291,6 +343,9 @@ class FeatureBuilder:
             a.away_nets.append(m_a["net"])
             self._pace_sum += m_h["pace"]
             self._pace_n += 1
+            self._ortg_sum += m_h["ortg"] + m_a["ortg"]
+            self._drtg_sum += m_h["drtg"] + m_a["drtg"]
+            self._rtg_n += 2
 
         h.dates.append(date)
         a.dates.append(date)
@@ -314,7 +369,7 @@ def load_bundles(conn, through_date: Optional[dt.date] = None) -> List[dict]:
     with conn.cursor() as cur:
         cur.execute(f"""
             SELECT g.game_id, g.season, g.season_type, g.game_date_et,
-                   g.home_abbr, g.away_abbr, g.margin
+                   g.home_abbr, g.away_abbr, g.margin, g.home_score, g.away_score
             FROM public.games_v2 g
             WHERE g.status = 'final' AND g.margin IS NOT NULL {clause}
             ORDER BY g.game_date_et, g.game_id
@@ -349,15 +404,15 @@ def load_bundles(conn, through_date: Optional[dt.date] = None) -> List[dict]:
             player_stats.setdefault(d["game_id"], []).append(d)
 
     bundles = []
-    for game_id, season, season_type, date, home, away, margin in games:
+    for game_id, season, season_type, date, home, away, margin, hs, as_ in games:
         ts = team_stats.get(game_id)
         if not ts or home not in ts or away not in ts:
             continue  # boxscore not landed yet; replay skips it
         bundles.append({
             "game_id": game_id, "season": season, "season_type": season_type,
             "date": date, "home_abbr": home, "away_abbr": away,
-            "margin": margin, "team_stats": ts,
-            "player_stats": player_stats.get(game_id, []),
+            "margin": margin, "home_score": hs, "away_score": as_,
+            "team_stats": ts, "player_stats": player_stats.get(game_id, []),
         })
     return bundles
 
@@ -369,15 +424,20 @@ def build_feature_table(bundles: List[dict], cfg=CONFIG) -> pd.DataFrame:
     rows = []
     for b in bundles:
         feats = builder.emit(b["home_abbr"], b["away_abbr"], b["date"])
+        tfeats = builder.emit_totals(b["home_abbr"], b["away_abbr"], b["date"])
         warmup = (cfg.WARMUP_GP_FIRST_SEASON if b["season"] == first_season
                   else cfg.MIN_GP_OTHER_SEASONS)
+        total = (None if b.get("home_score") is None or b.get("away_score") is None
+                 else float(b["home_score"]) + float(b["away_score"]))
         rows.append({
             "game_id": b["game_id"], "season": b["season"],
             "season_type": b["season_type"], "date": b["date"],
             "home_abbr": b["home_abbr"], "away_abbr": b["away_abbr"],
             "margin": float(b["margin"]),
+            "total": total,
             "eligible": feats["games_played_min"] >= warmup,
             **feats,
+            **{k: tfeats[k] for k in tfeats if k not in feats},
         })
         builder.update(b)
     return pd.DataFrame(rows)
@@ -396,5 +456,6 @@ def replay_and_emit(bundles: List[dict], upcoming: List[dict],
     rows = []
     for g in upcoming:
         feats = builder.emit(g["home_abbr"], g["away_abbr"], g["date"])
-        rows.append({**g, **feats})
+        tfeats = builder.emit_totals(g["home_abbr"], g["away_abbr"], g["date"])
+        rows.append({**g, **feats, **{k: tfeats[k] for k in tfeats if k not in feats}})
     return rows, builder

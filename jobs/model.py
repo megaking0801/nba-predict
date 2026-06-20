@@ -28,6 +28,8 @@ from jobs.config import CONFIG, CONFIG_HASH
 
 MODEL_NAME = "margin_model"
 CALIBRATOR_NAME = "cover_calibrator"
+TOTAL_MODEL_NAME = "total_model"
+OVER_CALIBRATOR_NAME = "over_calibrator"
 
 
 # ----- margin models -----
@@ -116,6 +118,28 @@ def margin_to_cover_prob(mu: float, sigma: float, spread: float) -> Dict[str, fl
     denom = p_win + p_loss
     p_raw = p_win / denom if denom > 0 else 0.5
     return {"p_win": p_win, "p_push": p_push, "p_loss": p_loss, "p_raw": p_raw}
+
+
+def total_to_over_prob(mu: float, sigma: float, total_line: float) -> Dict[str, float]:
+    """P(game total goes OVER the line) for total T ~ Normal(mu, sigma).
+
+    Over ⇔ T > line. Integer lines get a continuity-corrected push mass because
+    totals are integers (mirrors margin_to_cover_prob). p_raw is conditional on
+    no push, matching the market's implied probs (pushes refund)."""
+    sigma = max(1e-6, float(sigma))
+    line = float(total_line)
+    z = lambda t: (t - mu) / sigma
+    if abs(line - round(line)) < 1e-9:
+        p_over = 1.0 - _phi(z(line + 0.5))
+        p_push = _phi(z(line + 0.5)) - _phi(z(line - 0.5))
+        p_under = _phi(z(line - 0.5))
+    else:
+        p_over = 1.0 - _phi(z(line))
+        p_push = 0.0
+        p_under = 1.0 - p_over
+    denom = p_over + p_under
+    p_raw = p_over / denom if denom > 0 else 0.5
+    return {"p_over": p_over, "p_push": p_push, "p_under": p_under, "p_raw": p_raw}
 
 
 def margin_to_win_prob(mu: float, sigma: float) -> float:

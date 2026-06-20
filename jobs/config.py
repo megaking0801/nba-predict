@@ -68,6 +68,7 @@ class Config:
     WF_MIN_TRAIN_ROWS: int = 800
     WF_STEP_DAYS: int = 14
     GATE_MAE_ABS: float = 10.5
+    GATE_TOTAL_MAE_ABS: float = 16.0   # totals model: NBA total stdev ~18–20, looser than margin
     GATE_MAE_VS_BASELINE: float = 0.25
     GATE_BRIER_MAX: float = 0.2500
     GATE_CAL_SLOPE: tuple = (0.7, 1.3)
@@ -95,6 +96,7 @@ class Config:
 
     # --- feature set version tag (bump when the feature list changes) ---
     FEATURE_SET: str = "fs1"
+    FEATURE_SET_TOTAL: str = "ts1"   # totals model feature set
 
 
 CONFIG = Config()

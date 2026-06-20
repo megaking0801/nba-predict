@@ -18,7 +18,8 @@ from sklearn.linear_model import LogisticRegression
 
 from jobs.config import CONFIG, CONFIG_HASH
 from jobs.db_utils import db_connect
-from jobs.model import CALIBRATOR_NAME, apply_calibrator, next_version, save_model
+from jobs.model import (CALIBRATOR_NAME, OVER_CALIBRATOR_NAME, apply_calibrator,
+                        next_version, save_model)
 from jobs.schema import ensure_schema
 
 
@@ -34,6 +35,30 @@ def load_calibration_set(conn) -> Tuple[np.ndarray, np.ndarray]:
                 WHERE p.p_raw IS NOT NULL
                   AND p.home_spread_used IS NOT NULL
                   AND p.cover_result IN (0, 1)
+                ORDER BY p.game_id, p.predicted_at DESC
+            ) t
+            ORDER BY t.predicted_at
+        """)
+        rows = cur.fetchall()
+    if not rows:
+        return np.array([]), np.array([])
+    p = np.array([r[0] for r in rows], dtype=float)
+    y = np.array([r[1] for r in rows], dtype=float)
+    return p, y
+
+
+def load_over_calibration_set(conn) -> Tuple[np.ndarray, np.ndarray]:
+    """(p_raw_total, over) from the latest settled, totals-lined prediction per
+    game, time-ordered. Pushes excluded."""
+    with conn.cursor() as cur:
+        cur.execute("""
+            SELECT p_raw_total, over_result FROM (
+                SELECT DISTINCT ON (p.game_id)
+                       p.game_id, p.p_raw_total, p.over_result, p.predicted_at
+                FROM public.predictions p
+                WHERE p.p_raw_total IS NOT NULL
+                  AND p.total_line_used IS NOT NULL
+                  AND p.over_result IN (0, 1)
                 ORDER BY p.game_id, p.predicted_at DESC
             ) t
             ORDER BY t.predicted_at
@@ -120,6 +145,17 @@ def main() -> None:
                    None, int(len(p)), metrics, activate=True)
         print(f"[OK] saved {CALIBRATOR_NAME} {version} method={metrics['method']} "
               f"n={len(p)}", flush=True)
+
+        # ----- over/under calibrator (totals) -----
+        pt, yt = load_over_calibration_set(conn)
+        over_cal, over_metrics = choose_calibrator(pt, yt)
+        if len(pt):
+            over_metrics["brier_after"] = brier(over_cal, pt, yt)
+        over_version = next_version(conn, OVER_CALIBRATOR_NAME)
+        save_model(conn, OVER_CALIBRATOR_NAME, over_version, {"calibrator": over_cal},
+                   None, int(len(pt)), over_metrics, activate=True)
+        print(f"[OK] saved {OVER_CALIBRATOR_NAME} {over_version} "
+              f"method={over_metrics['method']} n={len(pt)}", flush=True)
     finally:
         conn.close()
 

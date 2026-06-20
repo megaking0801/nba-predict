@@ -15,7 +15,9 @@ from typing import Dict, List, Optional, Set, Tuple
 from jobs.config import CONFIG
 from jobs.db_utils import db_connect
 from jobs.features import load_bundles, norm_player_name, replay_and_emit
-from jobs.model import CALIBRATOR_NAME, MODEL_NAME, load_active
+from jobs.model import (CALIBRATOR_NAME, MODEL_NAME, OVER_CALIBRATOR_NAME,
+                        TOTAL_MODEL_NAME, apply_calibrator, load_active,
+                        total_to_over_prob)
 from jobs.picks import cap_picks_per_day, decide_game, effective_min_edge
 from jobs.schema import ensure_schema
 from jobs.tz import et_today, utc_now
@@ -44,13 +46,15 @@ def load_latest_lines(conn, game_ids: List[str]) -> Dict[str, dict]:
     with conn.cursor() as cur:
         cur.execute(
             """
-            SELECT game_id, line_id, home_spread, home_price, away_price, captured_at
+            SELECT game_id, line_id, home_spread, home_price, away_price, captured_at,
+                   total_line, over_price, under_price
             FROM public.v_latest_lines WHERE game_id = ANY(%s)
             """,
             (game_ids,),
         )
         return {r[0]: {"line_id": r[1], "home_spread": r[2], "home_price": r[3],
-                       "away_price": r[4], "captured_at": r[5]}
+                       "away_price": r[4], "captured_at": r[5],
+                       "total_line": r[6], "over_price": r[7], "under_price": r[8]}
                 for r in cur.fetchall()}
 
 
@@ -118,6 +122,21 @@ def main() -> None:
         calibrator = (cal_wrap or {}).get("calibrator") or {"type": "identity"}
         min_edge = effective_min_edge(cal_metrics)
 
+        # Totals model (optional — graceful no-op until a total_model is active)
+        total_wrap, _ = load_active(conn, TOTAL_MODEL_NAME)
+        total_model = total_wrap["model"] if total_wrap else None
+        total_sigma = float(total_wrap["sigma"]) if total_wrap else None
+        total_feature_names = total_wrap["feature_names"] if total_wrap else None
+        total_version = None
+        if total_wrap:
+            with conn.cursor() as cur:
+                cur.execute("SELECT model_version FROM public.model_registry_v2 "
+                            "WHERE model_name = %s AND is_active", (TOTAL_MODEL_NAME,))
+                row = cur.fetchone()
+                total_version = row[0] if row else "unknown"
+        over_cal_wrap, _ = load_active(conn, OVER_CALIBRATOR_NAME)
+        over_calibrator = (over_cal_wrap or {}).get("calibrator") or {"type": "identity"}
+
         upcoming = load_upcoming(conn, days_ahead)
         if not upcoming:
             print("[INFO] no scheduled games in window; nothing to predict", flush=True)
@@ -150,12 +169,25 @@ def main() -> None:
                 games_played_min=row["games_played_min"],
                 injury_veto=veto,
             )
+            # totals prediction (independent of the spread pick)
+            pred_total = p_raw_total = p_over = total_line_used = None
+            if total_model is not None:
+                Xt = [[float(row[name]) for name in total_feature_names]]
+                pred_total = float(total_model.predict(Xt)[0])
+                tl = line["total_line"] if line else None
+                if tl is not None:
+                    pr = total_to_over_prob(pred_total, total_sigma, float(tl))
+                    p_raw_total = pr["p_raw"]
+                    p_over = apply_calibrator(over_calibrator, p_raw_total)
+                    total_line_used = float(tl)
             d.update({
                 "game_id": row["game_id"], "game_date_et": row["game_date_et"],
                 "line_id": line["line_id"] if line else None,
                 "home_spread": line["home_spread"] if line else None,
                 "home_price": line["home_price"] if line else None,
                 "away_price": line["away_price"] if line else None,
+                "pred_total": pred_total, "total_line_used": total_line_used,
+                "p_raw_total": p_raw_total, "p_over": p_over,
                 "features": {name: float(row[name]) for name in feature_names},
             })
             decisions.append(d)
@@ -172,13 +204,16 @@ def main() -> None:
                       (game_id, model_name, model_version, line_id_used,
                        home_spread_used, home_price_used, away_price_used,
                        pred_margin, p_raw, p_home_cover, p_home_win, edge_prob, ev_home,
-                       pick_side, abstain_reason, is_paper)
-                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                       pick_side, abstain_reason, is_paper,
+                       pred_total, total_line_used, p_raw_total, p_over, total_model_version)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                     """,
                     (d["game_id"], MODEL_NAME, model_version, d["line_id"],
                      d["home_spread"], d["home_price"], d["away_price"],
                      d["pred_margin"], d["p_raw"], d["p_cal"], d["p_home_win"], edge,
-                     d["ev_home"], d["pick_side"], d["abstain_reason"], paper),
+                     d["ev_home"], d["pick_side"], d["abstain_reason"], paper,
+                     d["pred_total"], d["total_line_used"], d["p_raw_total"], d["p_over"],
+                     total_version),
                 )
                 cur.execute(
                     """

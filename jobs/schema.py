@@ -159,6 +159,27 @@ ALTER TABLE public.predictions
   ADD COLUMN IF NOT EXISTS p_home_win DOUBLE PRECISION;  -- straight-up win prob, line-independent
 ALTER TABLE public.predictions
   ADD COLUMN IF NOT EXISTS win_result SMALLINT;          -- settled: 1 home won, 0 away won
+
+-- Over/Under totals (大小分): market line columns + model output columns.
+ALTER TABLE public.market_lines
+  ADD COLUMN IF NOT EXISTS total_line  DOUBLE PRECISION; -- game total (over/under line)
+ALTER TABLE public.market_lines
+  ADD COLUMN IF NOT EXISTS over_price  DOUBLE PRECISION; -- decimal odds on the over
+ALTER TABLE public.market_lines
+  ADD COLUMN IF NOT EXISTS under_price DOUBLE PRECISION; -- decimal odds on the under
+
+ALTER TABLE public.predictions
+  ADD COLUMN IF NOT EXISTS pred_total          DOUBLE PRECISION; -- predicted total points
+ALTER TABLE public.predictions
+  ADD COLUMN IF NOT EXISTS total_line_used     DOUBLE PRECISION;
+ALTER TABLE public.predictions
+  ADD COLUMN IF NOT EXISTS p_raw_total         DOUBLE PRECISION; -- uncalibrated over prob
+ALTER TABLE public.predictions
+  ADD COLUMN IF NOT EXISTS p_over              DOUBLE PRECISION; -- calibrated over prob
+ALTER TABLE public.predictions
+  ADD COLUMN IF NOT EXISTS over_result         SMALLINT;         -- 1 over, 0 under, 2 push
+ALTER TABLE public.predictions
+  ADD COLUMN IF NOT EXISTS total_model_version TEXT;
 """
 
 # Book preference order must match jobs.config.CONFIG.BOOK_PREFERENCE.
@@ -184,13 +205,17 @@ ORDER BY ml.game_id,
          ml.captured_at DESC;
 
 CREATE OR REPLACE VIEW public.v_app_board AS
+-- NOTE: new columns MUST be appended at the END — CREATE OR REPLACE VIEW
+-- cannot reorder/insert existing view columns.
 SELECT g.game_id, g.season, g.season_type, g.game_date_et, g.tipoff_utc, g.status,
        g.home_abbr, g.away_abbr, g.home_score, g.away_score, g.margin,
        l.home_spread, l.home_price, l.away_price, l.source AS line_source, l.book,
        l.captured_at AS line_captured_at,
        p.model_name, p.model_version, p.predicted_at, p.home_spread_used,
        p.pred_margin, p.p_home_cover, p.p_home_win, p.edge_prob, p.ev_home, p.pick_side,
-       p.abstain_reason, p.is_paper, p.cover_result, p.win_result
+       p.abstain_reason, p.is_paper, p.cover_result, p.win_result,
+       l.total_line, l.over_price, l.under_price,
+       p.pred_total, p.total_line_used, p.p_over, p.over_result
 FROM public.games_v2 g
 LEFT JOIN public.v_latest_lines l ON l.game_id = g.game_id
 LEFT JOIN LATERAL (

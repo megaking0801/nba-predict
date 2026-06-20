@@ -21,7 +21,14 @@ SET settled_at   = now(),
         WHEN g.margin + p.home_spread_used > 0 THEN 1
         ELSE 0
     END,
-    win_result   = CASE WHEN g.margin > 0 THEN 1 ELSE 0 END
+    win_result   = CASE WHEN g.margin > 0 THEN 1 ELSE 0 END,
+    over_result  = CASE
+        WHEN p.total_line_used IS NULL THEN NULL
+        WHEN g.home_score IS NULL OR g.away_score IS NULL THEN NULL
+        WHEN abs((g.home_score + g.away_score) - p.total_line_used) < 1e-9 THEN 2
+        WHEN (g.home_score + g.away_score) > p.total_line_used THEN 1
+        ELSE 0
+    END
 FROM public.games_v2 g
 WHERE g.game_id = p.game_id
   AND p.settled_at IS NULL

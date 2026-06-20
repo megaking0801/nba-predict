@@ -15,32 +15,37 @@ import pandas as pd
 
 from jobs.config import CONFIG
 from jobs.db_utils import db_connect
-from jobs.features import FEATURE_NAMES, build_feature_table, load_bundles
-from jobs.model import devig, estimate_sigma, fit_candidate, margin_to_cover_prob
+from jobs.features import (FEATURE_NAMES, TOTAL_FEATURE_NAMES,
+                           build_feature_table, load_bundles)
+from jobs.model import (devig, estimate_sigma, fit_candidate,
+                        margin_to_cover_prob, total_to_over_prob)
 from jobs.picks import cap_picks_per_day, decide_game
 
 BASELINE_KINDS = ("const", "elo")
 
 
 def _fit_predict(kind: str, train: pd.DataFrame, test: pd.DataFrame,
-                 ridge_alpha: float, hgb_iter: int) -> np.ndarray:
+                 ridge_alpha: float, hgb_iter: int,
+                 features: List[str] = FEATURE_NAMES, target: str = "margin") -> np.ndarray:
     if kind == "const":
-        return np.full(len(test), float(train["margin"].mean()))
+        return np.full(len(test), float(train[target].mean()))
     if kind == "elo":
-        m = fit_candidate("ridge", train[["elo_diff"]].values, train["margin"].values,
+        m = fit_candidate("ridge", train[["elo_diff"]].values, train[target].values,
                           ridge_alpha=ridge_alpha)
         return m.predict(test[["elo_diff"]].values)
-    m = fit_candidate(kind, train[FEATURE_NAMES].values, train["margin"].values,
+    m = fit_candidate(kind, train[features].values, train[target].values,
                       ridge_alpha=ridge_alpha, hgb_iter=hgb_iter)
-    return m.predict(test[FEATURE_NAMES].values)
+    return m.predict(test[features].values)
 
 
 def walk_forward(df: pd.DataFrame, kind: str, cfg=CONFIG,
                  ridge_alpha: float = CONFIG.RIDGE_ALPHA,
-                 hgb_iter: int = CONFIG.HGB_MAX_ITER) -> pd.DataFrame:
+                 hgb_iter: int = CONFIG.HGB_MAX_ITER,
+                 features: List[str] = FEATURE_NAMES, target: str = "margin") -> pd.DataFrame:
     """Expanding-window walk-forward. Returns out-of-time predictions with a
-    per-row sigma estimated only from residuals of PRIOR folds."""
-    el = df[df["eligible"]].sort_values(["date", "game_id"]).reset_index(drop=True)
+    per-row sigma estimated only from residuals of PRIOR folds. `target`/`features`
+    default to the margin model; pass total + TOTAL_FEATURE_NAMES for the totals model."""
+    el = df[df["eligible"] & df[target].notna()].sort_values(["date", "game_id"]).reset_index(drop=True)
     if len(el) <= cfg.WF_MIN_TRAIN_ROWS:
         return pd.DataFrame()
 
@@ -58,18 +63,18 @@ def walk_forward(df: pd.DataFrame, kind: str, cfg=CONFIG,
         if test.empty or len(train) < cfg.WF_MIN_TRAIN_ROWS:
             continue
 
-        mu = _fit_predict(kind, train, test, ridge_alpha, hgb_iter)
+        mu = _fit_predict(kind, train, test, ridge_alpha, hgb_iter, features, target)
         if prior_residuals:
             sigma = estimate_sigma(prior_residuals)
         else:  # first fold only: in-sample train residual spread (no peeking at test)
-            mu_tr = _fit_predict(kind, train, train, ridge_alpha, hgb_iter)
-            sigma = estimate_sigma(train["margin"].values - mu_tr)
+            mu_tr = _fit_predict(kind, train, train, ridge_alpha, hgb_iter, features, target)
+            sigma = estimate_sigma(train[target].values - mu_tr)
 
-        res = test["margin"].values - mu
+        res = test[target].values - mu
         for i, (_, row) in enumerate(test.iterrows()):
             out_rows.append({
                 "game_id": row["game_id"], "date": row["date"],
-                "season": row["season"], "margin": row["margin"],
+                "season": row["season"], target: row[target],
                 "mu": float(mu[i]), "sigma": float(sigma),
             })
         prior_residuals.extend(res.tolist())
@@ -302,6 +307,120 @@ def evaluate_kind(df: pd.DataFrame, lines: pd.DataFrame, kind: str,
         "report_margin": margin_metrics(report),
         "report_cover": cover_metrics(report, lines),
         "report_betting": betting_backtest(preds, lines),
+    }
+
+
+# ===== totals (大小分) analogs =====
+
+def total_metrics(preds: pd.DataFrame) -> Optional[dict]:
+    if preds.empty:
+        return None
+    err = preds["total"] - preds["mu"]
+    return {
+        "n": int(len(preds)),
+        "mae": float(err.abs().mean()),
+        "rmse": float(np.sqrt((err ** 2).mean())),
+        "bias": float(err.mean()),
+        "resid_sigma": float(err.std(ddof=1)),
+    }
+
+
+def load_closing_totals(conn) -> pd.DataFrame:
+    with conn.cursor() as cur:
+        cur.execute("""
+            SELECT l.game_id, l.total_line, l.over_price, l.under_price
+            FROM public.v_closing_lines l
+            JOIN public.games_v2 g ON g.game_id = l.game_id
+            WHERE g.status = 'final' AND g.margin IS NOT NULL AND l.total_line IS NOT NULL
+        """)
+        rows = cur.fetchall()
+    return pd.DataFrame(rows, columns=["game_id", "total_line", "over_price", "under_price"])
+
+
+def over_metrics(preds: pd.DataFrame, lines: pd.DataFrame) -> Optional[dict]:
+    """Brier/log-loss/calibration of derived over probs on lined games."""
+    if preds.empty or lines.empty:
+        return None
+    df = preds.merge(lines, on="game_id", how="inner")
+    if df.empty:
+        return None
+
+    records = []
+    for _, r in df.iterrows():
+        pr = total_to_over_prob(r["mu"], r["sigma"], r["total_line"])
+        actual = r["total"] - r["total_line"]
+        if abs(actual) < 1e-9:
+            continue  # push: refunded, excluded
+        y = 1.0 if actual > 0 else 0.0
+        rec = {"p": pr["p_raw"], "y": y}
+        if r["over_price"] and r["under_price"]:
+            rec["p_market"] = devig(r["over_price"], r["under_price"])[0]
+        records.append(rec)
+    if len(records) < 20:
+        return None
+
+    e = pd.DataFrame(records)
+    p, y = e["p"].values, e["y"].values
+    pc = np.clip(p, 1e-6, 1 - 1e-6)
+    out = {
+        "n": int(len(e)),
+        "brier": float(((p - y) ** 2).mean()),
+        "logloss": float(-(y * np.log(pc) + (1 - y) * np.log(1 - pc)).mean()),
+        "brier_p50": 0.25,
+        "accuracy": float(((p >= 0.5).astype(float) == y).mean()),  # O/U pick hit-rate
+    }
+    if "p_market" in e and e["p_market"].notna().sum() >= 20:
+        pm = e["p_market"].dropna()
+        ym = e.loc[pm.index, "y"]
+        out["brier_market"] = float(((pm - ym) ** 2).mean())
+    try:
+        from sklearn.linear_model import LogisticRegression
+        lz = np.log(pc / (1 - pc)).reshape(-1, 1)
+        lr = LogisticRegression(C=1e9, solver="lbfgs").fit(lz, y)
+        out["cal_slope"] = float(lr.coef_[0][0])
+        out["cal_intercept"] = float(lr.intercept_[0])
+    except Exception:
+        pass
+    return out
+
+
+def check_total_gates(report_total: Optional[dict], baseline_total: Optional[dict],
+                      report_over: Optional[dict], team_coverage_ok: bool,
+                      cfg=CONFIG) -> Tuple[bool, List[str]]:
+    reasons = []
+    if not report_total:
+        return False, ["no report-segment total predictions"]
+    if report_total["mae"] > cfg.GATE_TOTAL_MAE_ABS:
+        reasons.append(f"T1: total MAE {report_total['mae']:.2f} > {cfg.GATE_TOTAL_MAE_ABS}")
+    if baseline_total and report_total["mae"] > baseline_total["mae"] - cfg.GATE_MAE_VS_BASELINE:
+        reasons.append(
+            f"T1: total MAE {report_total['mae']:.2f} not better than baseline "
+            f"{baseline_total['mae']:.2f} by {cfg.GATE_MAE_VS_BASELINE}")
+    if report_over:
+        if report_over["brier"] > cfg.GATE_BRIER_MAX:
+            reasons.append(f"T2: over Brier {report_over['brier']:.4f} > {cfg.GATE_BRIER_MAX}")
+        slope = report_over.get("cal_slope")
+        if slope is not None and not (cfg.GATE_CAL_SLOPE[0] <= slope <= cfg.GATE_CAL_SLOPE[1]):
+            reasons.append(f"T2: over calibration slope {slope:.2f} outside {cfg.GATE_CAL_SLOPE}")
+    if abs(report_total["bias"]) > cfg.GATE_BIAS_ABS:
+        reasons.append(f"T3: |total bias| {abs(report_total['bias']):.2f} > {cfg.GATE_BIAS_ABS}")
+    if not team_coverage_ok:
+        reasons.append("T3: not all 30 teams present in eligible training rows")
+    return (len(reasons) == 0), reasons
+
+
+def evaluate_total_kind(df: pd.DataFrame, lines_total: pd.DataFrame, kind: str,
+                        ridge_alpha: float = CONFIG.RIDGE_ALPHA,
+                        hgb_iter: int = CONFIG.HGB_MAX_ITER) -> dict:
+    preds = walk_forward(df, kind, ridge_alpha=ridge_alpha, hgb_iter=hgb_iter,
+                         features=TOTAL_FEATURE_NAMES, target="total")
+    tune, report = split_tune_report(preds)
+    return {
+        "kind": kind,
+        "preds": preds,
+        "tune_total": total_metrics(tune),
+        "report_total": total_metrics(report),
+        "report_over": over_metrics(report, lines_total),
     }
 
 

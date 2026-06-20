@@ -48,6 +48,11 @@ def _step_injuries():
     snapshot_injuries.main()
 
 
+def _step_espn_odds():
+    from jobs.ingest_espn import snapshot_espn_odds
+    snapshot_espn_odds()
+
+
 def _step_lines():
     from jobs import snapshot_lines
     snapshot_lines.main()
@@ -63,6 +68,7 @@ STEPS = [
     ("ingest_stats", _step_ingest_stats),
     ("settle", _step_settle),
     ("snapshot_injuries", _step_injuries),
+    ("espn_odds", _step_espn_odds),
     ("snapshot_lines", _step_lines),
     ("predict_daily", _step_predict),
 ]

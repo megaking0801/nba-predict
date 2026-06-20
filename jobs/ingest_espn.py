@@ -326,26 +326,57 @@ def _spread_num(american: Optional[str]) -> Optional[float]:
         return None
 
 
-def parse_close_line(items: List[dict]) -> Optional[Tuple[float, float, float]]:
-    """Closing (home_spread, home_price, away_price) from the priority provider.
-    Prices are decimal odds on the spread bet; default to 1.91 (-110) if absent."""
+def _block_total(block: Optional[dict]) -> Tuple[Optional[float], Optional[float], Optional[float]]:
+    """(total_line, over_decimal, under_decimal) from an ESPN open/close/current block."""
+    block = block or {}
+    tl = _spread_num((block.get("total") or {}).get("american"))
+    op = (block.get("over") or {}).get("decimal")
+    up = (block.get("under") or {}).get("decimal")
+    return tl, (float(op) if op else None), (float(up) if up else None)
+
+
+def parse_close_line(items: List[dict]) -> Optional[dict]:
+    """Spread + total lines from the priority provider, preferring close → current
+    → open (so settled games use the close, upcoming games still get a live line).
+    Decimal prices default to 1.91 (-110) when absent. Returns None if no spread."""
     prov = next((it for it in items if (it.get("provider") or {}).get("priority") == 0),
                 items[0] if items else None)
     if not prov:
         return None
-    hc = (prov.get("homeTeamOdds") or {}).get("close") or {}
-    ac = (prov.get("awayTeamOdds") or {}).get("close") or {}
-    hs = _spread_num((hc.get("pointSpread") or {}).get("american"))
+
+    def side_block(side: str) -> dict:
+        o = prov.get(side) or {}
+        return o.get("close") or o.get("current") or o.get("open") or {}
+
+    hb, ab = side_block("homeTeamOdds"), side_block("awayTeamOdds")
+    hs = _spread_num((hb.get("pointSpread") or {}).get("american"))
     if hs is None:
-        return None
-    hp = (hc.get("spread") or {}).get("decimal")
-    ap_ = (ac.get("spread") or {}).get("decimal")
-    return hs, float(hp or 1.91), float(ap_ or 1.91)
+        return None  # market_lines.home_spread is NOT NULL
+    hp = (hb.get("spread") or {}).get("decimal")
+    ap_ = (ab.get("spread") or {}).get("decimal")
+
+    tl = op = up = None
+    for blk in (prov.get("close"), prov.get("current"), prov.get("open")):
+        tl, op, up = _block_total(blk)
+        if tl is not None:
+            break
+    if tl is None and prov.get("overUnder") is not None:
+        tl = _spread_num(prov.get("overUnder"))
+
+    return {
+        "home_spread": hs,
+        "home_price": float(hp or 1.91),
+        "away_price": float(ap_ or 1.91),
+        "total_line": tl,
+        "over_price": float(op or 1.91) if tl is not None else None,
+        "under_price": float(up or 1.91) if tl is not None else None,
+    }
 
 
 INSERT_LINE = """
 INSERT INTO public.market_lines
-  (game_id, captured_at, source, book, home_spread, home_price, away_price)
+  (game_id, captured_at, source, book, home_spread, home_price, away_price,
+   total_line, over_price, under_price)
 VALUES %s
 """
 
@@ -370,17 +401,23 @@ def backfill_odds() -> None:
         parsed = parse_close_line(d.get("items", []))
         if not parsed:
             return None
-        hs, hp, ap_ = parsed
         captured = tip or dt.datetime.combine(gdate, dt.time(23, 0), tzinfo=ET)
-        return (gid, captured, "espn", "espn", hs, hp, ap_)
+        return (gid, captured, "espn", "espn", parsed["home_spread"],
+                parsed["home_price"], parsed["away_price"],
+                parsed["total_line"], parsed["over_price"], parsed["under_price"])
 
     rows = []
     total = len(games)
+    with_total = 0
     for i in range(0, total, 200):
         chunk = games[i:i + 200]
         with ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
-            rows.extend(r for r in ex.map(fetch, chunk) if r)
-        print(f"[..] odds {i + len(chunk)}/{total} (with line: {len(rows)})", flush=True)
+            for r in (r for r in ex.map(fetch, chunk) if r):
+                rows.append(r)
+                if r[7] is not None:
+                    with_total += 1
+        print(f"[..] odds {i + len(chunk)}/{total} (with line: {len(rows)}, "
+              f"with total: {with_total})", flush=True)
 
     conn = db_connect()
     try:
@@ -390,14 +427,62 @@ def backfill_odds() -> None:
         conn.commit()
     finally:
         conn.close()
-    print(f"[OK] odds backfill: {len(rows)}/{total} games got a closing line", flush=True)
+    print(f"[OK] odds backfill: {len(rows)}/{total} games got a line "
+          f"({with_total} with totals)", flush=True)
+
+
+def snapshot_espn_odds(days_back: int = 3, days_ahead: int = 2) -> None:
+    """Append current ESPN spread+total lines for recent/upcoming games so live
+    predictions have fresh lines. Append-only; v_latest_lines picks the newest."""
+    today = dt.datetime.now(ET).date()
+    lo, hi = today - dt.timedelta(days=days_back), today + dt.timedelta(days=days_ahead)
+    conn = db_connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT game_id, tipoff_utc, game_date_et FROM public.games_v2 "
+                        "WHERE game_date_et BETWEEN %s AND %s ORDER BY game_date_et", (lo, hi))
+            games = cur.fetchall()
+    finally:
+        conn.close()
+    if not games:
+        print(f"[OK] snapshot_espn_odds: no games in {lo}..{hi}", flush=True)
+        return
+
+    now_utc = dt.datetime.now(dt.timezone.utc)
+
+    def fetch(g):
+        gid, _tip, _gdate = g
+        d = odds(gid)
+        if not d:
+            return None
+        parsed = parse_close_line(d.get("items", []))
+        if not parsed:
+            return None
+        return (gid, now_utc, "espn", "espn", parsed["home_spread"],
+                parsed["home_price"], parsed["away_price"],
+                parsed["total_line"], parsed["over_price"], parsed["under_price"])
+
+    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
+        rows = [r for r in ex.map(fetch, games) if r]
+    if not rows:
+        print(f"[OK] snapshot_espn_odds: no lines for {len(games)} games", flush=True)
+        return
+    conn = db_connect()
+    try:
+        with conn.cursor() as cur:
+            psycopg2.extras.execute_values(cur, INSERT_LINE, rows, page_size=500)
+        conn.commit()
+    finally:
+        conn.close()
+    print(f"[OK] snapshot_espn_odds: appended {len(rows)} lines ({lo}..{hi})", flush=True)
 
 
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--seasons", help="comma-separated, e.g. 2023-24,2024-25,2025-26")
     ap.add_argument("--days-back", type=int, default=3)
-    ap.add_argument("--odds", action="store_true", help="backfill ESPN closing lines for all final games")
+    ap.add_argument("--odds", action="store_true", help="backfill ESPN closing lines (spread+total) for all final games")
+    ap.add_argument("--snapshot-odds", action="store_true", help="append current ESPN lines for recent/upcoming games")
     args = ap.parse_args()
     conn = db_connect()
     try:
@@ -406,6 +491,8 @@ def main() -> None:
         conn.close()
     if args.odds:
         backfill_odds()
+    elif args.snapshot_odds:
+        snapshot_espn_odds(args.days_back)
     elif args.seasons:
         backfill([s.strip() for s in args.seasons.split(",") if s.strip()])
     else:

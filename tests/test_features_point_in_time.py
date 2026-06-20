@@ -74,15 +74,20 @@ def test_point_in_time_golden():
     bundles[:i]."""
     bundles = make_bundles()
     table = build_feature_table(bundles)
+    # "total" is a label (like "margin"); everything else in the table is a
+    # point-in-time feature — including the totals features from emit_totals().
     feature_cols = [c for c in table.columns
                     if c not in ("game_id", "season", "season_type", "date",
-                                 "home_abbr", "away_abbr", "margin", "eligible")]
+                                 "home_abbr", "away_abbr", "margin", "total",
+                                 "eligible")]
     for i in (0, 1, 15, 37, len(bundles) - 1):
         builder = FeatureBuilder()
         for b in bundles[:i]:
             builder.update(b)
         b = bundles[i]
         feats = builder.emit(b["home_abbr"], b["away_abbr"], b["date"])
+        tfeats = builder.emit_totals(b["home_abbr"], b["away_abbr"], b["date"])
+        feats = {**feats, **{k: v for k, v in tfeats.items() if k not in feats}}
         row = table.iloc[i]
         for col in feature_cols:
             assert feats[col] == row[col], (

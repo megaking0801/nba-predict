@@ -12,12 +12,15 @@ import numpy as np
 
 from jobs.config import CONFIG, CONFIG_HASH
 from jobs.db_utils import db_connect
-from jobs.evaluate import (check_gates, evaluate_kind, load_closing_lines,
-                           margin_metrics, split_tune_report, team_coverage,
-                           walk_forward)
-from jobs.features import FEATURE_NAMES, build_feature_table, load_bundles
-from jobs.model import (MODEL_NAME, build_payload, estimate_sigma,
-                        fit_candidate, load_active, next_version, save_model)
+from jobs.evaluate import (check_gates, check_total_gates, evaluate_kind,
+                           evaluate_total_kind, load_closing_lines,
+                           load_closing_totals, margin_metrics, split_tune_report,
+                           team_coverage, total_metrics, walk_forward)
+from jobs.features import (FEATURE_NAMES, TOTAL_FEATURE_NAMES,
+                           build_feature_table, load_bundles)
+from jobs.model import (MODEL_NAME, TOTAL_MODEL_NAME, build_payload,
+                        estimate_sigma, fit_candidate, load_active, next_version,
+                        save_model)
 from jobs.schema import ensure_schema
 
 
@@ -50,6 +53,108 @@ def score_key(result: dict):
     if cov is not None:
         return (0, cov["brier"])
     return (1, mar["mae"] if mar else float("inf"))
+
+
+def tune_hyperparams_total(df, kind: str):
+    """Pick ridge alpha / hgb iters by tune-segment total MAE."""
+    if kind == "ridge":
+        grid = [("ridge_alpha", a) for a in CONFIG.RIDGE_ALPHA_GRID]
+    elif kind == "hgb":
+        grid = [("hgb_iter", i) for i in CONFIG.HGB_ITER_GRID]
+    else:
+        return {}
+    best_param, best_mae = None, None
+    for pname, pval in grid:
+        preds = walk_forward(df, kind, features=TOTAL_FEATURE_NAMES, target="total",
+                             **{pname: pval})
+        tune, _ = split_tune_report(preds)
+        m = total_metrics(tune)
+        if m is None:
+            continue
+        if best_mae is None or m["mae"] < best_mae:
+            best_mae, best_param = m["mae"], (pname, pval)
+        print(f"[TUNE] total {kind} {pname}={pval}: tune MAE={m['mae']:.3f}", flush=True)
+    return dict([best_param]) if best_param else {}
+
+
+def _score_key_total(result: dict):
+    ov, to = result["report_over"], result["report_total"]
+    if ov is not None:
+        return (0, ov["brier"])
+    return (1, to["mae"] if to else float("inf"))
+
+
+def train_totals(conn, df) -> bool:
+    """Train + (maybe) promote the totals model. Returns True on promote/no-op,
+    False only when a trained candidate failed gates (so the run exits non-zero)."""
+    el = df[df["eligible"] & df["total"].notna()]
+    if int(len(el)) < CONFIG.MIN_TRAIN_ROWS:
+        print(f"[WARN] totals: only {len(el)} eligible rows (< {CONFIG.MIN_TRAIN_ROWS}); "
+              f"skipping totals model", flush=True)
+        return True
+    lines_t = load_closing_totals(conn)
+    print(f"[INFO] totals eligible rows={len(el)} lined totals={len(lines_t)}", flush=True)
+
+    baseline = evaluate_total_kind(df, lines_t, "const")
+    print(f"[BASE] total const: {baseline['report_total']}", flush=True)
+
+    results = []
+    for kind in CONFIG.MODEL_CANDIDATES:
+        params = tune_hyperparams_total(df, kind)
+        r = evaluate_total_kind(df, lines_t, kind, **params)
+        r["params"] = params
+        results.append(r)
+        print(f"[BAKE] total {kind} params={params} report_total={r['report_total']} "
+              f"report_over={r['report_over']}", flush=True)
+    winner = min(results, key=_score_key_total)
+    kind = winner["kind"]
+    print(f"[INFO] totals winner={kind} params={winner['params']}", flush=True)
+
+    passed, reasons = check_total_gates(
+        winner["report_total"], baseline["report_total"],
+        winner["report_over"], team_coverage(df))
+    if not passed:
+        print(f"[WARN] total gates failed: {reasons}", flush=True)
+
+    _, active_metrics = load_active(conn, TOTAL_MODEL_NAME)
+    promote = passed
+    if passed and active_metrics:
+        new_ov, old_ov = winner["report_over"], active_metrics.get("report_over")
+        if new_ov and old_ov and new_ov["brier"] > old_ov["brier"] + CONFIG.PROMOTION_BRIER_TOL:
+            promote = False
+            reasons.append(
+                f"promotion: total Brier {new_ov['brier']:.4f} degrades active "
+                f"{old_ov['brier']:.4f}")
+            print(f"[WARN] {reasons[-1]}", flush=True)
+
+    model = fit_candidate(kind, el[TOTAL_FEATURE_NAMES].values, el["total"].values,
+                          **winner["params"])
+    oof = winner["preds"]
+    sigma = estimate_sigma((oof["total"] - oof["mu"]).values)
+
+    version = next_version(conn, TOTAL_MODEL_NAME)
+    payload = build_payload(model, TOTAL_FEATURE_NAMES, sigma, kind,
+                            el["date"].max(), {
+                                "report_total": winner["report_total"],
+                                "report_over": winner["report_over"],
+                            })
+    metrics = {
+        "sigma": sigma,
+        "model_kind": kind,
+        "params": winner["params"],
+        "config_hash": CONFIG_HASH,
+        "report_total": winner["report_total"],
+        "report_over": winner["report_over"],
+        "baseline_const": baseline["report_total"],
+        "gates_passed": passed,
+        "gate_reasons": reasons,
+    }
+    save_model(conn, TOTAL_MODEL_NAME, version, payload, TOTAL_FEATURE_NAMES,
+               int(len(el)), metrics, activate=promote)
+    state = "ACTIVE" if promote else "inactive"
+    print(f"[OK] saved {TOTAL_MODEL_NAME} {version} ({state}) kind={kind} "
+          f"sigma={sigma:.2f} rows={len(el)}", flush=True)
+    return promote
 
 
 def main() -> None:
@@ -137,7 +242,12 @@ def main() -> None:
         state = "ACTIVE" if promote else "inactive"
         print(f"[OK] saved {MODEL_NAME} {version} ({state}) kind={kind} "
               f"sigma={sigma:.2f} rows={len(el)}", flush=True)
-        if not promote:
+
+        # ----- totals model (additive; mirrors the margin flow) -----
+        print("===== [train] totals model =====", flush=True)
+        totals_ok = train_totals(conn, df)
+
+        if not promote or not totals_ok:
             sys.exit(1)
     finally:
         conn.close()
