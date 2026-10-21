@@ -1,0 +1,36 @@
+{
+  "permissions": {
+    "deny": [
+      "Read(./.streamlit/secrets.toml)",
+      "Read(**/.streamlit/secrets.toml)",
+      "Bash(cat *secrets.toml*)",
+      "Bash(type *secrets.toml*)",
+      "Bash(head *secrets.toml*)",
+      "Bash(tail *secrets.toml*)",
+      "Bash(grep *secrets.toml*)",
+      "Bash(sed *secrets.toml*)",
+      "Bash(awk *secrets.toml*)",
+      "Bash(more *secrets.toml*)",
+      "Bash(less *secrets.toml*)",
+      "PowerShell(Get-Content *secrets.toml*)",
+      "PowerShell(gc *secrets.toml*)",
+      "PowerShell(type *secrets.toml*)",
+      "PowerShell(Select-String *secrets.toml*)"
+    ]
+  },
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"$CLAUDE_PROJECT_DIR/.claude/hooks/pytest_gate.py\"",
+            "shell": "bash",
+            "timeout": 180,
+            "statusMessage": "Running pytest gate..."
+          }
+        ]
+      }
+    ]
+  }
+}

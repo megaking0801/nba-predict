@@ -1,0 +1,89 @@
+# NBA 勝負預測
+
+球迷向的 NBA 預測網站（Streamlit + Supabase Postgres）。模型預測主客場分差，再換算成勝率、讓分過盤機率與大小分估計。
+定位是數據預測與娛樂，**不是投注建議**。高命中率不等於能獲利，介面與文案要維持這個誠實立場。
+
+<!-- 維護筆記：本檔目標 200 行內，只放「讀程式碼猜不到」的內容。改完用 /doctor prompt-audit 檢查矛盾與過期內容。 -->
+
+## 指令
+```bash
+python -m pytest tests -q            # 測試，約 2 秒，需在 repo 根目錄執行
+streamlit run auto_nba_predict.py    # 啟動網站，需 DATABASE_URL 或 SUPABASE_* 環境變數，或 .streamlit/secrets.toml
+python -m jobs.config                # 印出全部參數與 CONFIG_HASH
+python -m jobs.evaluate              # walk-forward 評估 + ATS 回測（只讀，但需要 DB 連線）
+python -m jobs.diagnose              # DB 狀態體檢（只讀，需要 DB 連線）
+```
+會寫入 DB 的 job（`schema`、`ingest_*`、`backfill`、`settle`、`snapshot_*`、`predict_daily`、`predict_history`、`train`、`calibrate`、`run_daily`）
+平常由 GitHub Actions `daily_nba.yml` 排程執行，不在本機跑。
+
+## 架構
+- `auto_nba_predict.py`：前端，只讀 DB（`v_app_board` 等），不在前端跑模型。
+- `jobs/`：v2 流程。ESPN 資料（`ingest_espn.py`：比賽、box score、盤口）、NBA CDN 賽程（`ingest_games.py`）、ESPN 傷兵（`snapshot_injuries.py`）
+  → `features.py`（`FeatureBuilder`）→ `train.py` / `calibrate.py` / `evaluate.py` → `predict_daily.py`（用 `picks.py` 決定出手）→ `settle.py`。
+- 所有參數集中在 `jobs/config.py`；每個模型版本與預測都記錄 `CONFIG_HASH`。
+- DDL 在 `jobs/schema.py`。表：`games_v2`、`team_game_stats`、`player_game_stats`、`market_lines`、`injury_snapshots`、`predictions`、`model_registry_v2`。
+  view：`v_latest_lines`、`v_closing_lines`、`v_app_board`。
+- 排程：10:30 UTC 全流程；22:00 UTC 臨近開賽抓盤並重新預測；週一 12:00 UTC 重新訓練。
+- 模型通過 `evaluate.py` 的 gates 才會啟用；訓練列數低於 `MIN_TRAIN_ROWS` 時不訓練。
+
+## 不能違反的規則
+**特徵與模型**
+- 特徵一律「先 `emit`、再 `update`」（`jobs/features.py`）。新特徵必須通過 `tests/test_features_point_in_time.py` 的無洩漏 golden test。
+- 隊名只能走 `jobs/teams.py` 的 `normalize_espn_abbr` / `require_abbr`。未知縮寫要報錯，不准默默補零（舊系統曾讓 6 隊特徵歸零）。
+- 校準與驗證只能用時間順序切分，不准用隨機 KFold。
+- 參數只改 `jobs/config.py`；改特徵清單要升 `FEATURE_SET` / `FEATURE_SET_TOTAL`。
+- 不為了通過 gate 而放寬門檻。要放寬，先報告原因與 `evaluate` 改前改後的數字。
+- 不要用最終模型回填歷史預測再當戰績（in-sample）。可信的數字是 walk-forward，`predict_history.py` 是正確做法。
+- 大小分方向命中率約 48%（walk-forward；實際數字看 `total_model` 的 metrics，可能已變）。App 以「模型估總分」為主並附警語，不要做成有信心的大小方向下注。
+- `train_cal`（舊校準）是刻意從 workflow 移除的，不要加回去。
+
+**資料與 DB**
+- 時間：DB 存 UTC；比賽日用 ET；台北時間只出現在 App 顯示層。
+- schema 變更只做可重複執行、只新增的 migration（`ADD COLUMN IF NOT EXISTS`）。`v_app_board` 的新欄位只能加在最後，`CREATE OR REPLACE VIEW` 不能重排欄位。
+- `market_lines`、`predictions` 設計上是 append-only。除了 `predict_history.py` 與 `ingest_espn --odds` 這兩個既有的重建流程，不要刪改歷史列。
+- 新的資料來源用 ESPN。stats.nba.com 會擋 GitHub runner 與非美國 IP。
+
+**安全與營運**
+- 不讀、不印、不 commit `.streamlit/secrets.toml`（已在 `.gitignore` 與 `settings.json` 的 deny）。
+- 未經同意，不跑會寫入 DB 的 job、不手動觸發 workflow_dispatch、不 push、不 force push、不 merge。所有環境共用同一個正式 Supabase。
+- 新依賴必須能在 Streamlit Cloud 建置（`lxml` 曾因此被移除，見 commit 64231f3）。`requirements.txt` 版本維持固定。
+
+## 工作流程
+- 動到特徵、模型、schema、gates、picks 之前先進 plan mode。只改一兩行的小修不用。
+- 修根因，不要壓掉錯誤訊息。
+- 對話被壓縮時保留：已修改的檔案清單、測試指令、尚未解決的問題。
+- 回覆用繁體中文；程式碼、識別字、commit 訊息用英文。
+
+## 完成前驗證
+先驗證再回報。貼出實際執行的指令與輸出，不要只說「應該可以」。
+
+| 改了什麼 | 要做什麼 |
+| :- | :- |
+| 任何 `.py` | `python -m pytest tests -q` |
+| 特徵、模型、gates、picks、`config.py` | 另外跑 `python -m jobs.evaluate`，貼出改前改後的 MAE / Brier |
+| 前端 | 啟動 Streamlit 確認能載入；沒有 DB 連線就明說「未驗證」 |
+| schema / SQL | 說明是否可重複執行；沒有真的跑過就明說「未驗證」 |
+
+- 引用的數字、行號、檔名，回頭對照原始碼再說。
+- 現有測試只涵蓋機率數學、特徵無洩漏、回測記帳。`calibrate`、`ingest_*`、`predict_daily`、前端沒有測試，動到要自己多一道檢查。
+- 測試失敗就照實貼出輸出，不要說成功。沒驗證的部分直接寫「未驗證」。
+- `.claude/hooks/pytest_gate.py` 是 Stop hook：有 `.py` 變更時自動跑 pytest，失敗會擋一次結束。
+
+## 子代理與模型分工
+- 預設在主對話做。只有符合下列情況才開子代理：要讀很多檔案的唯讀調查、會產生大量輸出（log、測試）、可平行的獨立工作、需要全新視角的審查。
+  小修改、需要來回討論的事不要開，子代理冷啟動而且吃同一份用量。
+- 專案子代理在 `.claude/agents/`：
+  - `explorer`（haiku）：找定義與用法、摘要 log 與 Actions 輸出。唯讀。
+  - `builder`（sonnet）：一般修改，如 UI、單一模組、補測試、文件。
+  - `reviewer`（opus）：審查 diff。動到模型、統計、洩漏、校準、gates，或跨檔重構、原因不明的除錯，都交給它。唯讀。
+- 開子代理時，在 prompt 裡重述關鍵規則；內建的 Explore 與 Plan 不會載入本檔。
+
+## Git
+- 未經同意不 push。commit 訊息用英文，簡短說明做了什麼與原因。
+- 不要改動已被追蹤的 `tests/__pycache__/*.pyc`（待清理）。
+
+## 已知待釐清（不要擅自改）
+- `run_daily` 的 `ingest_stats` 走 stats.nba.com，但 `ingest_espn.py` 的註解說它被擋。線上實際走哪條有效，要看 Actions 紀錄。
+- `snapshot_lines.py` 的 Odds API 只抓 `spreads`，大小分盤口目前只靠 ESPN。
+- Legacy 流程仍在，且 `preload` 排程每天會跑：`public.games`、`cache_nba`、`sync_daily`、`settle_daily`、`train_base_model`、`train_calibrator`、
+  `rebuild_features_from_boxscore`、`fill_b2b_nulls`、`preload_nba_data`、`export_legacy_csv`。不要擴充；要移除前先確認。
