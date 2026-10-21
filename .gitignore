@@ -6,3 +6,6 @@ __pycache__/
 .env.*
 !.env.example
 .gh_token
+
+# Streamlit secrets
+.streamlit/secrets.toml
