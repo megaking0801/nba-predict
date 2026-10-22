@@ -736,6 +736,8 @@ def detail_chunks(g: pd.Series, tr: dict, inj_away: pd.DataFrame, inj_home: pd.D
 
 
 def hero_html(n_up: int, now: dt.datetime) -> str:
+    if now.tzinfo is None:
+        raise ValueError("now must be timezone-aware")
     local = now.astimezone(TW)
     if n_up:
         kicker = f"{local:%Y.%m.%d}　今晚 {n_up} 場 · 台北時間"

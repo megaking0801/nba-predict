@@ -9,7 +9,7 @@ from tests import fakes
 from webui import queries
 
 SRC = Path(__file__).resolve().parents[1] / "webui" / "queries.py"
-WRITE_WORDS = re.compile(r"\b(INSERT|UPDATE|DELETE|DROP|ALTER|CREATE|TRUNCATE|GRANT)\b", re.I)
+WRITE_WORDS = re.compile(r"\b(INSERT|UPDATE|DELETE|DROP|ALTER|CREATE|TRUNCATE|GRANT|COPY|MERGE|CALL|LOCK|SET)\b", re.I)
 
 
 def test_queries_are_read_only():

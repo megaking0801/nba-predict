@@ -202,3 +202,28 @@ def test_static_page_rejects_naive_datetime():
 
 def test_static_page_escapes_title():
     assert "<script>" not in render.static_page("<script>", "", NOW).split("</title>")[0]
+
+
+# ---------- review follow-ups ----------
+
+def test_hero_kicker_uses_taipei_date():
+    utc = dt.datetime(2026, 10, 22, 17, 0, tzinfo=UTC)  # 01:00 next day in Taipei
+    assert "2026.10.23" in render.hero_html(2, utc)
+    assert "2026.10.23" in render.hero_html(0, utc)
+
+
+def test_hero_rejects_naive_now():
+    import pytest
+    with pytest.raises(ValueError):
+        render.hero_html(1, dt.datetime(2026, 10, 23, 1, 0))
+
+
+def test_team_tables_html_populated():
+    from tests.fakes import TEAM_RECENT_COLS, PLAYER_COLS
+    team_df = pd.DataFrame([(dt.date(2026, 10, 22), "LAL", "NYK", 101, 99, "W", 101, 44, 25, 2)],
+                           columns=TEAM_RECENT_COLS)
+    player_df = pd.DataFrame([("Gamma Three", 5, 30.5, 24.0, 5.5, 6.0, 1.5)], columns=PLAYER_COLS)
+    html = render.team_tables_html("LAL", team_df, player_df)
+    for cell in ("2026-10-22", "NYK", ">101<", ">W<", "Gamma Three", "30.5"):
+        assert cell in html
+    assert "湖人 近 10 場" in html

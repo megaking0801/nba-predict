@@ -83,3 +83,14 @@ def test_golden_offseason(monkeypatch):
 
 def test_golden_empty(monkeypatch):
     _check("empty", fakes.scenario_empty(), monkeypatch)
+
+
+def test_all_markdown_blocks_allow_html_except_explainer(monkeypatch):
+    db = fakes.scenario_board()
+    monkeypatch.setattr(psycopg2, "connect", db.connect)
+    st.cache_data.clear()
+    at = AppTest.from_file(APP, default_timeout=30)
+    at.run()
+    assert not at.exception
+    plain = [m for m in at.markdown if not m.proto.allow_html]
+    assert len(plain) == 1 and "**資料**" in plain[0].value

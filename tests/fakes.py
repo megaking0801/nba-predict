@@ -150,8 +150,10 @@ def _metrics_for(params: tuple) -> pd.DataFrame:
     name = params[0]
     if name == "total_model":
         m = {"report_over": {"accuracy": 0.482, "n": 900}}
-    else:
+    elif name == MODEL_NAME:
         m = {"report_betting": {"straight_up": {"winner_accuracy": 0.655, "n": 3000}}}
+    else:
+        raise AssertionError(f"unexpected model_name {name!r}")
     return pd.DataFrame([(m,)], columns=["metrics"])
 
 
