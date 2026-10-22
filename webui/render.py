@@ -846,3 +846,70 @@ def explainer_md(acc) -> str:
   再換算成勝率。每場只用「該場之前」的資料,所以驗證數字不灌水。
 - **誠實話**：模型猜勝負準,但這不等於能在運彩賺錢——賠率早就反映了強弱。
 """
+
+
+# =========================================================
+# Static site shell
+# =========================================================
+
+STALE_HOURS = 36
+
+
+class StaticLinks:
+    """Relative links for the static site; ``depth`` 0 = site root, 1 = game/ or team/."""
+
+    def __init__(self, depth: int):
+        self._up = "../" * depth
+
+    def home(self) -> str:
+        return f"{self._up}index.html"
+
+    def game(self, game_id: str) -> str:
+        return f"{self._up}game/{game_id}.html"
+
+    def team(self, abbr: str) -> str:
+        return f"{self._up}team/{abbr}.html"
+
+
+STATIC_EXTRA_CSS = """
+<style>
+html, body { margin: 0; background: var(--ground); }
+body { color: var(--text); font-family: var(--body); }
+.stApp { min-height: 100vh; }
+.nb-stale { margin: 0 0 14px; padding: 10px 14px; border: 1px solid var(--amber);
+  border-radius: 10px; color: var(--amber); background: rgba(255,194,75,0.08); }
+.nb-updated { margin: 28px 0 6px; color: var(--faint); font-size: 13px; }
+.nb-teamlist { list-style: none; margin: 0; padding: 0; display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px 14px; }
+.nb-teamlist a, .nb-static-link { color: var(--cyan); text-decoration: none; }
+details.nb-explainer { margin: 20px 0; padding: 10px 14px; border: 1px solid var(--hair);
+  border-radius: 10px; background: var(--surface); }
+details.nb-explainer summary { cursor: pointer; color: var(--muted); }
+</style>
+"""
+
+
+def static_page(title: str, body_html: str, built_at: dt.datetime) -> str:
+    """Full HTML document for the static site. ``built_at`` must be timezone-aware."""
+    if built_at.tzinfo is None:
+        raise ValueError("built_at must be timezone-aware")
+    built_iso = built_at.isoformat()
+    shown = built_at.astimezone(TW).strftime("%Y-%m-%d %H:%M")
+    return (
+        '<!doctype html>\n<html lang="zh-Hant"><head><meta charset="utf-8">'
+        '<meta name="viewport" content="width=device-width, initial-scale=1">'
+        f'<title>{esc(title)}</title>{NEON_CSS}{STATIC_EXTRA_CSS}</head><body>'
+        '<div class="stApp"><div class="block-container">'
+        '<div id="stale" class="nb-stale" hidden>⚠ 資料可能已過期：'
+        f'超過 {STALE_HOURS} 小時沒有更新，以下內容可能不是最新。</div>'
+        f'{body_html}'
+        f'<div class="nb-updated" id="built" data-built="{esc(built_iso)}">'
+        f'資料更新於 {shown}（台北時間）</div>'
+        '</div></div>'
+        '<script>(function(){var el=document.getElementById("built");'
+        'var t=Date.parse(el.getAttribute("data-built"));'
+        f'var STALE_MS={STALE_HOURS}*3600*1000;'
+        'if(!isNaN(t)&&Date.now()-t>STALE_MS){'
+        'document.getElementById("stale").hidden=false;}})();</script>'
+        '</body></html>\n'
+    )

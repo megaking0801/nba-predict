@@ -157,3 +157,48 @@ def test_line_source_and_season_escaped():
         _game(season="<b>s</b>"), {}, _inj_df("a"), _inj_df("b"),
         pd.DataFrame(), pd.DataFrame(), 0.6)
     assert not any("<b>s</b>" in c for c in detail)
+
+
+# ---------- Task 5: static page shell ----------
+
+def test_static_links_depth0_and_1():
+    top, deep = render.StaticLinks(0), render.StaticLinks(1)
+    assert top.home() == "index.html"
+    assert top.game("G1") == "game/G1.html" and top.team("LAL") == "team/LAL.html"
+    assert deep.home() == "../index.html"
+    assert deep.game("G1") == "../game/G1.html" and deep.team("LAL") == "../team/LAL.html"
+
+
+def test_static_links_no_leading_slash():
+    for depth in (0, 1):
+        links = render.StaticLinks(depth)
+        for url in (links.home(), links.game("x"), links.team("LAL")):
+            assert not url.startswith("/")
+
+
+def test_static_page_has_built_marker():
+    page = render.static_page("T", "<p>x</p>", NOW)
+    assert 'data-built="2026-10-23T01:00:00+00:00"' in page
+    assert page.lstrip().lower().startswith("<!doctype html>")
+    assert '<div class="stApp"><div class="block-container">' in page
+
+
+def test_static_page_shows_taipei_time():
+    page = render.static_page("T", "", NOW)
+    assert "資料更新於 2026-10-23 09:00（台北時間）" in page
+
+
+def test_stale_threshold_is_36h():
+    assert render.STALE_HOURS == 36
+    assert "36*3600*1000" in render.static_page("T", "", NOW)
+    assert "資料可能已過期" in render.static_page("T", "", NOW)
+
+
+def test_static_page_rejects_naive_datetime():
+    import pytest
+    with pytest.raises(ValueError):
+        render.static_page("T", "", dt.datetime(2026, 10, 23, 1, 0))
+
+
+def test_static_page_escapes_title():
+    assert "<script>" not in render.static_page("<script>", "", NOW).split("</title>")[0]
