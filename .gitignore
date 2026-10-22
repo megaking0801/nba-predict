@@ -13,3 +13,8 @@ __pycache__/
 # Claude Code personal files
 .claude/settings.local.json
 CLAUDE.local.md
+
+# Static site build output
+site/
+site.tmp/
+site.old/
