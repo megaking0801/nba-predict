@@ -65,3 +65,7 @@
 - 大小分方向命中率約 48%（walk-forward，來自舊記憶），App 以估總分為主並附警語，維持這個誠實立場。
 - Legacy 流程（`public.games`、`sync_daily` 等）仍在，不要擴充。
 - commit 訊息用英文；回覆用繁體中文。
+
+## 2026-10-23 清理
+- 舊資料夾 `nba-predict-main` 已於 2026-10-23 01:05 移到資源回收筒（可還原）；舊 session 紀錄 `~\.claude\projects\c--Users-king-Documents-nba-predict-main` 保留。
+- 新 session 確認：CLAUDE.md、memory（`...nba-predict\memory`）、explorer／builder／reviewer 有載入，`settings.json` 有 Stop hook；`/hooks` 實際列表未由使用者確認。
