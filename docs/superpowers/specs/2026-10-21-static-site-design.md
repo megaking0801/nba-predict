@@ -121,7 +121,9 @@ DB（只做 SELECT）→ `build_site.py` → `site/` → GitHub Pages。訪客�
 
 - 唯讀的真正保證在連線層：`build_site` 連上後執行 `conn.set_session(readonly=True)`。`webui/queries.py` 只含 `SELECT`，另以測試掃描 SQL 字串作第二道防線，用 `\b` 字邊界比對 `INSERT`、`UPDATE`、`DELETE`、`DROP`、`ALTER`、`CREATE`（避免 `updated_at` 之類欄位名誤判）。
 - 來自 DB 的文字（球員名、傷病說明與翻譯後字串、球隊名、`line_source`、`season`、縮寫）輸出前一律 HTML escape，全站統一用同一個 `esc()`（`html.escape`）。`table_html` 先逐格 `esc()` 再 `to_html(escape=False)`，不混用 pandas 的 escape。`NEON_CSS`、`DISCLAIMER_HTML` 與其他模板 HTML 不 escape。
-- escape 會改變輸出（例如 `D'Angelo` 變 `D&#x27;Angelo`），屬刻意的行為變更：與「純搬動」分成兩個 commit（見第 9 節）。
+- escape 會改變輸出（例如 `D'Angelo` 變 `D&#x27;Angelo`），屬刻意的行為變更：與「純搬動」分成兩個 commit（見第 9 節）。實作上 `table_html` 只 escape 字串格，golden fixture 只用一般字元，所以 golden 預期不變；escape 另以含 `'`、`&`、`<script>` 的單元測試驗證。若 golden 因 escape 而變動，要先查是否改到一般文字，不可直接更新 golden。
+- `404.html` 是「無絕對路徑」規則的唯一例外：Pages 對不存在的路徑都回傳它且網址列不變，相對連結在深層網址會壞，所以它用 inline JS 從 `location.pathname` 第一段組出首頁網址；`check_site` 對它豁免。
+- 建置與測試的檔案讀寫一律明確 `encoding="utf-8"`（本機預設 cp950）。
 - `.streamlit/secrets.toml` 不讀、不印、不提交（沿用 `CLAUDE.md` 與 `settings.json` 的規則）。
 - 開啟 Pages（把來源改為 GitHub Actions）是 repo 設定變更，**須使用者同意後才做**。
 
@@ -130,7 +132,7 @@ DB（只做 SELECT）→ `build_site.py` → `site/` → GitHub Pages。訪客�
 全部不需要 DB，使用固定的假資料。
 
 1. **特徵化測試（在搬動程式碼之前先寫）**：`auto_nba_predict.py` 是模組層腳本（`:28` `set_page_config`、`:902` 載入戰績，import 即連 DB），無法直接 import 取函式。改用 `streamlit.testing.v1.AppTest.from_file("auto_nba_predict.py")`，monkeypatch `psycopg2.connect`（或假的 `q`），收集所有 `at.markdown[i].value` 做**整頁 golden**，涵蓋三種情境：看板、`?game=<id>`、空 DB。fixture 的 `tipoff_utc` 必須帶時區；固定時間（凍結 `datetime.now`）。整頁 golden 同時涵蓋 hero、戰績格、球隊表區塊與詳情頁組裝。搬到 `render.py` 後（純搬動 commit）必須逐字相同，fixture 的名字不含特殊字元。
-   escape 另在後一個 commit 以含 `'`、`&`、`<script>` 的 fixture 新增測試並刻意更新 golden。
+   escape 另在後一個 commit 以含 `'`、`&`、`<script>` 的單元測試驗證；整頁 golden 預期不變（見第 7 節）。整頁 golden 也鎖住 caption、30 隊選單與 expander 標題。現有行為（例如終場比分遇到 `None` 時顯示 `105.0`）由 golden 鎖住，純搬動不修，要修另開 commit。
 2. **渲染測試**：空資料、只有未開賽、只有已終場、缺盤口、無大小分、傷病為空。
 3. **建置腳本測試**：用假的 `run` 產生完整 `site/`；檢查檔案齊全、每個站內連結都指到存在的檔案、無以 `/` 開頭的絕對路徑。
 4. **HTML escape 測試**：球員名含 `<script>` 等字元時被轉義。
@@ -143,7 +145,7 @@ DB（只做 SELECT）→ `build_site.py` → `site/` → GitHub Pages。訪客�
 
 1. 寫特徵化測試，確認目前全綠。
 2. 純搬動 commit：抽出 `render.py`、`queries.py`；Streamlit 改為 import；整頁 golden 逐字相同。接著跑 `streamlit run` 確認能載入（沒有 DB 連線就寫「未驗證」）。
-2b. escape commit：統一 `esc()`、更新 golden、新增 escape 測試。
+2b. escape commit：統一 `esc()`、新增 escape 測試；golden 預期不變。
 3. 寫 `build_site.py` 與測試。
 4. 寫 `site.yml`（先不啟用 Pages）。
 5. **需使用者同意**：push、啟用 Pages、手動觸發、確認網址能開、驗證 build 失敗時線上維持上一版（用 `workflow_dispatch` 的 `fail_build` boolean input，不 commit 壞程式碼；順便確認 `github-pages` environment 只允許預設分支）。預告使用者：`daily_nba` 停用期間，約 36 小時後頁面會一直顯示「資料可能已過期」。
