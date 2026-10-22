@@ -253,3 +253,13 @@ def test_team_tables_html_populated():
     for cell in ("2026-10-22", "NYK", ">101<", ">W<", "Gamma Three", "30.5"):
         assert cell in html
     assert "湖人 近 10 場" in html
+
+
+def test_static_page_centers_and_pads_container():
+    css = render.static_page("T", "", NOW).split("</head>")[0]
+    assert "margin: 0 auto" in css and "padding-left: 1.5rem" in css
+
+
+def test_static_page_keeps_streamlit_element_gap():
+    css = render.static_page("T", "", NOW).split("</head>")[0]
+    assert ".block-container > * + *" in css

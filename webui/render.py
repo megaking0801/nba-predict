@@ -878,6 +878,9 @@ STATIC_EXTRA_CSS = """
 html, body { margin: 0; background: var(--ground); }
 body { color: var(--text); font-family: var(--body); }
 .stApp { min-height: 100vh; }
+.stApp .block-container { box-sizing: border-box; width: 100%; margin: 0 auto;
+  padding-left: 1.5rem; padding-right: 1.5rem; }
+.stApp .block-container > * + * { margin-top: 1rem; }
 .nb-stale { margin: 0 0 14px; padding: 10px 14px; border: 1px solid var(--amber);
   border-radius: 10px; color: var(--amber); background: rgba(255,194,75,0.08); }
 .nb-updated { margin: 28px 0 6px; color: var(--faint); font-size: 13px; }
