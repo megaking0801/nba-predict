@@ -1,0 +1,90 @@
+name: site
+
+# Builds the static site from the DB (read-only) and deploys it to GitHub Pages.
+# Runs after every daily_nba run (success or failure), on demand, and when the
+# site code changes. Pages must be set to "GitHub Actions" in repo settings.
+
+on:
+  workflow_run:
+    workflows: ["daily_nba"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      fail_build:
+        description: "Test only: fail the build job to confirm the live site stays on the previous version"
+        type: boolean
+        default: false
+  push:
+    branches: [main]
+    paths:
+      - "webui/**"
+      - ".github/workflows/site.yml"
+      - "jobs/teams.py"
+      - "jobs/model.py"
+      - "jobs/db_utils.py"
+      - "requirements.txt"
+      - "tests/**"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Simulated failure
+        if: ${{ inputs.fail_build }}
+        run: |
+          echo "fail_build requested: failing on purpose"
+          exit 1
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run tests
+        run: python -m pytest tests -q
+
+      - name: Build site
+        env:
+          SUPABASE_HOST: ${{ secrets.SUPABASE_HOST }}
+          SUPABASE_DB: ${{ secrets.SUPABASE_DB }}
+          SUPABASE_USER: ${{ secrets.SUPABASE_USER }}
+          SUPABASE_PASSWORD: ${{ secrets.SUPABASE_PASSWORD }}
+          SUPABASE_PORT: ${{ secrets.SUPABASE_PORT }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: python -m webui.build_site --out site
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
