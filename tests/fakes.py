@@ -86,6 +86,9 @@ class FakeDb:
     def __init__(self, routes: dict[str, pd.DataFrame | Callable[[tuple], pd.DataFrame]]):
         self.routes = routes
         self.calls: list[tuple[str, tuple]] = []
+        self.settings: list[str] = []
+        self.session: dict = {}
+        self.closed = False
 
     def run(self, sql: str, params: tuple = ()) -> pd.DataFrame:
         norm = " ".join(sql.split())
@@ -113,6 +116,9 @@ class _FakeCursor:
         return False
 
     def execute(self, sql, params=()):
+        if " ".join(sql.split()).upper().startswith("SET "):
+            self._db.settings.append(" ".join(sql.split()))
+            return
         self._df = self._db.run(sql, tuple(params or ()))
         self.description = [(c,) for c in self._df.columns]
 
@@ -132,6 +138,12 @@ class _FakeConn:
 
     def cursor(self):
         return _FakeCursor(self._db)
+
+    def set_session(self, **kw):
+        self._db.session.update(kw)
+
+    def close(self):
+        self._db.closed = True
 
 
 def _metrics_for(params: tuple) -> pd.DataFrame:

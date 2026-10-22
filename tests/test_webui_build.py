@@ -158,3 +158,42 @@ def test_safe_game_id():
     for bad in ("", "../x", "a/b", "a b", "a.html"):
         with pytest.raises(ValueError):
             build_site.safe_game_id(bad)
+
+
+# ---------- Task 7: connection hardening and CLI ----------
+
+def test_connect_sets_readonly_and_timeout(monkeypatch):
+    db = fakes.scenario_board()
+    monkeypatch.setattr(build_site, "db_connect", db.connect)
+    conn = build_site.connect_readonly()
+    assert db.session == {"readonly": True}
+    assert any("statement_timeout" in s for s in db.settings)
+    assert conn is not None
+    import os
+    assert os.environ.get("PGCONNECT_TIMEOUT")
+
+
+def test_main_builds_into_out_dir(monkeypatch, tmp_path):
+    db = fakes.scenario_board()
+    monkeypatch.setattr(build_site, "db_connect", db.connect)
+    out = tmp_path / "site"
+    assert build_site.main(["--out", str(out)]) == 0
+    assert (out / "index.html").exists()
+    assert db.closed
+
+
+def test_main_returns_1_on_db_error_without_leaking_dsn(monkeypatch, capsys, tmp_path):
+    def boom():
+        raise RuntimeError("postgresql://u:secret@h/db")
+    monkeypatch.setattr(build_site, "db_connect", boom)
+    assert build_site.main(["--out", str(tmp_path / "site")]) == 1
+    captured = capsys.readouterr()
+    assert "secret" not in captured.out + captured.err
+    assert "RuntimeError" in captured.out + captured.err
+
+
+def test_main_prints_build_error_message(monkeypatch, capsys, tmp_path):
+    db = _with_recent(fakes.scenario_board(), home_abbr="ZZZ")
+    monkeypatch.setattr(build_site, "db_connect", db.connect)
+    assert build_site.main(["--out", str(tmp_path / "site")]) == 1
+    assert "ZZZ" in capsys.readouterr().out + ""

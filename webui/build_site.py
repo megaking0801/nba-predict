@@ -7,13 +7,16 @@ failed build never leaves a half-written site behind.
 """
 from __future__ import annotations
 
+import argparse
 import datetime as dt
+import os
 import re
 import shutil
 from pathlib import Path
 
 import pandas as pd
 
+from jobs.db_utils import db_connect
 from jobs.teams import TEAM_NAME_CH, require_abbr
 from webui import queries, render
 from webui.queries import Run
@@ -183,3 +186,46 @@ def build(run: Run, out_dir: Path, now: dt.datetime) -> None:
         shutil.rmtree(old, ignore_errors=True)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
+
+
+def connect_readonly():
+    """One read-only connection with connect and statement timeouts."""
+    os.environ.setdefault("PGCONNECT_TIMEOUT", "10")
+    conn = db_connect()
+    conn.set_session(readonly=True)
+    with conn.cursor() as cur:
+        cur.execute("SET statement_timeout = 30000")
+    return conn
+
+
+def make_run(conn) -> Run:
+    def run(sql: str, params: tuple = ()) -> pd.DataFrame:
+        with conn.cursor() as cur:
+            cur.execute(sql, params)
+            cols = [d[0] for d in cur.description]
+            return pd.DataFrame(cur.fetchall(), columns=cols)
+    return run
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Build the static NBA prediction site.")
+    parser.add_argument("--out", default="site", help="output directory (default: site)")
+    args = parser.parse_args(argv)
+    try:
+        conn = connect_readonly()
+    except Exception as exc:  # message may contain a DSN: print the class only
+        print(f"DB connection failed ({type(exc).__name__}); check the DB credentials.")
+        return 1
+    try:
+        build(make_run(conn), Path(args.out), dt.datetime.now(dt.timezone.utc))
+    except Exception as exc:
+        print(f"Site build failed: {type(exc).__name__}: {exc}")
+        return 1
+    finally:
+        conn.close()
+    print(f"Site written to {args.out}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
