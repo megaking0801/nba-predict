@@ -48,7 +48,7 @@
 
 補充規則（審查後）：
 - `render.py` 的頁面組裝函式一律接收 `now` 參數，不自己呼叫 `datetime.now`；`injury_panel` 改為接收傷病 DataFrame，不自己查詢。渲染與查詢完全分離。
-- CSS 拆成 `THEME_CSS`（共用）與兩邊各自的外殼 CSS。靜態頁用 `<div class="stApp"><div class="block-container">` 包起來沿用同一套樣式；`st.info` 空狀態與 `st.expander` 模型說明在靜態版改為自己的 HTML（`<details>`）。這些是「靜態版等價物」，不在逐字 golden 範圍內。
+- CSS 不拆：`NEON_CSS` 原樣共用（拆開會動到 Streamlit 版輸出）。靜態頁用 `<div class="stApp"><div class="block-container">` 包起來，讓既有選擇器直接生效，另加 `STATIC_EXTRA_CSS`（body 邊距、`<details>` 樣式）；`st.info` 空狀態與 `st.expander` 模型說明在靜態版改為自己的 HTML（`<details>`）。這些是「靜態版等價物」，不在逐字 golden 範圍內。
 - `auto_nba_predict.py` 保留各函式自己的薄包裝與原本的 TTL，例如 `@st.cache_data(ttl=300) def load_recent_games(n=30): return queries.recent_games(q, n)`；不把 `run` callable 傳進 `st.cache_data`。
 - `build_site` 自己設 `connect_timeout` 與 `statement_timeout`，不改共用的 `jobs.db_utils.db_connect`；連線後 `set_session(readonly=True)`。
 - 寫檔名前驗證：`game_id` 須符合 `re.fullmatch(r"[0-9A-Za-z_-]+")`，不合格讓 build 失敗；隊名縮寫一律走 `require_abbr`。
