@@ -1,7 +1,7 @@
 # 靜態網站（一直在線）設計規格
 
 日期：2026-10-21
-狀態：待使用者審閱
+狀態：已納入支線審查 14 項意見（2026-10-23）。使用者授權兩個 session 自行決定細節；push、啟用 Pages、觸發 workflow、寫入正式 DB 仍須使用者明確同意。
 
 ## 1. 目的與背景
 
@@ -46,6 +46,13 @@
 | `.github/workflows/site.yml`（新） | 建置與部署。 |
 | `tests/test_webui_*.py`（新） | 見第 8 節。 |
 
+補充規則（審查後）：
+- `render.py` 的頁面組裝函式一律接收 `now` 參數，不自己呼叫 `datetime.now`；`injury_panel` 改為接收傷病 DataFrame，不自己查詢。渲染與查詢完全分離。
+- CSS 拆成 `THEME_CSS`（共用）與兩邊各自的外殼 CSS。靜態頁用 `<div class="stApp"><div class="block-container">` 包起來沿用同一套樣式；`st.info` 空狀態與 `st.expander` 模型說明在靜態版改為自己的 HTML（`<details>`）。這些是「靜態版等價物」，不在逐字 golden 範圍內。
+- `auto_nba_predict.py` 保留各函式自己的薄包裝與原本的 TTL，例如 `@st.cache_data(ttl=300) def load_recent_games(n=30): return queries.recent_games(q, n)`；不把 `run` callable 傳進 `st.cache_data`。
+- `build_site` 自己設 `connect_timeout` 與 `statement_timeout`，不改共用的 `jobs.db_utils.db_connect`；連線後 `set_session(readonly=True)`。
+- 寫檔名前驗證：`game_id` 須符合 `re.fullmatch(r"[0-9A-Za-z_-]+")`，不合格讓 build 失敗；隊名縮寫一律走 `require_abbr`。
+
 `webui/` 同時需要 `__init__.py`，讓 `python -m webui.build_site` 可執行。`site/` 為建置輸出，加入 `.gitignore`，不提交。
 
 ### 4.2 連結抽象
@@ -83,13 +90,16 @@ DB（只做 SELECT）→ `build_site.py` → `site/` → GitHub Pages。訪客�
 
 1. `workflow_run`：`daily_nba` 完成（`types: [completed]`），**不論成功或失敗**都觸發。官方文件：「A workflow run is triggered regardless of the conclusion of the previous workflow.」不下載上游 artifact。
 2. `workflow_dispatch`：手動。
-3. `push` 到 `main`，且路徑包含 `webui/**` 或 `.github/workflows/site.yml`。
+3. `push` 到 `main`，且路徑包含 `webui/**`、`.github/workflows/site.yml`、`jobs/teams.py`、`jobs/model.py`、`jobs/db_utils.py`、`requirements.txt`、`tests/**`。
+
+安全：`checkout` 一律用預設分支，不指定 ref；禁止 checkout `github.event.workflow_run.head_sha` 或 `head_branch`（避免 workflow_run 的 pwn-request 模式）。
 
 注意：`daily_nba` 目前被停用，第 1 項要等第二個子專案恢復排程後才會動；在那之前依賴第 2、3 項。不另外加獨立排程（資料沒進來時，重建的內容也一樣；過期提示已處理誠實揭露）。
 
 ### 6.2 Jobs
 
-- `build`：checkout → Python 3.11 → `pip install -r requirements.txt` → `python -m pytest tests -q` → `python -m webui.build_site`（環境變數帶入現有 DB secrets）→ `actions/upload-pages-artifact`（路徑 `site/`）。
+- 頂層 `permissions: contents: read`；`pages: write`、`id-token: write` 只給 `deploy` job。
+- `build`：`timeout-minutes: 15`。checkout → Python 3.11 → `pip install -r requirements.txt` → `python -m pytest tests -q` → `python -m webui.build_site` → `actions/upload-pages-artifact`（路徑 `site/`）。DB secrets **只放在 `build_site` 那一個 step 的 `env`**，不放 job 層，所以 `pip install` 與 `pytest` 拿不到。
 - `deploy`：`needs: build`；`permissions: pages: write, id-token: write`；`environment: github-pages`；`actions/deploy-pages`。這個 job 不拿到 DB secrets。
 - 併發群組 `pages`，不中斷進行中的部署。
 - Action 版本在實作時依官方文件確認（文件目前列 `upload-pages-artifact@v4`、`deploy-pages@v4`）。
@@ -109,8 +119,9 @@ DB（只做 SELECT）→ `build_site.py` → `site/` → GitHub Pages。訪客�
 
 ## 7. 安全
 
-- `webui/queries.py` 只含 `SELECT`，由測試強制（掃描 SQL 字串不得出現 `INSERT`、`UPDATE`、`DELETE`、`DROP`、`ALTER`、`CREATE`）。
-- 來自 DB 的文字（球員名、傷病說明、球隊名）輸出前一律 HTML escape。Streamlit 版目前直接塞進 `unsafe_allow_html`，抽出後兩邊共用同一份 escape。
+- 唯讀的真正保證在連線層：`build_site` 連上後執行 `conn.set_session(readonly=True)`。`webui/queries.py` 只含 `SELECT`，另以測試掃描 SQL 字串作第二道防線，用 `\b` 字邊界比對 `INSERT`、`UPDATE`、`DELETE`、`DROP`、`ALTER`、`CREATE`（避免 `updated_at` 之類欄位名誤判）。
+- 來自 DB 的文字（球員名、傷病說明與翻譯後字串、球隊名、`line_source`、`season`、縮寫）輸出前一律 HTML escape，全站統一用同一個 `esc()`（`html.escape`）。`table_html` 先逐格 `esc()` 再 `to_html(escape=False)`，不混用 pandas 的 escape。`NEON_CSS`、`DISCLAIMER_HTML` 與其他模板 HTML 不 escape。
+- escape 會改變輸出（例如 `D'Angelo` 變 `D&#x27;Angelo`），屬刻意的行為變更：與「純搬動」分成兩個 commit（見第 9 節）。
 - `.streamlit/secrets.toml` 不讀、不印、不提交（沿用 `CLAUDE.md` 與 `settings.json` 的規則）。
 - 開啟 Pages（把來源改為 GitHub Actions）是 repo 設定變更，**須使用者同意後才做**。
 
@@ -118,22 +129,24 @@ DB（只做 SELECT）→ `build_site.py` → `site/` → GitHub Pages。訪客�
 
 全部不需要 DB，使用固定的假資料。
 
-1. **特徵化測試（在搬動程式碼之前先寫）**：記錄現有 Streamlit 版卡片、看板、三種玩法卡、傷病面板對固定資料的輸出；搬到 `render.py` 後必須逐字相同。
+1. **特徵化測試（在搬動程式碼之前先寫）**：`auto_nba_predict.py` 是模組層腳本（`:28` `set_page_config`、`:902` 載入戰績，import 即連 DB），無法直接 import 取函式。改用 `streamlit.testing.v1.AppTest.from_file("auto_nba_predict.py")`，monkeypatch `psycopg2.connect`（或假的 `q`），收集所有 `at.markdown[i].value` 做**整頁 golden**，涵蓋三種情境：看板、`?game=<id>`、空 DB。fixture 的 `tipoff_utc` 必須帶時區；固定時間（凍結 `datetime.now`）。整頁 golden 同時涵蓋 hero、戰績格、球隊表區塊與詳情頁組裝。搬到 `render.py` 後（純搬動 commit）必須逐字相同，fixture 的名字不含特殊字元。
+   escape 另在後一個 commit 以含 `'`、`&`、`<script>` 的 fixture 新增測試並刻意更新 golden。
 2. **渲染測試**：空資料、只有未開賽、只有已終場、缺盤口、無大小分、傷病為空。
 3. **建置腳本測試**：用假的 `run` 產生完整 `site/`；檢查檔案齊全、每個站內連結都指到存在的檔案、無以 `/` 開頭的絕對路徑。
 4. **HTML escape 測試**：球員名含 `<script>` 等字元時被轉義。
 5. **唯讀測試**：`queries.py` 無寫入語句。
 6. **過期提示**：內嵌更新時間格式正確、36 小時門檻正確。
 
-真實資料的建置在 CI 驗證（本機無法讀取 DB 設定）。本機用假資料建 `site/`，掛在 `/nba-predict/` 子路徑用 `python -m http.server` 實際點連結。
+真實資料的建置在 CI 驗證（`secrets.toml` 雖在本機，但 Claude 的讀取被 deny 擋住，程式自己讀的 `streamlit run` 另算）。本機用假資料建 `site/`，掛在 `/nba-predict/` 子路徑用 `python -m http.server` 實際點連結。
 
 ## 9. 上線順序（每個關卡都等使用者）
 
 1. 寫特徵化測試，確認目前全綠。
-2. 抽出 `render.py`、`queries.py`；Streamlit 改為 import；測試維持全綠。
+2. 純搬動 commit：抽出 `render.py`、`queries.py`；Streamlit 改為 import；整頁 golden 逐字相同。接著跑 `streamlit run` 確認能載入（沒有 DB 連線就寫「未驗證」）。
+2b. escape commit：統一 `esc()`、更新 golden、新增 escape 測試。
 3. 寫 `build_site.py` 與測試。
 4. 寫 `site.yml`（先不啟用 Pages）。
-5. **需使用者同意**：push、啟用 Pages、手動觸發、確認網址能開、故意讓 `build` 失敗一次驗證線上維持上一版。
+5. **需使用者同意**：push、啟用 Pages、手動觸發、確認網址能開、驗證 build 失敗時線上維持上一版（用 `workflow_dispatch` 的 `fail_build` boolean input，不 commit 壞程式碼；順便確認 `github-pages` environment 只允許預設分支）。預告使用者：`daily_nba` 停用期間，約 36 小時後頁面會一直顯示「資料可能已過期」。
 6. 更新 `CLAUDE.md`（架構、指令、已知待釐清）。
 7. 完成後交給 `reviewer` 審 diff。
 
@@ -144,4 +157,5 @@ DB（只做 SELECT）→ `build_site.py` → `site/` → GitHub Pages。訪客�
 | 搬動渲染函式時改壞 Streamlit | 先寫特徵化測試，輸出逐字比對。 |
 | 資料來源被擋，網站內容變舊 | 過期提示 + 第二個子專案修復抓資料。 |
 | 排程再被 60 天規則停用 | 屬第二個子專案處理。push 通常算 repo 活動，但 GitHub 文件未逐項列舉，實作時再確認。 |
+| 新球季剛開打，`latest_season` 為 2026-27 但尚無 final 場次，球員表 fallback 寫死 2025-26，30 隊頁可能全是「尚無資料」 | 現有行為；記為已知限制，交給第二個子專案。 |
 | 第一次部署與預期不同 | 第 9 節第 5 步用實測驗證，包含故意失敗。 |
