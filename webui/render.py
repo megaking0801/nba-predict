@@ -6,6 +6,7 @@ no DB access, no wall-clock reads: callers pass data and ``now`` in.
 from __future__ import annotations
 
 import datetime as dt
+import html
 from typing import Protocol
 from zoneinfo import ZoneInfo
 
@@ -36,6 +37,13 @@ class StreamlitLinks:
 
 
 STREAMLIT_LINKS = StreamlitLinks()
+
+
+def esc(x) -> str:
+    """HTML-escape DB-sourced text; None/NaN become an empty string."""
+    if x is None or (not isinstance(x, str) and pd.isna(x)):
+        return ""
+    return html.escape(str(x), quote=True)
 
 
 NEON_CSS = """
@@ -333,7 +341,7 @@ _WD = ["一", "二", "三", "四", "五", "六", "日"]
 
 
 def fmt_team(abbr: str) -> str:
-    return f"{TEAM_NAME_CH.get(abbr, abbr)}"
+    return esc(TEAM_NAME_CH.get(abbr, abbr))
 
 
 # ESPN injury text → Chinese. status is exact; detail matches whole phrase first,
@@ -378,7 +386,7 @@ def tw_detail(d) -> str:
 def fmt_when(ts, date_et) -> str:
     if ts is not None and not pd.isna(ts):
         return pd.Timestamp(ts).tz_convert(TW).strftime("%m/%d %H:%M")
-    return str(date_et)
+    return esc(date_et)
 
 
 def _conf_word(p_home: float) -> str:
@@ -414,10 +422,10 @@ def matchup_block(g, big: bool = False) -> str:
     home_name = f'{fmt_team(home)}<span class="nb-ha home">主</span>'
     return (
         f'<div class="{"nb-mbig" if big else "nb-cmatch"}">'
-        f'<div class="{tb}{away_cls}"><div class="abbr">{away}</div>'
+        f'<div class="{tb}{away_cls}"><div class="abbr">{esc(away)}</div>'
         f'<div class="name">{away_name}</div></div>'
         f'<span class="{at}">＠</span>'
-        f'<div class="{tb}{home_cls}"><div class="abbr">{home}</div>'
+        f'<div class="{tb}{home_cls}"><div class="abbr">{esc(home)}</div>'
         f'<div class="name">{home_name}</div></div>'
         f'</div>'
     )
@@ -436,8 +444,8 @@ def prob_bar(g, big: bool = False) -> str:
     return (
         f'<div class="{track}">'
         f'{_fill_html(home_fav, fav_pct, big)}'
-        f'<div class="nb-lbl l{l_fav}">{away} <span class="nb-pct led">{away_pct}%</span></div>'
-        f'<div class="nb-lbl r{r_fav}"><span class="nb-pct led">{home_pct}%</span> {home}</div>'
+        f'<div class="nb-lbl l{l_fav}">{esc(away)} <span class="nb-pct led">{away_pct}%</span></div>'
+        f'<div class="nb-lbl r{r_fav}"><span class="nb-pct led">{home_pct}%</span> {esc(home)}</div>'
         f'</div>'
     )
 
@@ -459,11 +467,11 @@ def game_card_html(g, links: Links = STREAMLIT_LINKS) -> str:
                  else '<span class="nb-miss">❌ 未中</span>')
         result = (
             f'<div class="nb-cresult"><span class="score">'
-            f'{g["away_abbr"]} {g["away_score"]} – {g["home_score"]} {g["home_abbr"]}'
+            f'{esc(g["away_abbr"])} {g["away_score"]} – {g["home_score"]} {esc(g["home_abbr"])}'
             f'（{fmt_team(win_abbr)}勝）</span>{badge}</div>'
         )
     return (
-        f'<a class="nb-cardlink" href="{links.game(g["game_id"])}" target="_self">'
+        f'<a class="nb-cardlink" href="{esc(links.game(g["game_id"]))}" target="_self">'
         f'<div class="nb-card">'
         f'<div class="nb-crow"><span class="nb-when">🗓 {fmt_when(g["tipoff_utc"], g["game_date_et"])}</span>{pill}</div>'
         f'{matchup_block(g, big=False)}'
@@ -516,7 +524,11 @@ def date_group_html(date_val, rows: list, links: Links = STREAMLIT_LINKS) -> str
 def table_html(df: pd.DataFrame) -> str:
     if df is None or df.empty:
         return '<div class="empty">尚無資料</div>'
-    return df.to_html(index=False, classes="ntable", border=0, escape=False)
+    out = df.copy()
+    for col in out.columns:
+        if pd.api.types.is_object_dtype(out[col]) or pd.api.types.is_string_dtype(out[col]):
+            out[col] = out[col].map(lambda v: esc(v) if isinstance(v, str) else v)
+    return out.to_html(index=False, classes="ntable", border=0, escape=False)
 
 
 def topbar_html(acc, back: bool = False, links: Links = STREAMLIT_LINKS) -> str:
@@ -567,11 +579,11 @@ def _bet_spread(g) -> str:
     l_fav = "" if home_cov else " fav"
     r_fav = " fav" if home_cov else ""
     bar = (f'<div class="nb-track">{_fill_html(home_cov, fav_pct, True)}'
-           f'<div class="nb-lbl l{l_fav}">{away} <span class="nb-pct led">{away_pct}%</span></div>'
-           f'<div class="nb-lbl r{r_fav}"><span class="nb-pct led">{home_pct}%</span> {home}</div></div>')
+           f'<div class="nb-lbl l{l_fav}">{esc(away)} <span class="nb-pct led">{away_pct}%</span></div>'
+           f'<div class="nb-lbl r{r_fav}"><span class="nb-pct led">{home_pct}%</span> {esc(home)}</div></div>')
     cov_abbr = home if home_cov else away
     cov_side = "主" if home_cov else "客"
-    line = f'客 {away} {(-hs):+.1f}　／　主 {home} {hs:+.1f}'
+    line = f'客 {esc(away)} {(-hs):+.1f}　／　主 {esc(home)} {hs:+.1f}'
     src = (g["line_source"] or "").upper() or "—"
     res = ""
     if g["status"] == "final" and pd.notna(g["cover_result"]):
@@ -587,7 +599,7 @@ def _bet_spread(g) -> str:
             res = f'<div class="res"><span class="score">{fmt_team(cov_actual)} 破盤</span>{badge}</div>'
     return (
         '<div class="nb-bet"><h4>受讓分 <span>Spread</span></h4>'
-        f'<div class="line">{line}　·　<b>{src}</b> 盤口</div>'
+        f'<div class="line">{line}　·　<b>{esc(src)}</b> 盤口</div>'
         f'{bar}'
         f'<div class="verdict">🔮 看好 <b>{fmt_team(cov_abbr)}</b>（{cov_side}）破受讓盤</div>'
         f'{res}</div>'
@@ -614,7 +626,7 @@ def _bet_total(g, over_acc=None) -> str:
     if not has_pred:
         if has_line:
             return (f'{head}'
-                    f'<div class="line">盤口總分 <b>{float(tl):.1f}</b>　·　<b>{src}</b></div>'
+                    f'<div class="line">盤口總分 <b>{float(tl):.1f}</b>　·　<b>{esc(src)}</b></div>'
                     '<div class="empty">本季開賽後顯示模型估總分與大小分傾向。</div>'
                     f'{caveat}</div>')
         return ('<div class="nb-bet disabled"><h4>大小分 <span>O/U</span></h4>'
@@ -632,11 +644,11 @@ def _bet_total(g, over_acc=None) -> str:
         else:
             lean = f'<span class="nb-lean under">偏小 {diff:.1f}</span>'
             pick = False
-        lineblk = f'<div class="line">盤口總分 <b>{float(tl):.1f}</b>　·　<b>{src}</b></div>'
+        lineblk = f'<div class="line">盤口總分 <b>{float(tl):.1f}</b>　·　<b>{esc(src)}</b></div>'
         hero = (f'<div class="nb-totline"><span class="led big">{pt:.0f}</span>'
                 f'<span class="vs">模型估總分</span>{lean}</div>')
     else:
-        lineblk = f'<div class="line">無總分盤口可比較　·　<b>{src}</b></div>'
+        lineblk = f'<div class="line">無總分盤口可比較　·　<b>{esc(src)}</b></div>'
         hero = (f'<div class="nb-totline"><span class="led big">{pt:.0f}</span>'
                 f'<span class="vs">模型估總分</span></div>')
 
@@ -669,9 +681,9 @@ def injury_panel(df: pd.DataFrame, team_abbr: str, who: str) -> str:
         stt = tw_status(raw)
         det = tw_detail(r["detail"])
         rows.append(
-            f'<div class="nb-inj"><span class="pn">{r["player_name"]}</span>'
-            f'<span class="nb-injstatus {cls}">{stt}</span>'
-            f'<span class="det">{det}</span></div>'
+            f'<div class="nb-inj"><span class="pn">{esc(r["player_name"])}</span>'
+            f'<span class="nb-injstatus {cls}">{esc(stt)}</span>'
+            f'<span class="det">{esc(det)}</span></div>'
         )
     return (f'<div class="nb-panel"><h3>{fmt_team(team_abbr)} '
             f'<span>· {who} · 傷病 {snap_lbl}</span></h3>{"".join(rows)}</div>')
@@ -699,7 +711,7 @@ def detail_chunks(g: pd.Series, tr: dict, inj_away: pd.DataFrame, inj_home: pd.D
 
     score = ""
     if final and pd.notna(g["home_score"]):
-        score = f'　·　{away} {int(g["away_score"])} – {int(g["home_score"])} {home}'
+        score = f'　·　{esc(away)} {int(g["away_score"])} – {int(g["home_score"])} {esc(home)}'
     return [
         topbar_html(acc, back=True, links=links),
         f'<div class="nb-detailhead">{matchup_block(g, big=True)}'
@@ -714,7 +726,7 @@ def detail_chunks(g: pd.Series, tr: dict, inj_away: pd.DataFrame, inj_home: pd.D
         f'<div class="nb-twocol">{injury_panel(inj_away, away, "客")}'
         f'{injury_panel(inj_home, home, "主")}</div>',
         f'<div class="nb-sechead" style="margin-top:36px;"><h2>球員 <span class="bar">·</span> 場均</h2>'
-        f'<span class="sub">season {season} · min ≥ 10</span></div>',
+        f'<span class="sub">season {esc(season)} · min ≥ 10</span></div>',
         f'<div class="nb-twocol">'
         f'<div class="nb-panel"><h3>{fmt_team(away)} <span>· 客</span></h3>{table_html(players_away)}</div>'
         f'<div class="nb-panel"><h3>{fmt_team(home)} <span>· 主</span></h3>{table_html(players_home)}</div>'
@@ -809,7 +821,7 @@ def board_chunks(games: pd.DataFrame, tr: dict, acc, now: dt.datetime,
 def team_section_head(season: str, with_game_hint: bool = True) -> str:
     hint = " · 點上方對戰可看雙隊對比" if with_game_hint else ""
     return (f'<div class="nb-sechead" style="margin-top:36px;"><h2>🔍 任選球隊 <span class="bar">·</span> 看數據</h2>'
-            f'<span class="sub">season {season}{hint}</span></div>')
+            f'<span class="sub">season {esc(season)}{hint}</span></div>')
 
 
 def team_tables_html(team: str, team_df: pd.DataFrame, player_df: pd.DataFrame) -> str:

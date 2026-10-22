@@ -103,3 +103,57 @@ def test_no_streamlit_import():
             continue
         src = path.read_text(encoding="utf-8")
         assert "import streamlit" not in src and "from streamlit" not in src
+
+
+# ---------- Task 4: HTML escape of DB-sourced text ----------
+
+def _inj_df(name: str, detail: str = "Knee") -> pd.DataFrame:
+    return pd.DataFrame([(name, "Out", detail, dt.date(2026, 10, 23))],
+                        columns=["player_name", "status", "detail", "snap_date"])
+
+
+def test_esc_special_chars():
+    assert render.esc("D'Angelo") == "D&#x27;Angelo"
+    assert "<" not in render.esc("<script>")
+    assert render.esc(None) == ""
+
+
+def test_injury_panel_escapes():
+    html = render.injury_panel(_inj_df("<script>alert(1)</script>", "Knee <b>"), "LAL", "主")
+    assert "<script>" not in html and "<b>" not in html
+    assert "&lt;script&gt;" in html
+
+
+def test_table_html_escapes_cells():
+    df = pd.DataFrame([("A&B", 1), ("C<D", 2)], columns=["球員", "場次"])
+    html = render.table_html(df)
+    assert "A&amp;B" in html and "C&lt;D" in html
+    assert "球員" in html
+
+
+def test_table_html_keeps_none_and_numbers():
+    df = pd.DataFrame({"球員": ["x"], "勝負": [None], "得分": [12.5]})
+    plain = df.to_html(index=False, classes="ntable", border=0, escape=False)
+    assert render.table_html(df) == plain
+
+
+def test_card_escapes_game_id_in_href():
+    html = render.game_card_html(_game(game_id='x"><script>'))
+    assert "<script>" not in html
+
+
+def test_no_double_escape():
+    assert render.fmt_team("A&B") == "A&amp;B"
+    html = render.injury_panel(_inj_df("A&B"), "A&B", "主")
+    assert html.count("A&amp;B") >= 2 and "&amp;amp;" not in html
+    tbl = render.table_html(pd.DataFrame([("A&B",)], columns=["球員"]))
+    assert tbl.count("A&amp;B") == 1 and "&amp;amp;" not in tbl
+
+
+def test_line_source_and_season_escaped():
+    g = _game(line_source="<i>x</i>", home_spread=-3.5, p_home_cover=0.6)
+    assert "<i>x</i>" not in render._bet_spread(g)
+    detail = render.detail_chunks(
+        _game(season="<b>s</b>"), {}, _inj_df("a"), _inj_df("b"),
+        pd.DataFrame(), pd.DataFrame(), 0.6)
+    assert not any("<b>s</b>" in c for c in detail)
