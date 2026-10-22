@@ -756,7 +756,7 @@ def hero_html(n_up: int, now: dt.datetime) -> str:
 def record_chunks(tr: dict, acc) -> list[str]:
     acc_cell = (f'<div class="nb-rcell"><div class="k">近三季猜中率</div>'
                 f'<div class="v c led">{acc * 100:.1f}%</div>'
-                f'<div class="note">{tr.get("wf_n")} 場時間外驗證</div></div>') if acc else \
+                f'<div class="note">{esc(tr.get("wf_n"))} 場時間外驗證</div></div>') if acc else \
                ('<div class="nb-rcell"><div class="k">近三季猜中率</div>'
                 '<div class="v led">—</div><div class="note">尚未訓練</div></div>')
     if tr["rec_n"]:
@@ -779,7 +779,7 @@ def record_chunks(tr: dict, acc) -> list[str]:
     if over_acc:
         over_cells += (f'<div class="nb-rcell"><div class="k">大小分時間外猜中率</div>'
                        f'<div class="v m led">{over_acc * 100:.1f}%</div>'
-                       f'<div class="note">{tr.get("over_wf_n")} 場 O/U 驗證</div></div>')
+                       f'<div class="note">{esc(tr.get("over_wf_n"))} 場 O/U 驗證</div></div>')
     if tr.get("over_rec_n"):
         op = tr["over_rec_hit"] / tr["over_rec_n"] * 100
         over_cells += (f'<div class="nb-rcell"><div class="k">大小分已結算命中</div>'
@@ -891,12 +891,27 @@ details.nb-explainer summary { cursor: pointer; color: var(--muted); }
 """
 
 
-def static_page(title: str, body_html: str, built_at: dt.datetime) -> str:
-    """Full HTML document for the static site. ``built_at`` must be timezone-aware."""
+def static_page(title: str, body_html: str, built_at: dt.datetime,
+                data_at: dt.datetime | None = None) -> str:
+    """Full HTML document for the static site.
+
+    ``built_at`` is when the page was generated; ``data_at`` is the newest
+    prediction time in the DB. Staleness is judged on ``data_at`` (falling back
+    to ``built_at`` when unknown), so a rebuild without fresh data still warns.
+    Both must be timezone-aware.
+    """
     if built_at.tzinfo is None:
         raise ValueError("built_at must be timezone-aware")
-    built_iso = built_at.isoformat()
-    shown = built_at.astimezone(TW).strftime("%Y-%m-%d %H:%M")
+    if data_at is not None and data_at.tzinfo is None:
+        raise ValueError("data_at must be timezone-aware")
+    stamp = data_at or built_at
+    built_iso = stamp.isoformat(timespec="seconds")
+    built_txt = built_at.astimezone(TW).strftime("%Y-%m-%d %H:%M")
+    if data_at is not None:
+        data_txt = data_at.astimezone(TW).strftime("%Y-%m-%d %H:%M")
+        shown = f"資料更新於 {data_txt}（台北時間）　·　頁面建置於 {built_txt}（台北時間）"
+    else:
+        shown = f"頁面建置於 {built_txt}（台北時間）；沒有預測資料時間可顯示"
     return (
         '<!doctype html>\n<html lang="zh-Hant"><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width, initial-scale=1">'
@@ -906,7 +921,7 @@ def static_page(title: str, body_html: str, built_at: dt.datetime) -> str:
         f'超過 {STALE_HOURS} 小時沒有更新，以下內容可能不是最新。</div>'
         f'{body_html}'
         f'<div class="nb-updated" id="built" data-built="{esc(built_iso)}">'
-        f'資料更新於 {shown}（台北時間）</div>'
+        f'{shown}</div>'
         '</div></div>'
         '<script>(function(){var el=document.getElementById("built");'
         'var t=Date.parse(el.getAttribute("data-built"));'

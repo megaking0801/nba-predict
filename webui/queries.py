@@ -59,6 +59,17 @@ def track_record(run: Run) -> dict:
             "over_rec_n": int(reco.iloc[0]["n"] or 0)}
 
 
+def data_freshness(run: Run):
+    """Newest prediction time (tz-aware UTC), or None when there are no predictions."""
+    df = run("SELECT max(predicted_at) AS predicted_at FROM public.predictions", ())
+    if df.empty or pd.isna(df.iloc[0]["predicted_at"]):
+        return None
+    ts = pd.Timestamp(df.iloc[0]["predicted_at"])
+    if ts.tzinfo is None:
+        ts = ts.tz_localize("UTC")
+    return ts.to_pydatetime()
+
+
 def team_recent(run: Run, abbr: str, n: int = 10) -> pd.DataFrame:
     return run(
         """

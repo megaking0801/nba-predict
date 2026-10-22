@@ -185,7 +185,33 @@ def test_static_page_has_built_marker():
 
 def test_static_page_shows_taipei_time():
     page = render.static_page("T", "", NOW)
-    assert "資料更新於 2026-10-23 09:00（台北時間）" in page
+    assert "頁面建置於 2026-10-23 09:00（台北時間）" in page
+    assert "資料更新於" not in page  # no data timestamp known: do not claim one
+
+
+def test_static_page_uses_data_time_for_staleness():
+    data_at = dt.datetime(2026, 10, 20, 12, 0, tzinfo=UTC)
+    page = render.static_page("T", "", NOW, data_at=data_at)
+    assert 'data-built="2026-10-20T12:00:00+00:00"' in page
+    assert "資料更新於 2026-10-20 20:00（台北時間）" in page
+    assert "頁面建置於 2026-10-23 09:00（台北時間）" in page
+
+
+def test_static_page_trims_microseconds():
+    page = render.static_page("T", "", NOW.replace(microsecond=613402))
+    assert 'data-built="2026-10-23T01:00:00+00:00"' in page
+
+
+def test_static_page_rejects_naive_data_time():
+    import pytest
+    with pytest.raises(ValueError):
+        render.static_page("T", "", NOW, data_at=dt.datetime(2026, 10, 20, 12, 0))
+
+
+def test_record_counts_from_json_are_escaped():
+    tr = _tr(wf_n="<b>1</b>", over_wf_acc=0.5, over_wf_n="<i>2</i>")
+    html = "".join(render.record_chunks(tr, 0.65))
+    assert "<b>1</b>" not in html and "<i>2</i>" not in html
 
 
 def test_stale_threshold_is_36h():

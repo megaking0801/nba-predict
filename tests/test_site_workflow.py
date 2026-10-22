@@ -70,3 +70,10 @@ def test_builds_with_python_311_and_pinned_requirements():
     text = _text()
     assert 'python-version: "3.11"' in text
     assert "pip install -r requirements.txt" in text
+
+
+def test_ci_installs_pytest_outside_requirements():
+    text = _text()
+    assert re.search(r"pip install .*pytest==\d", text), "build job runs pytest but requirements.txt has none"
+    req = (WF.parents[2] / "requirements.txt").read_text(encoding="utf-8")
+    assert "pytest" not in req

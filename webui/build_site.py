@@ -69,6 +69,9 @@ def check_site(root: Path) -> list[str]:
                 if page.name != "404.html":
                     problems.append(f"{page.relative_to(root)}: absolute path {url}")
                 continue
+            if url.startswith("?"):
+                problems.append(f"{page.relative_to(root)}: query-only link {url}")
+                continue
             target = url.split("#", 1)[0].split("?", 1)[0]
             if target and not (page.parent / target).resolve().exists():
                 problems.append(f"{page.relative_to(root)}: broken link {url}")
@@ -80,8 +83,8 @@ def _write(path: Path, text: str) -> None:
     path.write_text(text, encoding="utf-8", newline="\n")
 
 
-def _page(title: str, chunks: list[str], now: dt.datetime) -> str:
-    return render.static_page(title, "\n".join(chunks), now)
+def _page(title: str, chunks: list[str], now: dt.datetime, data_at) -> str:
+    return render.static_page(title, "\n".join(chunks), now, data_at)
 
 
 def _team_list_html() -> str:
@@ -91,7 +94,8 @@ def _team_list_html() -> str:
     return f'<div class="nb-panel"><ul class="nb-teamlist">{items}</ul></div>'
 
 
-def _index_page(games: pd.DataFrame, tr: dict, acc, season: str, now: dt.datetime) -> str:
+def _index_page(games: pd.DataFrame, tr: dict, acc, season: str, now: dt.datetime,
+                data_at) -> str:
     chunks = render.board_chunks(games, tr, acc, now, StaticLinks(0))
     if games.empty:
         chunks.append(f'<div class="nb-honest">{render.EMPTY_BOARD_TEXT}</div>')
@@ -102,14 +106,14 @@ def _index_page(games: pd.DataFrame, tr: dict, acc, season: str, now: dt.datetim
         f'{explainer_html(acc)}</details>',
         render.DISCLAIMER_HTML,
     ]
-    return _page(SITE_NAME, chunks, now)
+    return _page(SITE_NAME, chunks, now, data_at)
 
 
-def _game_page(run: Run, gid: str, tr: dict, acc, now: dt.datetime) -> str:
+def _game_page(run: Run, gid: str, tr: dict, acc, now: dt.datetime, data_at) -> str:
     links = StaticLinks(1)
     df = queries.game(run, gid)
     if df is None or df.empty:
-        return _page(SITE_NAME, render.not_found_chunks(acc, links), now)
+        return _page(SITE_NAME, render.not_found_chunks(acc, links), now, data_at)
     g = df.iloc[0]
     home, away = _checked_abbr(g["home_abbr"]), _checked_abbr(g["away_abbr"])
     gdate, season = g["game_date_et"], g["season"]
@@ -118,10 +122,10 @@ def _game_page(run: Run, gid: str, tr: dict, acc, now: dt.datetime) -> str:
         queries.injuries(run, away, gdate), queries.injuries(run, home, gdate),
         queries.player_recent(run, away, season), queries.player_recent(run, home, season),
         acc, links)
-    return _page(f"{away} @ {home} · {SITE_NAME}", chunks, now)
+    return _page(f"{away} @ {home} · {SITE_NAME}", chunks, now, data_at)
 
 
-def _team_page(run: Run, abbr: str, season: str, acc, now: dt.datetime) -> str:
+def _team_page(run: Run, abbr: str, season: str, acc, now: dt.datetime, data_at) -> str:
     chunks = [
         render.topbar_html(acc, back=True, links=StaticLinks(1)),
         render.team_section_head(season, with_game_hint=False),
@@ -129,17 +133,17 @@ def _team_page(run: Run, abbr: str, season: str, acc, now: dt.datetime) -> str:
                                 queries.player_recent(run, abbr, season)),
         render.DISCLAIMER_HTML,
     ]
-    return _page(f"{TEAM_NAME_CH[abbr]} · {SITE_NAME}", chunks, now)
+    return _page(f"{TEAM_NAME_CH[abbr]} · {SITE_NAME}", chunks, now, data_at)
 
 
-def _not_found_page(now: dt.datetime) -> str:
+def _not_found_page(now: dt.datetime, data_at) -> str:
     # Pages serves this for any missing path without changing the URL, so a
     # relative link would break on deep URLs: build the home URL in JS instead.
     body = ('<div class="nb-honest">找不到這個頁面。'
             '<a id="home" class="nb-static-link" href="#">回到首頁</a></div>'
             "<script>var h=document.getElementById('home');"
             "h.setAttribute('href','/'+location.pathname.split('/')[1]+'/');</script>")
-    return render.static_page(f"找不到頁面 · {SITE_NAME}", body, now)
+    return render.static_page(f"找不到頁面 · {SITE_NAME}", body, now, data_at)
 
 
 def _generate(run: Run, root: Path, now: dt.datetime) -> None:
@@ -147,6 +151,7 @@ def _generate(run: Run, root: Path, now: dt.datetime) -> None:
     tr = queries.track_record(run)
     acc = tr.get("wf_acc")
     season = queries.latest_season(run)
+    data_at = queries.data_freshness(run)
 
     game_ids: list[str] = []
     for _, row in games.iterrows():
@@ -154,12 +159,12 @@ def _generate(run: Run, root: Path, now: dt.datetime) -> None:
         _checked_abbr(row["home_abbr"])
         _checked_abbr(row["away_abbr"])
 
-    _write(root / "index.html", _index_page(games, tr, acc, season, now))
+    _write(root / "index.html", _index_page(games, tr, acc, season, now, data_at))
     for gid in game_ids:
-        _write(root / "game" / f"{gid}.html", _game_page(run, gid, tr, acc, now))
+        _write(root / "game" / f"{gid}.html", _game_page(run, gid, tr, acc, now, data_at))
     for abbr in sorted(TEAM_NAME_CH):
-        _write(root / "team" / f"{abbr}.html", _team_page(run, abbr, season, acc, now))
-    _write(root / "404.html", _not_found_page(now))
+        _write(root / "team" / f"{abbr}.html", _team_page(run, abbr, season, acc, now, data_at))
+    _write(root / "404.html", _not_found_page(now, data_at))
     _write(root / ".nojekyll", "")
 
 
@@ -168,8 +173,12 @@ def build(run: Run, out_dir: Path, now: dt.datetime) -> None:
     out_dir = Path(out_dir)
     tmp = out_dir.with_name(out_dir.name + ".tmp")
     old = out_dir.with_name(out_dir.name + ".old")
-    for leftover in (tmp, old):
-        shutil.rmtree(leftover, ignore_errors=True)
+    shutil.rmtree(tmp, ignore_errors=True)
+    if old.exists():
+        if out_dir.exists():
+            shutil.rmtree(old, ignore_errors=True)
+        else:  # an interrupted swap left the only good copy here
+            old.rename(out_dir)
     try:
         _generate(run, tmp, now)
         problems = check_site(tmp)

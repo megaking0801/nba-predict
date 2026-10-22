@@ -80,7 +80,7 @@ def test_game_page_escapes_player_name(tmp_path):
 def test_staleness_marker_in_every_page(tmp_path):
     out = _build(fakes.scenario_board(), tmp_path / "site")
     for page in out.rglob("*.html"):
-        assert 'data-built="2026-10-23T01:00:00+00:00"' in _read(page), page
+        assert 'data-built="2026-10-22T20:15:00+00:00"' in _read(page), page
 
 
 def _with_recent(db: fakes.FakeDb, **changes) -> fakes.FakeDb:
@@ -197,3 +197,42 @@ def test_main_prints_build_error_message(monkeypatch, capsys, tmp_path):
     monkeypatch.setattr(build_site, "db_connect", db.connect)
     assert build_site.main(["--out", str(tmp_path / "site")]) == 1
     assert "ZZZ" in capsys.readouterr().out + ""
+
+
+# ---------- final review follow-ups ----------
+
+def test_build_uses_data_freshness_for_staleness(tmp_path):
+    out = _build(fakes.scenario_board(), tmp_path / "site")
+    page = _read(out / "index.html")
+    assert 'data-built="2026-10-22T20:15:00+00:00"' in page
+    assert "資料更新於 2026-10-23 04:15（台北時間）" in page
+
+
+def test_build_without_prediction_time_falls_back_to_build_time(tmp_path):
+    out = _build(fakes.scenario_empty(), tmp_path / "site")
+    page = _read(out / "index.html")
+    assert 'data-built="2026-10-23T01:00:00+00:00"' in page
+    assert "資料更新於" not in page
+
+
+def test_data_freshness_query_is_tz_aware_or_none():
+    got = build_site.queries.data_freshness(fakes.scenario_board().run)
+    assert got is not None and got.tzinfo is not None
+    assert build_site.queries.data_freshness(fakes.scenario_empty().run) is None
+
+
+def test_check_site_flags_query_only_links(tmp_path):
+    (tmp_path / "index.html").write_text('<a href="?game=1">x</a><a href="?">y</a>',
+                                         encoding="utf-8")
+    problems = build_site.check_site(tmp_path)
+    assert len(problems) == 2
+
+
+def test_failed_build_restores_orphaned_old_site(tmp_path):
+    old = tmp_path / "site.old"
+    old.mkdir()
+    (old / "marker.txt").write_text("keep", encoding="utf-8")
+    db = _with_recent(fakes.scenario_board(), game_id="../x")
+    with pytest.raises(ValueError):
+        build_site.build(db.run, tmp_path / "site", NOW)
+    assert (tmp_path / "site" / "marker.txt").exists()

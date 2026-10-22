@@ -204,6 +204,8 @@ def _db(board_rows: list[dict], *, hit: int, n: int, ohit: int, on: int,
         "FROM public.player_game_stats": _players,
         "SELECT season FROM public.games_v2": _frame(["season"], [("2025-26",)]),
         "FROM public.injury_snapshots": _injuries,
+        "max(predicted_at)": _frame(["predicted_at"],
+                                    [(dt.datetime(2026, 10, 22, 20, 15, tzinfo=UTC),)]),
     })
 
 
@@ -227,4 +229,5 @@ def scenario_empty() -> FakeDb:
         "FROM public.player_game_stats": pd.DataFrame([], columns=PLAYER_COLS),
         "SELECT season FROM public.games_v2": pd.DataFrame([], columns=["season"]),
         "FROM public.injury_snapshots": pd.DataFrame([], columns=INJURY_COLS),
+        "max(predicted_at)": _frame(["predicted_at"], [(None,)]),
     })

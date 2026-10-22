@@ -76,4 +76,5 @@
 - 使用者授權兩個 session 自行決定細節；**以下仍須使用者逐項明確同意**：`git push`、把 Pages 來源改為 GitHub Actions、手動觸發 `site` workflow、`fail_build=true` 實測失敗不覆蓋線上。
 - 未驗證：`streamlit run` 實機（無 DB 連線，以 AppTest 整頁 golden 代替）；CI 的 Python 3.11 相容性（本機 3.12，已避免 f-string 運算式內反斜線）；靜態頁在瀏覽器的視覺（只用 http.server 爬連結驗證無壞連結）；部署失敗時線上是否維持上一版。
 - 已知行為：頁面改為查完全部資料才一次輸出，查詢出錯時不再先顯示部分頁面。
+- 第一次部署順序：`site.yml` 進 `main` 就會因 push 觸發；若 Pages 來源還沒改成 GitHub Actions，`deploy` 會失敗一次，所以要先啟用 Pages 再 push（或接受第一次失敗）。CI 的 pytest 以 `pip install pytest==9.1.1` 在 workflow 內安裝，沒有加進 `requirements.txt`。
 - 提醒：`daily_nba` 仍停用，靜態站內容會停在最後資料，約 36 小時後顯示「資料可能已過期」。
