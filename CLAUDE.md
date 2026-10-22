@@ -12,12 +12,15 @@ streamlit run auto_nba_predict.py    # 啟動網站，需 DATABASE_URL 或 SUPAB
 python -m jobs.config                # 印出全部參數與 CONFIG_HASH
 python -m jobs.evaluate              # walk-forward 評估 + ATS 回測（只讀，但需要 DB 連線）
 python -m jobs.diagnose              # DB 狀態體檢（只讀，需要 DB 連線）
+python -m webui.build_site --out site  # 從 DB 產生靜態網站到 site/（只讀連線，需要 DB 連線；site/ 不提交）
 ```
 會寫入 DB 的 job（`schema`、`ingest_*`、`backfill`、`settle`、`snapshot_*`、`predict_daily`、`predict_history`、`train`、`calibrate`、`run_daily`）
 平常由 GitHub Actions `daily_nba.yml` 排程執行，不在本機跑。
 
 ## 架構
-- `auto_nba_predict.py`：前端，只讀 DB（`v_app_board` 等），不在前端跑模型。
+- `auto_nba_predict.py`：Streamlit 前端外殼，只讀 DB（`v_app_board` 等），不在前端跑模型。渲染與 SQL 已抽到 `webui/`。
+- `webui/`：`render.py`（純 HTML 渲染，不 import streamlit、不查 DB）、`queries.py`（只含 SELECT）、`build_site.py`（產生靜態站）。
+  靜態站由 `.github/workflows/site.yml` 部署到 GitHub Pages（`daily_nba` 完成後、手動、或 `webui/**` 等路徑變動時觸發）。
 - `jobs/`：v2 流程。ESPN 資料（`ingest_espn.py`：比賽、box score、盤口）、NBA CDN 賽程（`ingest_games.py`）、ESPN 傷兵（`snapshot_injuries.py`）
   → `features.py`（`FeatureBuilder`）→ `train.py` / `calibrate.py` / `evaluate.py` → `predict_daily.py`（用 `picks.py` 決定出手）→ `settle.py`。
 - 所有參數集中在 `jobs/config.py`；每個模型版本與預測都記錄 `CONFIG_HASH`。
@@ -41,6 +44,8 @@ python -m jobs.diagnose              # DB 狀態體檢（只讀，需要 DB 連�
 - 時間：DB 存 UTC；比賽日用 ET；台北時間只出現在 App 顯示層。
 - schema 變更只做可重複執行、只新增的 migration（`ADD COLUMN IF NOT EXISTS`）。`v_app_board` 的新欄位只能加在最後，`CREATE OR REPLACE VIEW` 不能重排欄位。
 - `market_lines`、`predictions` 設計上是 append-only。除了 `predict_history.py` 與 `ingest_espn --odds` 這兩個既有的重建流程，不要刪改歷史列。
+- `webui/queries.py` 只准 SELECT；`webui/render.py` 不 import streamlit，DB 來的文字一律經 `esc()`。`build_site` 連線必須 `readonly`。
+- Streamlit 頁面輸出由 `tests/test_streamlit_golden.py` 的整頁 golden 鎖住；改渲染時 golden 不可因搬動而變，要改就是刻意的行為變更並說明。
 - 新的資料來源用 ESPN。stats.nba.com 會擋 GitHub runner 與非美國 IP。
 
 **安全與營運**
@@ -83,6 +88,7 @@ python -m jobs.diagnose              # DB 狀態體檢（只讀，需要 DB 連�
 - 不要改動已被追蹤的 `tests/__pycache__/*.pyc`（待清理）。
 
 ## 已知待釐清（不要擅自改）
+- `daily_nba` 因 60 天無活動被停用（`disabled_inactivity`），且 10:30 UTC 全流程的 `ingest_games` / `ingest_stats` 被 NBA 端點擋。靜態站內容會停在最後一次資料，頁面 36 小時後顯示「資料可能已過期」。恢復排程與改走 ESPN 是下一個子專案。
 - `run_daily` 的 `ingest_stats` 走 stats.nba.com，但 `ingest_espn.py` 的註解說它被擋。線上實際走哪條有效，要看 Actions 紀錄。
 - `snapshot_lines.py` 的 Odds API 只抓 `spreads`，大小分盤口目前只靠 ESPN。
 - Legacy 流程仍在，且 `preload` 排程每天會跑：`public.games`、`cache_nba`、`sync_daily`、`settle_daily`、`train_base_model`、`train_calibrator`、
