@@ -534,17 +534,31 @@ def _pick_block(odds_side: dict):
     return {}, None
 
 
-def parse_close_line(items: List[dict]) -> Optional[dict]:
-    """Spread + total lines from the priority provider, preferring close -> current
-    -> open (so settled games use the close, upcoming games still get a live line).
-    price_point / total_price_point say which of the three each number came from (they
-    can differ: a closing spread with a current-only total). Decimal prices default to
-    1.91 (-110) when absent. Returns None if no spread."""
-    prov = next((it for it in items if (it.get("provider") or {}).get("priority") == 0),
-                items[0] if items else None)
-    if not prov:
-        return None
+def _provider_priority(item: dict) -> float:
+    try:
+        return float((item.get("provider") or {})["priority"])
+    except (KeyError, TypeError, ValueError):
+        return float("inf")
 
+
+def parse_close_line(items: List[dict]) -> Optional[dict]:
+    """Spread + total lines for one game from the best provider that has a spread.
+
+    Providers are tried by ascending priority (stable among equals): in some seasons
+    several share priority 0 and the first may carry no odds at all (only a link to
+    its feed). The total comes from the SAME provider as the spread, never mixed in
+    from another; no total there means None. Within a provider each number prefers
+    close -> current -> open; price_point / total_price_point say which it was (they
+    can differ). Decimal prices default to 1.91 (-110) when absent. None if no
+    provider has a spread."""
+    for prov in sorted(items or [], key=_provider_priority):
+        parsed = _parse_provider_line(prov)
+        if parsed is not None:
+            return parsed
+    return None
+
+
+def _parse_provider_line(prov: dict) -> Optional[dict]:
     hb, price_point = _pick_block(prov.get("homeTeamOdds") or {})
     ab, _ = _pick_block(prov.get("awayTeamOdds") or {})
     hs = _spread_num((hb.get("pointSpread") or {}).get("american"))

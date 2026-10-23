@@ -428,3 +428,46 @@ def test_force_rebuild_skips_games_with_live_lines_or_no_tipoff(monkeypatch):
     ingest_espn.backfill_odds(force_rebuild=True)
     select = next(s for s in log.sql if s.startswith("SELECT"))
     assert "ml.captured_at <> g.tipoff_utc" in select and "g.tipoff_utc IS NOT NULL" in select
+
+
+# ---------- provider selection (2017-18: first provider often has no odds at all) ----------
+
+def _prov(priority, spread=None, total=None, name="p"):
+    item = _odds_item({"current": spread} if spread else {}, {"current": total} if total else None)
+    item["provider"] = {"priority": priority, "name": name}
+    if not spread:  # a provider that only links to its feed: no homeTeamOdds at all
+        item.pop("homeTeamOdds", None)
+        item.pop("awayTeamOdds", None)
+    return item
+
+
+def test_parse_close_line_skips_provider_without_odds():
+    items = [_prov(0, name="Bet 365"), _prov(0, "-3.5", "221.5", name="Caesars")]
+    got = ingest_espn.parse_close_line(items)
+    assert got is not None
+    assert got["home_spread"] == -3.5 and got["total_line"] == 221.5
+    assert got["price_point"] == "current" and got["total_price_point"] == "current"
+
+
+def test_parse_close_line_prefers_lower_priority_number():
+    items = [_prov(2, "-9.5", "230.5"), _prov(1, "-3.5", "221.5"), _prov(1, "-4.5", "222.5")]
+    assert ingest_espn.parse_close_line(items)["home_spread"] == -3.5   # stable among equals
+
+
+def test_parse_close_line_total_comes_from_the_same_provider_only():
+    items = [_prov(0, "-3.5", None), _prov(0, "-4.5", "225.5")]
+    got = ingest_espn.parse_close_line(items)
+    assert got["home_spread"] == -3.5 and got["total_line"] is None
+    assert got["total_price_point"] is None
+
+
+def test_parse_close_line_no_usable_provider_is_none():
+    assert ingest_espn.parse_close_line([_prov(0), _prov(1)]) is None
+    assert ingest_espn.parse_close_line([]) is None
+
+
+def test_parse_close_line_provider_without_priority_goes_last():
+    a = _prov(0, "-3.5", "221.5")
+    b = _prov(0, "-8.5", "230.5")
+    b["provider"] = {"name": "no priority"}
+    assert ingest_espn.parse_close_line([b, a])["home_spread"] == -3.5
