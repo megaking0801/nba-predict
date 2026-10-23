@@ -191,7 +191,7 @@ def _players(params: tuple) -> pd.DataFrame:
 
 
 def _db(board_rows: list[dict], *, hit: int, n: int, ohit: int, on: int,
-        metrics: bool = True) -> FakeDb:
+        metrics: bool = True, next_tip=None) -> FakeDb:
     recent_cols, recent_rows = _recent_from(board_rows)
     empty_metrics = pd.DataFrame([], columns=["metrics"])
     return FakeDb({
@@ -206,11 +206,13 @@ def _db(board_rows: list[dict], *, hit: int, n: int, ohit: int, on: int,
         "FROM public.injury_snapshots": _injuries,
         "max(predicted_at)": _frame(["predicted_at"],
                                     [(dt.datetime(2026, 10, 22, 20, 15, tzinfo=UTC),)]),
+        "min(tipoff_utc)": _frame(["tipoff_utc"], [(next_tip,)]),
     })
 
 
 def scenario_board() -> FakeDb:
-    return _db(_board_rows(), hit=40, n=60, ohit=20, on=41)
+    return _db(_board_rows(), hit=40, n=60, ohit=20, on=41,
+               next_tip=dt.datetime(2026, 10, 24, 23, 0, tzinfo=UTC))
 
 
 def scenario_offseason() -> FakeDb:
@@ -230,4 +232,5 @@ def scenario_empty() -> FakeDb:
         "SELECT season FROM public.games_v2": pd.DataFrame([], columns=["season"]),
         "FROM public.injury_snapshots": pd.DataFrame([], columns=INJURY_COLS),
         "max(predicted_at)": _frame(["predicted_at"], [(None,)]),
+        "min(tipoff_utc)": _frame(["tipoff_utc"], [(None,)]),
     })

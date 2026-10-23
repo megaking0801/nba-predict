@@ -67,3 +67,17 @@ def test_track_record_dedups_per_game():
         assert "AND p.predicted_at < g.tipoff_utc" not in sql
     assert "win_result IS NOT NULL" in home
     assert "over_result IN (0,1)" in over
+
+
+def test_next_tipoff_query():
+    got = queries.next_tipoff(fakes.scenario_board().run)
+    assert got is not None and got.tzinfo is not None
+    assert queries.next_tipoff(fakes.scenario_empty().run) is None
+    assert queries.next_tipoff(fakes.scenario_offseason().run) is None
+
+
+def test_next_tipoff_ignores_started_games():
+    seen: list[str] = []
+    db = fakes.scenario_board()
+    queries.next_tipoff(lambda sql, params=(): (seen.append(" ".join(sql.split())), db.run(sql, params))[1])
+    assert "status='scheduled'" in seen[0] and "tipoff_utc > now()" in seen[0]

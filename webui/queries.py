@@ -83,6 +83,18 @@ def data_freshness(run: Run):
     return ts.to_pydatetime()
 
 
+def next_tipoff(run: Run):
+    """Earliest future tipoff of a scheduled game (tz-aware UTC), or None."""
+    df = run("SELECT min(tipoff_utc) AS tipoff_utc FROM public.games_v2 "
+             "WHERE status='scheduled' AND tipoff_utc > now()", ())
+    if df.empty or pd.isna(df.iloc[0]["tipoff_utc"]):
+        return None
+    ts = pd.Timestamp(df.iloc[0]["tipoff_utc"])
+    if ts.tzinfo is None:
+        ts = ts.tz_localize("UTC")
+    return ts.to_pydatetime()
+
+
 def team_recent(run: Run, abbr: str, n: int = 10) -> pd.DataFrame:
     return run(
         """

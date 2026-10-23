@@ -263,3 +263,37 @@ def test_static_page_centers_and_pads_container():
 def test_static_page_keeps_streamlit_element_gap():
     css = render.static_page("T", "", NOW).split("</head>")[0]
     assert ".block-container > * + *" in css
+
+
+# ---------- P1: "today's picks are not out yet" notice ----------
+
+def test_should_show_not_yet_boundaries():
+    now = dt.datetime(2026, 10, 23, 13, 0, tzinfo=UTC)
+    h = dt.timedelta
+    f = render.should_show_not_yet
+    assert f(now, now - h(hours=20, minutes=1), now + h(hours=10))
+    assert not f(now, now - h(hours=20), now + h(hours=10))            # exactly 20 h
+    assert not f(now, now - h(hours=21), now + h(hours=25))            # next game too far
+    assert not f(now, now - h(hours=21), now + h(hours=24))            # exactly 24 h
+    assert not f(now, now - h(hours=21), now - h(minutes=1))           # tipoff already passed
+    assert not f(now, now - h(hours=21), None)
+    assert not f(now, None, now + h(hours=10))
+
+
+def test_static_page_next_tip_marker():
+    data_at = dt.datetime(2026, 10, 22, 10, 30, tzinfo=UTC)
+    tip = dt.datetime(2026, 10, 24, 23, 0, tzinfo=UTC)
+    page = render.static_page("T", "", NOW, data_at=data_at, next_tip=tip)
+    assert 'data-next-tip="2026-10-24T23:00:00+00:00"' in page
+    assert 'id="notyet"' in page and "10/22 的預測" in page
+    assert "20*3600*1000" in page and "24*3600*1000" in page
+    plain = render.static_page("T", "", NOW, data_at=data_at)
+    assert 'data-next-tip="' not in plain
+    import pytest
+    with pytest.raises(ValueError):
+        render.static_page("T", "", NOW, data_at=data_at, next_tip=dt.datetime(2026, 10, 24, 23, 0))
+
+
+def test_static_page_without_data_time_has_no_notyet_div():
+    tip = dt.datetime(2026, 10, 24, 23, 0, tzinfo=UTC)
+    assert 'id="notyet"' not in render.static_page("T", "", NOW, next_tip=tip)

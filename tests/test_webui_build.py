@@ -236,3 +236,12 @@ def test_failed_build_restores_orphaned_old_site(tmp_path):
     with pytest.raises(ValueError):
         build_site.build(db.run, tmp_path / "site", NOW)
     assert (tmp_path / "site" / "marker.txt").exists()
+
+
+def test_not_yet_marker_in_every_page(tmp_path):
+    out = _build(fakes.scenario_board(), tmp_path / "site")
+    for page in out.rglob("*.html"):
+        assert 'data-next-tip="' in _read(page), page
+    empty = _build(fakes.scenario_empty(), tmp_path / "empty")
+    for page in empty.rglob("*.html"):
+        assert 'data-next-tip="' not in _read(page), page

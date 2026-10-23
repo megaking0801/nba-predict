@@ -855,6 +855,19 @@ def explainer_md(acc) -> str:
 # =========================================================
 
 STALE_HOURS = 36
+NOT_YET_HOURS = 20           # newest prediction older than this ...
+NEXT_GAME_WINDOW_HOURS = 24  # ... while a game tips off within this => "not out yet"
+
+
+def should_show_not_yet(now: dt.datetime, data_at: dt.datetime | None,
+                        next_tip: dt.datetime | None) -> bool:
+    """Reference for the page's inline JS (keep both in step): today's picks are
+    probably missing when a game is coming up soon but the newest prediction is old."""
+    if next_tip is None or data_at is None:
+        return False
+    return (now < next_tip
+            and next_tip - now < dt.timedelta(hours=NEXT_GAME_WINDOW_HOURS)
+            and now - data_at > dt.timedelta(hours=NOT_YET_HOURS))
 
 
 class StaticLinks:
@@ -895,7 +908,8 @@ details.nb-explainer summary { cursor: pointer; color: var(--muted); }
 
 
 def static_page(title: str, body_html: str, built_at: dt.datetime,
-                data_at: dt.datetime | None = None) -> str:
+                data_at: dt.datetime | None = None,
+                next_tip: dt.datetime | None = None) -> str:
     """Full HTML document for the static site.
 
     ``built_at`` is when the page was generated; ``data_at`` is the newest
@@ -907,6 +921,8 @@ def static_page(title: str, body_html: str, built_at: dt.datetime,
         raise ValueError("built_at must be timezone-aware")
     if data_at is not None and data_at.tzinfo is None:
         raise ValueError("data_at must be timezone-aware")
+    if next_tip is not None and next_tip.tzinfo is None:
+        raise ValueError("next_tip must be timezone-aware")
     stamp = data_at or built_at
     built_iso = stamp.isoformat(timespec="seconds")
     built_txt = built_at.astimezone(TW).strftime("%Y-%m-%d %H:%M")
@@ -915,6 +931,12 @@ def static_page(title: str, body_html: str, built_at: dt.datetime,
         shown = f"資料更新於 {data_txt}（台北時間）　·　頁面建置於 {built_txt}（台北時間）"
     else:
         shown = f"頁面建置於 {built_txt}（台北時間）；沒有預測資料時間可顯示"
+    tip_attr = (f' data-next-tip="{esc(next_tip.isoformat(timespec="seconds"))}"'
+                if next_tip is not None else "")
+    notyet = ""
+    if data_at is not None:
+        notyet = ('<div id="notyet" class="nb-stale" hidden>今天的推薦還沒出來，以下是 '
+                  f'{data_at.astimezone(TW):%m/%d} 的預測。</div>')
     return (
         '<!doctype html>\n<html lang="zh-Hant"><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width, initial-scale=1">'
@@ -922,14 +944,20 @@ def static_page(title: str, body_html: str, built_at: dt.datetime,
         '<div class="stApp"><div class="block-container">'
         '<div id="stale" class="nb-stale" hidden>⚠ 資料可能已過期：'
         f'超過 {STALE_HOURS} 小時沒有更新，以下內容可能不是最新。</div>'
+        f'{notyet}'
         f'{body_html}'
-        f'<div class="nb-updated" id="built" data-built="{esc(built_iso)}">'
+        f'<div class="nb-updated" id="built" data-built="{esc(built_iso)}"{tip_attr}>'
         f'{shown}</div>'
         '</div></div>'
         '<script>(function(){var el=document.getElementById("built");'
         'var t=Date.parse(el.getAttribute("data-built"));'
         f'var STALE_MS={STALE_HOURS}*3600*1000;'
         'if(!isNaN(t)&&Date.now()-t>STALE_MS){'
-        'document.getElementById("stale").hidden=false;}})();</script>'
+        'document.getElementById("stale").hidden=false;}'
+        'var nt=Date.parse(el.getAttribute("data-next-tip")||""),ny=document.getElementById("notyet"),'
+        'now=Date.now();'
+        f'if(ny&&!isNaN(t)&&!isNaN(nt)&&now<nt&&nt-now<{NEXT_GAME_WINDOW_HOURS}*3600*1000'
+        f'&&now-t>{NOT_YET_HOURS}*3600*1000){{ny.hidden=false;}}'
+        '})();</script>'
         '</body></html>\n'
     )
