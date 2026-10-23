@@ -16,9 +16,9 @@ on:
         required: false
         default: "2026-27"
       seasons:
-        description: "v2_backfill: comma-separated seasons"
+        description: "v2_backfill: comma-separated seasons (ESPN)"
         required: false
-        default: "2023-24,2024-25,2025-26"
+        default: "2026-27"
       verify_us_date:
         description: "legacy: override US date (MM/DD/YYYY)"
         required: false
@@ -171,7 +171,7 @@ jobs:
 
       - name: v2 historical backfill
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.run == 'v2_backfill' }}
-        run: python -u -m jobs.backfill --seasons "${{ inputs.seasons }}"
+        run: python -u -m jobs.ingest_espn --seasons "${{ inputs.seasons }}"
 
       - name: v2 daily pipeline
         if: ${{ github.event.schedule == '30 10 * * *' || (github.event_name == 'workflow_dispatch' && (inputs.run == 'v2_daily' || inputs.run == 'all')) }}

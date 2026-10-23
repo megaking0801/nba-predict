@@ -84,3 +84,11 @@ def test_manual_ingest_never_writes_nba_format_ids():
     step = _block(r"- name: v2 ingest only")
     assert "jobs.ingest_espn" in step
     assert "ingest_games" not in step and "ingest_stats" not in step
+
+
+def test_manual_backfill_uses_espn_seasons():
+    step = _block(r"- name: v2 historical backfill")
+    assert "jobs.ingest_espn --seasons" in step
+    assert "jobs.backfill" not in step
+    seasons = _block(r"^      seasons:")
+    assert "(ESPN)" in seasons and 'default: "2026-27"' in seasons
