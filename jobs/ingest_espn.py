@@ -143,7 +143,7 @@ def shot_bucket(x, y, pts_value: int) -> Tuple[str, bool]:
 
 def _parse_shots(gid: str, bs: dict, abbr_by_team_id: Dict[str, str]) -> List[tuple]:
     counts: Dict[tuple, List[int]] = {}
-    unmatched = 0
+    unmatched = odd_points = 0
     for play in (bs or {}).get("plays") or []:
         if not play.get("shootingPlay"):
             continue
@@ -151,6 +151,7 @@ def _parse_shots(gid: str, bs: dict, abbr_by_team_id: Dict[str, str]) -> List[tu
             continue
         pts = play.get("pointsAttempted")
         if pts not in (2, 3):
+            odd_points += 1
             continue
         abbr = abbr_by_team_id.get(str((play.get("team") or {}).get("id")))
         if abbr is None:
@@ -163,6 +164,8 @@ def _parse_shots(gid: str, bs: dict, abbr_by_team_id: Dict[str, str]) -> List[tu
         cell[1] += 1 if play.get("scoringPlay") else 0
     if unmatched:
         print(f"[WARN] game {gid}: {unmatched} shot plays without a matching team", flush=True)
+    if odd_points:
+        print(f"[WARN] game {gid}: {odd_points} shot plays with pointsAttempted not 2 or 3", flush=True)
     return [(gid, abbr, pts, bucket, corner, fga, fgm)
             for (abbr, pts, bucket, corner), (fga, fgm) in sorted(counts.items())]
 
@@ -180,7 +183,7 @@ def parse_summary(meta: dict, bs: dict) -> SummaryRows:
 
     # --- players (also accumulate team minutes) ---
     player_rows: List[tuple] = []
-    status_rows: List[tuple] = []
+    status_by_pid: Dict[int, tuple] = {}
     team_minutes: Dict[str, float] = {}
     for tb in players_block:
         abbr = normalize_espn_abbr(tb["team"]["abbreviation"])
@@ -190,12 +193,16 @@ def parse_summary(meta: dict, bs: dict) -> SummaryRows:
             athlete = ath.get("athlete") or {}
             pid = _int(athlete.get("id"))
             if pid is not None:  # availability for EVERY listed player, DNP included
-                status_rows.append((gid, pid, abbr, athlete.get("displayName"),
+                prev = status_by_pid.get(pid)
+                if prev is not None and not (prev[5] and not ath.get("didNotPlay")):
+                    pass  # already listed (a repeat must not collide on the primary key)
+                else:
+                    status_by_pid[pid] = (gid, pid, abbr, athlete.get("displayName"),
                                     bool(ath.get("starter")), bool(ath.get("didNotPlay")),
                                     # ESPN also fills `reason` for players who played; it only
                                     # means something when they did not
                                     (ath.get("reason") or None) if ath.get("didNotPlay") else None,
-                                    bool(ath.get("ejected"))))
+                                    bool(ath.get("ejected")))
             if ath.get("didNotPlay") or not ath.get("stats"):
                 continue
             if pid is None:  # team-total rows / players without an ESPN id
@@ -246,8 +253,15 @@ def parse_summary(meta: dict, bs: dict) -> SummaryRows:
                  if name]
     abbr_by_team_id = {str(tb["team"].get("id")): normalize_espn_abbr(tb["team"]["abbreviation"])
                        for tb in teams_block}
-    return SummaryRows(team_rows, player_rows, status_rows, officials,
-                       _parse_shots(gid, bs, abbr_by_team_id))
+    shot_rows = _parse_shots(gid, bs, abbr_by_team_id)
+    plays_fga: Dict[str, int] = {}
+    for _g, abbr, _pts, _bucket, _corner, fga, _fgm in shot_rows:
+        plays_fga[abbr] = plays_fga.get(abbr, 0) + fga
+    for tr in team_rows:  # (game_id, team_abbr, is_home, wl, min, pts, fgm, fga, ...)
+        if tr[7] is not None and plays_fga.get(tr[1], 0) != tr[7]:
+            print(f"[WARN] game {gid}: FGA mismatch {tr[1]} plays={plays_fga.get(tr[1], 0)} "
+                  f"box={tr[7]}", flush=True)
+    return SummaryRows(team_rows, player_rows, list(status_by_pid.values()), officials, shot_rows)
 
 
 # ----- DB upserts -----
@@ -377,6 +391,7 @@ def ingest_dates(dates: List[str], finals_only: bool) -> Tuple[int, int, int]:
 
     game_rows, team_rows, player_rows = [], [], []
     status_rows, official_rows, shot_rows = [], [], []
+    parsed_ids: List[str] = []
     for m, bs in summaries:
         game_rows.append(_game_row(m))
         if m["status"] == "final" and bs:
@@ -387,6 +402,7 @@ def ingest_dates(dates: List[str], finals_only: bool) -> Tuple[int, int, int]:
                 status_rows.extend(parsed.status_rows)
                 official_rows.extend(parsed.official_rows)
                 shot_rows.extend(parsed.shot_rows)
+                parsed_ids.append(m["game_id"])
             except Exception as ex:  # noqa: BLE001 — one odd game must not kill the batch
                 print(f"[WARN] parse_summary failed game={m['game_id']} err={ex}", flush=True)
 
@@ -400,6 +416,11 @@ def ingest_dates(dates: List[str], finals_only: bool) -> Tuple[int, int, int]:
                 psycopg2.extras.execute_values(cur, UPSERT_TEAM, team_rows, page_size=500)
             if player_rows:
                 psycopg2.extras.execute_values(cur, UPSERT_PLAYER, player_rows, page_size=500)
+            if parsed_ids:
+                # Derived per-game tables are replaced, not merged: a key that vanishes on a
+                # re-parse (a corrected coordinate, a shorter officials list) must not linger.
+                for table in ("player_game_status", "game_officials", "team_shot_buckets"):
+                    cur.execute(f"DELETE FROM public.{table} WHERE game_id = ANY(%s)", (parsed_ids,))
             if status_rows:
                 psycopg2.extras.execute_values(cur, UPSERT_STATUS, status_rows, page_size=500)
             if official_rows:
@@ -423,11 +444,11 @@ def _ensure_schema() -> None:
 
 
 def backfill(seasons: List[str]) -> None:
+    unknown = [s for s in seasons if s not in SEASON_WINDOWS]
+    if unknown:
+        raise ValueError(f"unknown season(s) {', '.join(unknown)}; known: {', '.join(sorted(SEASON_WINDOWS))}")
     _ensure_schema()
     for s in seasons:
-        if s not in SEASON_WINDOWS:
-            print(f"[WARN] unknown season {s}; skip", flush=True)
-            continue
         start, end = SEASON_WINDOWS[s]
         dates = _date_range(start, end)
         # process in monthly chunks to bound memory and show progress
@@ -607,8 +628,12 @@ def backfill_odds(force_rebuild: bool = False) -> None:
     conn = db_connect()
     try:
         with conn.cursor() as cur:
-            cur.execute("SELECT game_id, tipoff_utc, game_date_et FROM public.games_v2 "
-                        "WHERE status='final' ORDER BY game_date_et")
+            cur.execute("SELECT g.game_id, g.tipoff_utc, g.game_date_et FROM public.games_v2 g "
+                        "WHERE g.status='final' AND g.tipoff_utc IS NOT NULL "
+                        "AND NOT EXISTS (SELECT 1 FROM public.market_lines ml "
+                        "WHERE ml.game_id = g.game_id AND ml.source = 'espn' "
+                        "AND ml.captured_at <> g.tipoff_utc) "
+                        "ORDER BY g.game_date_et")
             games = cur.fetchall()
     finally:
         conn.close()
@@ -645,6 +670,7 @@ def snapshot_espn_odds(days_back: int = 3, days_ahead: int = 2,
 
     With ``window_minutes`` set (close-snapshot mode) only games that have not
     started and tip off within that many minutes are fetched."""
+    _ensure_schema()  # close runs may be the first thing to touch the new price_point columns
     today = dt.datetime.now(ET).date()
     lo, hi = today - dt.timedelta(days=days_back), today + dt.timedelta(days=days_ahead)
     conn = db_connect()

@@ -369,3 +369,62 @@ def test_snapshot_rows_carry_price_points(monkeypatch):
     ingest_espn.snapshot_espn_odds()
     assert inserted[0][-2:] == ("current", None)
     assert "price_point, total_price_point" in ingest_espn.INSERT_LINE
+
+
+# ---------- P2 review follow-ups ----------
+
+def test_snapshot_espn_odds_ensures_schema_first(monkeypatch):
+    """--close runs can hit the DB before any other step created price_point."""
+    order: list[str] = []
+    monkeypatch.setattr(ingest_espn, "ensure_schema", lambda conn: order.append("schema"))
+    now = dt.datetime.now(UTC)
+    monkeypatch.setattr(ingest_espn, "db_connect", lambda: _Conn([("g", now + dt.timedelta(minutes=30), now.date())]))
+    monkeypatch.setattr(ingest_espn, "odds", lambda gid, **kw: order.append("odds") or None)
+    ingest_espn.snapshot_espn_odds(window_minutes=150)
+    assert order[0] == "schema" and "odds" in order
+
+
+def test_ingest_dates_replaces_derived_rows_before_upsert(monkeypatch):
+    """Re-parsing a game must not leave stale status/official/shot rows behind."""
+    import json
+    from pathlib import Path
+    sample = json.loads((Path(__file__).parent / "fixtures" / "espn" / "summary_final_sample.json")
+                        .read_text(encoding="utf-8"))
+    log: list[tuple] = []
+
+    class Cur(_Cur):
+        def execute(self, sql, params=None):
+            log.append(("exec", " ".join(sql.split()), params))
+
+    class Conn(_RecConn):
+        def cursor(self):
+            return Cur([])
+
+    monkeypatch.setattr(ingest_espn, "scoreboard", lambda d, **kw: {"events": [_event(False)]})
+    monkeypatch.setattr(ingest_espn, "summary", lambda gid, **kw: sample)
+    monkeypatch.setattr(ingest_espn, "db_connect", lambda: Conn())
+    monkeypatch.setattr(ingest_espn.psycopg2.extras, "execute_values",
+                        lambda cur, sql, rows, page_size=0: log.append(("values", " ".join(sql.split())[:60], None)))
+    ingest_espn.ingest_dates(["20260421"], finals_only=True)
+    for table, upsert in (("player_game_status", "INSERT INTO public.player_game_status"),
+                          ("game_officials", "INSERT INTO public.game_officials"),
+                          ("team_shot_buckets", "INSERT INTO public.team_shot_buckets")):
+        d = next(i for i, e in enumerate(log) if e[0] == "exec" and e[1].startswith(f"DELETE FROM public.{table}"))
+        u = next(i for i, e in enumerate(log) if e[0] == "values" and e[1].startswith(upsert))
+        assert d < u
+        assert log[d][2] == (["401869396"],)
+
+
+def test_backfill_unknown_season_raises():
+    import pytest
+    with pytest.raises(ValueError, match="2019-2020"):
+        ingest_espn.backfill(["2019-2020"])
+
+
+def test_force_rebuild_skips_games_with_live_lines_or_no_tipoff(monkeypatch):
+    log = _SqlLog([])
+    monkeypatch.setattr(ingest_espn, "db_connect", lambda: log)
+    monkeypatch.setattr(ingest_espn.psycopg2.extras, "execute_values", lambda *a, **k: None)
+    ingest_espn.backfill_odds(force_rebuild=True)
+    select = next(s for s in log.sql if s.startswith("SELECT"))
+    assert "ml.captured_at <> g.tipoff_utc" in select and "g.tipoff_utc IS NOT NULL" in select

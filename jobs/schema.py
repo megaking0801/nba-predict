@@ -222,14 +222,6 @@ CREATE TABLE IF NOT EXISTS public.team_shot_buckets (
 # Additive, re-entrant migrations for tables created by an earlier DDL run
 # (CREATE TABLE IF NOT EXISTS won't add columns to a table that already exists).
 MIGRATIONS = """
--- P2: venue flag and which price point (close/current/open) each stored line came from.
-ALTER TABLE public.games_v2
-  ADD COLUMN IF NOT EXISTS neutral_site BOOLEAN;
-ALTER TABLE public.market_lines
-  ADD COLUMN IF NOT EXISTS price_point TEXT;        -- where the spread came from
-ALTER TABLE public.market_lines
-  ADD COLUMN IF NOT EXISTS total_price_point TEXT;  -- where the total came from
-
 ALTER TABLE public.predictions
   ADD COLUMN IF NOT EXISTS p_home_win DOUBLE PRECISION;  -- straight-up win prob, line-independent
 ALTER TABLE public.predictions
@@ -255,6 +247,15 @@ ALTER TABLE public.predictions
   ADD COLUMN IF NOT EXISTS over_result         SMALLINT;         -- 1 over, 0 under, 2 push
 ALTER TABLE public.predictions
   ADD COLUMN IF NOT EXISTS total_model_version TEXT;
+
+-- P2 (kept last so a fresh DB gets the same market_lines column order as production):
+-- venue flag, and which price point (close/current/open) each stored line came from.
+ALTER TABLE public.games_v2
+  ADD COLUMN IF NOT EXISTS neutral_site BOOLEAN;
+ALTER TABLE public.market_lines
+  ADD COLUMN IF NOT EXISTS price_point TEXT;        -- where the spread came from
+ALTER TABLE public.market_lines
+  ADD COLUMN IF NOT EXISTS total_price_point TEXT;  -- where the total came from
 """
 
 # Book preference order must match jobs.config.CONFIG.BOOK_PREFERENCE.

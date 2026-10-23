@@ -243,3 +243,10 @@ def test_schema_v4_additions():
     assert "PRIMARY KEY (game_id, player_id)" in schema.DDL
     assert "PRIMARY KEY (game_id, team_abbr, pts_value, dist_bucket, corner)" in schema.DDL
     assert "DROP" not in schema.MIGRATIONS.upper() and "DROP" not in schema.DDL.upper()
+
+
+def test_new_market_line_columns_are_appended_last():
+    """On a fresh DB the view columns must come out in the same order as on production."""
+    last_stmt = schema.MIGRATIONS.rstrip().splitlines()[-1]
+    assert "total_price_point" in last_stmt or "neutral_site" in last_stmt
+    assert schema.MIGRATIONS.index("price_point") > schema.MIGRATIONS.index("total_model_version")

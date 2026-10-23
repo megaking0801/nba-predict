@@ -171,3 +171,37 @@ def test_no_box_returns_all_empty():
                                         "home_score": 1, "away_score": 0}, {})
     assert all(rows == [] for rows in parsed)
     assert len(parsed) == 5
+
+
+def test_duplicate_listed_player_gives_unique_status_rows():
+    bs = _load("summary_final_sample.json")
+    athletes = bs["boxscore"]["players"][0]["statistics"][0]["athletes"]
+    played = next(a for a in athletes if a.get("stats") and not a.get("didNotPlay"))
+    dup_dnp = copy.deepcopy(played)
+    dup_dnp.update(didNotPlay=True, stats=[], reason="X")
+    athletes.append(dup_dnp)                 # same player listed again, as a DNP
+    parsed = _parse(bs)
+    keys = [(r[0], r[1]) for r in parsed.status_rows]
+    assert len(keys) == len(set(keys)) == 29
+    pid = int(played["athlete"]["id"])
+    assert next(r for r in parsed.status_rows if r[1] == pid)[5] is False   # the one who played wins
+
+
+def test_shot_without_two_or_three_points_is_logged(capsys):
+    bs = _load("summary_final_sample.json")
+    victim = next(p for p in bs["plays"] if p.get("shootingPlay")
+                  and "Free Throw" not in (p.get("type") or {}).get("text", ""))
+    victim["pointsAttempted"] = 1
+    _parse(bs)
+    assert "pointsAttempted" in capsys.readouterr().out
+
+
+def test_shot_total_mismatch_with_box_score_is_warned(capsys):
+    bs = _load("summary_final_sample.json")
+    _parse(bs)
+    assert "FGA mismatch" not in capsys.readouterr().out      # the sample adds up
+    victim = next(p for p in bs["plays"] if p.get("shootingPlay")
+                  and "Free Throw" not in (p.get("type") or {}).get("text", ""))
+    bs["plays"].remove(victim)
+    _parse(bs)
+    assert "FGA mismatch" in capsys.readouterr().out
