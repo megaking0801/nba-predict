@@ -1,0 +1,73 @@
+{
+ "team": {
+  "id": "13",
+  "abbreviation": "LAL"
+ },
+ "athletes": [
+  {
+   "id": "5113969",
+   "displayName": "Cameron Carr",
+   "fullName": "Cameron Carr",
+   "jersey": "43",
+   "position": {
+    "id": "3",
+    "name": "Guard",
+    "displayName": "Guard",
+    "abbreviation": "G",
+    "leaf": false
+   },
+   "status": {
+    "id": "1",
+    "name": "Active",
+    "type": "active",
+    "abbreviation": "Active"
+   },
+   "injuries": [
+    {
+     "status": "Out",
+     "date": "2026-10-23T00:10Z"
+    }
+   ]
+  },
+  {
+   "id": "3945274",
+   "displayName": "Luka Doncic",
+   "fullName": "Luka Doncic",
+   "jersey": "77",
+   "position": {
+    "id": "3",
+    "name": "Guard",
+    "displayName": "Guard",
+    "abbreviation": "G",
+    "leaf": false
+   },
+   "status": {
+    "id": "1",
+    "name": "Active",
+    "type": "active",
+    "abbreviation": "Active"
+   },
+   "injuries": []
+  },
+  {
+   "id": "4397014",
+   "displayName": "Quentin Grimes",
+   "fullName": "Quentin Grimes",
+   "jersey": "5",
+   "position": {
+    "id": "3",
+    "name": "Guard",
+    "displayName": "Guard",
+    "abbreviation": "G",
+    "leaf": false
+   },
+   "status": {
+    "id": "1",
+    "name": "Active",
+    "type": "active",
+    "abbreviation": "Active"
+   },
+   "injuries": []
+  }
+ ]
+}

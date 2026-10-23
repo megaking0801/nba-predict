@@ -117,3 +117,84 @@ def test_main_writes_both_tables_with_one_timestamp(monkeypatch):
     assert len(old) == 4 and len(new) == 4
     captured = {p[0] for p in new}
     assert len(captured) == 1 and next(iter(captured)).tzinfo is not None
+
+
+# ---------- rosters ----------
+
+from jobs import snapshot_rosters  # noqa: E402
+
+
+def test_parse_teams_maps_30_teams():
+    ids = snapshot_rosters.parse_teams(_load("teams_sample.json"))
+    assert len(ids) == 30
+    assert ids["LAL"] == "13" and ids["NYK"] == "18" and ids["GSW"] == "9"
+
+
+def test_parse_teams_unknown_abbr_raises():
+    import pytest
+    payload = _load("teams_sample.json")
+    payload["sports"][0]["leagues"][0]["teams"][0]["team"]["abbreviation"] = "ZZZ"
+    with pytest.raises(ValueError, match="ZZZ"):
+        snapshot_rosters.parse_teams(payload)
+
+
+def test_parse_teams_too_few_raises():
+    import pytest
+    payload = _load("teams_sample.json")
+    del payload["sports"][0]["leagues"][0]["teams"][0]
+    with pytest.raises(ValueError, match="29"):
+        snapshot_rosters.parse_teams(payload)
+
+
+def test_parse_roster_fields():
+    rows = snapshot_rosters.parse_roster(_load("roster_sample.json"), "LAL", TODAY)
+    assert len(rows) == 3
+    assert all(isinstance(r["espn_player_id"], int) for r in rows)
+    assert all(r["team_abbr"] == "LAL" and r["snapshot_date_et"] == TODAY for r in rows)
+    carr = next(r for r in rows if r["player_name"] == "Cameron Carr")
+    assert carr["position"] == "G" and carr["jersey"] == "43" and carr["status"] == "Active"
+    assert carr["injury_status"] == "Out"
+    assert next(r for r in rows if r["player_name"] == "Luka Doncic")["injury_status"] is None
+
+
+def test_parse_roster_skips_rows_without_player_id():
+    payload = _load("roster_sample.json")
+    payload["athletes"][0]["id"] = None
+    assert len(snapshot_rosters.parse_roster(payload, "LAL", TODAY)) == 2
+
+
+def test_roster_upsert_is_per_day():
+    assert ("ON CONFLICT (snapshot_date_et, team_abbr, espn_player_id)"
+            in snapshot_rosters.UPSERT_ROSTER_SQL)
+
+
+def _fake_get_json(failing_team_id=None):
+    teams = _load("teams_sample.json")
+    roster = _load("roster_sample.json")
+
+    def get_json(url, **kw):
+        if url.endswith("/teams"):
+            return teams
+        tid = url.split("/teams/")[1].split("/")[0]
+        if tid == failing_team_id:
+            return None
+        return roster
+
+    return get_json
+
+
+def test_main_writes_rosters_and_reports_failed_teams(monkeypatch):
+    import pytest
+    log: list = []
+    written: list = []
+    monkeypatch.setattr(snapshot_rosters, "get_json", _fake_get_json(failing_team_id="18"))
+    monkeypatch.setattr(snapshot_rosters, "db_connect", lambda: _Conn(log))
+    monkeypatch.setattr(snapshot_rosters, "ensure_schema", lambda conn: None)
+    monkeypatch.setattr(snapshot_rosters.psycopg2.extras, "execute_values",
+                        lambda cur, sql, rows, page_size=0: written.extend(rows))
+    with pytest.raises(RuntimeError, match="NYK"):
+        snapshot_rosters.main()
+    # the other 29 teams are still written, with one shared captured_at
+    assert len(written) == 29 * 3
+    assert len({r[1] for r in written}) == 1
+    assert "NYK" not in {r[2] for r in written}

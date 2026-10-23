@@ -1,0 +1,192 @@
+{
+ "sports": [
+  {
+   "leagues": [
+    {
+     "teams": [
+      {
+       "team": {
+        "id": "1",
+        "abbreviation": "ATL"
+       }
+      },
+      {
+       "team": {
+        "id": "2",
+        "abbreviation": "BOS"
+       }
+      },
+      {
+       "team": {
+        "id": "17",
+        "abbreviation": "BKN"
+       }
+      },
+      {
+       "team": {
+        "id": "30",
+        "abbreviation": "CHA"
+       }
+      },
+      {
+       "team": {
+        "id": "4",
+        "abbreviation": "CHI"
+       }
+      },
+      {
+       "team": {
+        "id": "5",
+        "abbreviation": "CLE"
+       }
+      },
+      {
+       "team": {
+        "id": "6",
+        "abbreviation": "DAL"
+       }
+      },
+      {
+       "team": {
+        "id": "7",
+        "abbreviation": "DEN"
+       }
+      },
+      {
+       "team": {
+        "id": "8",
+        "abbreviation": "DET"
+       }
+      },
+      {
+       "team": {
+        "id": "9",
+        "abbreviation": "GS"
+       }
+      },
+      {
+       "team": {
+        "id": "10",
+        "abbreviation": "HOU"
+       }
+      },
+      {
+       "team": {
+        "id": "11",
+        "abbreviation": "IND"
+       }
+      },
+      {
+       "team": {
+        "id": "12",
+        "abbreviation": "LAC"
+       }
+      },
+      {
+       "team": {
+        "id": "13",
+        "abbreviation": "LAL"
+       }
+      },
+      {
+       "team": {
+        "id": "29",
+        "abbreviation": "MEM"
+       }
+      },
+      {
+       "team": {
+        "id": "14",
+        "abbreviation": "MIA"
+       }
+      },
+      {
+       "team": {
+        "id": "15",
+        "abbreviation": "MIL"
+       }
+      },
+      {
+       "team": {
+        "id": "16",
+        "abbreviation": "MIN"
+       }
+      },
+      {
+       "team": {
+        "id": "3",
+        "abbreviation": "NO"
+       }
+      },
+      {
+       "team": {
+        "id": "18",
+        "abbreviation": "NY"
+       }
+      },
+      {
+       "team": {
+        "id": "25",
+        "abbreviation": "OKC"
+       }
+      },
+      {
+       "team": {
+        "id": "19",
+        "abbreviation": "ORL"
+       }
+      },
+      {
+       "team": {
+        "id": "20",
+        "abbreviation": "PHI"
+       }
+      },
+      {
+       "team": {
+        "id": "21",
+        "abbreviation": "PHX"
+       }
+      },
+      {
+       "team": {
+        "id": "22",
+        "abbreviation": "POR"
+       }
+      },
+      {
+       "team": {
+        "id": "23",
+        "abbreviation": "SAC"
+       }
+      },
+      {
+       "team": {
+        "id": "24",
+        "abbreviation": "SA"
+       }
+      },
+      {
+       "team": {
+        "id": "28",
+        "abbreviation": "TOR"
+       }
+      },
+      {
+       "team": {
+        "id": "26",
+        "abbreviation": "UTAH"
+       }
+      },
+      {
+       "team": {
+        "id": "27",
+        "abbreviation": "WSH"
+       }
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}
