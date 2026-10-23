@@ -141,18 +141,45 @@ def shot_bucket(x, y, pts_value: int) -> Tuple[str, bool]:
     return bucket, (pts_value == 3 and fy <= CORNER_MAX_Y)
 
 
+THREE_POINT_ARC_FT = 23.75   # top-of-the-key distance of the NBA three-point line
+CORNER_SIDELINE_FT = 22.0    # the corner segment is 22 ft from the basket
+
+
+def shot_points(play: dict) -> Tuple[int, str]:
+    """(points attempted, how we know) for one shooting play.
+
+    ESPN's pointsAttempted is 2 or 3 for most games but is 0 for the whole 2021-22
+    season, so fall back: the play text, then the coordinates, else call it a two.
+    The second item is 'attempted', 'text', 'coord' or 'default'."""
+    pa = play.get("pointsAttempted")
+    if pa in (2, 3):
+        return pa, "attempted"
+    if "three point" in ((play.get("text") or "").lower()):
+        return 3, "text"
+    coord = play.get("coordinate") or {}
+    try:
+        x, y = float(coord.get("x")), float(coord.get("y"))
+    except (TypeError, ValueError):
+        return 2, "default"
+    if math.isfinite(x) and math.isfinite(y) and abs(x) < 1000 and abs(y) < 1000:
+        dist = math.hypot(x - BASKET_XY[0], y - BASKET_XY[1])
+        if (y <= CORNER_MAX_Y and abs(x - BASKET_XY[0]) >= CORNER_SIDELINE_FT) or dist >= THREE_POINT_ARC_FT:
+            return 3, "coord"
+    return 2, "default"
+
+
 def _parse_shots(gid: str, bs: dict, abbr_by_team_id: Dict[str, str]) -> List[tuple]:
     counts: Dict[tuple, List[int]] = {}
-    unmatched = odd_points = 0
+    unmatched = 0
+    inferred = {"text": 0, "coord": 0, "default": 0}
     for play in (bs or {}).get("plays") or []:
         if not play.get("shootingPlay"):
             continue
         if "Free Throw" in ((play.get("type") or {}).get("text") or ""):
             continue
-        pts = play.get("pointsAttempted")
-        if pts not in (2, 3):
-            odd_points += 1
-            continue
+        pts, how = shot_points(play)
+        if how != "attempted":
+            inferred[how] += 1
         abbr = abbr_by_team_id.get(str((play.get("team") or {}).get("id")))
         if abbr is None:
             unmatched += 1
@@ -164,8 +191,10 @@ def _parse_shots(gid: str, bs: dict, abbr_by_team_id: Dict[str, str]) -> List[tu
         cell[1] += 1 if play.get("scoringPlay") else 0
     if unmatched:
         print(f"[WARN] game {gid}: {unmatched} shot plays without a matching team", flush=True)
-    if odd_points:
-        print(f"[WARN] game {gid}: {odd_points} shot plays with pointsAttempted not 2 or 3", flush=True)
+    if any(inferred.values()):
+        print(f"[WARN] game {gid}: pointsAttempted missing or not 2/3 on {sum(inferred.values())} "
+              f"shots; inferred pts_value (text {inferred['text']}, coord {inferred['coord']}, "
+              f"default {inferred['default']})", flush=True)
     return [(gid, abbr, pts, bucket, corner, fga, fgm)
             for (abbr, pts, bucket, corner), (fga, fgm) in sorted(counts.items())]
 

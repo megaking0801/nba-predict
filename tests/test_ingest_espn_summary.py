@@ -205,3 +205,43 @@ def test_shot_total_mismatch_with_box_score_is_warned(capsys):
     bs["plays"].remove(victim)
     _parse(bs)
     assert "FGA mismatch" in capsys.readouterr().out
+
+
+# ---------- pts_value when pointsAttempted is missing (2021-22 games have it as 0) ----------
+
+def test_pts_value_fallback_text_and_coord():
+    f = ingest_espn.shot_points
+    assert f({"pointsAttempted": 3}) == (3, "attempted")
+    assert f({"pointsAttempted": 2, "text": "X makes 26-foot three point jumper"}) == (2, "attempted")
+    assert f({"pointsAttempted": 0, "text": "X makes 26-foot three point jumper"}) == (3, "text")
+    assert f({"pointsAttempted": 0, "text": "X makes 24-foot Three Pointer"}) == (3, "text")
+    assert f({"pointsAttempted": 0, "text": "X makes jumper", "coordinate": {"x": 48, "y": 3}}) == (3, "coord")
+    assert f({"pointsAttempted": 0, "text": "X misses", "coordinate": {"x": 25, "y": 25}}) == (3, "coord")
+    assert f({"pointsAttempted": 0, "text": "X misses", "coordinate": {"x": 25, "y": 10}}) == (2, "default")
+    assert f({"pointsAttempted": 0, "text": "X misses layup"}) == (2, "default")
+    assert f({"pointsAttempted": None, "coordinate": {"x": -214748340, "y": 0}}) == (2, "default")
+    assert f({"pointsAttempted": 1, "text": "X misses 20-foot jumper"}) == (2, "default")
+
+
+def test_shots_unchanged_when_points_attempted_is_zero(capsys):
+    bs = _load("summary_final_sample.json")
+    baseline = _parse(bs)
+    for play in bs["plays"]:
+        if play.get("shootingPlay"):
+            play["pointsAttempted"] = 0
+    capsys.readouterr()
+    fallback = _parse(bs)
+    out = capsys.readouterr().out
+    # every attempt is still counted, per team, and the 3-point attempts match the box score
+    def totals(rows, pts=None):
+        t: dict = {}
+        for _g, abbr, p, _b, _c, fga, fgm in rows:
+            if pts is None or p == pts:
+                a, b = t.get(abbr, (0, 0))
+                t[abbr] = (a + fga, b + fgm)
+        return t
+    assert totals(fallback.shot_rows) == totals(baseline.shot_rows)
+    box_3pa = {r[1]: r[9] for r in fallback.team_rows}
+    assert {a: v[0] for a, v in totals(fallback.shot_rows, 3).items()} == box_3pa
+    assert "FGA mismatch" not in out
+    assert "inferred" in out          # the fallback is reported, not silent
