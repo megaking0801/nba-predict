@@ -1,0 +1,98 @@
+{
+ "timestamp": "2026-10-23T16:12:04Z",
+ "injuries": [
+  {
+   "id": "1",
+   "displayName": "Atlanta Hawks",
+   "injuries": [
+    {
+     "id": "-58751",
+     "status": "Out",
+     "date": "2026-10-19T19:38Z",
+     "shortComment": "Gueye underwent surgery Tuesday to repair a fractured left foot that he suffered",
+     "details": {
+      "fantasyStatus": {
+       "description": "OUT",
+       "abbreviation": "OUT"
+      },
+      "type": "Foot",
+      "location": "Leg",
+      "detail": "Fracture",
+      "side": "Left",
+      "returnDate": "2026-11-20"
+     },
+     "athlete": {
+      "id": null,
+      "displayName": "Mouhamed Gueye"
+     }
+    },
+    {
+     "id": "-57577",
+     "status": "Out",
+     "date": "2026-09-21T19:50Z",
+     "shortComment": "Veesaar was diagnosed with a torn right ACL and is expected to miss the 2026-27 ",
+     "details": {
+      "fantasyStatus": {
+       "description": "OFS",
+       "abbreviation": "OFS"
+      },
+      "type": "Knee",
+      "location": "Leg",
+      "side": "Right",
+      "returnDate": "2027-07-01"
+     },
+     "athlete": {
+      "id": null,
+      "displayName": "Henri Veesaar"
+     }
+    }
+   ]
+  },
+  {
+   "id": "30",
+   "displayName": "Charlotte Hornets",
+   "injuries": [
+    {
+     "id": "535601",
+     "status": "Out",
+     "date": "2026-10-22T21:10Z",
+     "shortComment": "Williams (hamstring) is out for Friday's game against the Hawks.",
+     "details": {
+      "fantasyStatus": {
+       "description": "OUT",
+       "abbreviation": "OUT"
+      },
+      "type": "Hamstring",
+      "location": "Leg",
+      "side": "Right",
+      "returnDate": "2026-10-24"
+     },
+     "athlete": {
+      "id": null,
+      "displayName": "Grant Williams"
+     }
+    },
+    {
+     "id": "535599",
+     "status": "Out",
+     "shortComment": "White (calf) is out for Friday's game against the Hawks.",
+     "details": {
+      "fantasyStatus": {
+       "description": "OUT",
+       "abbreviation": "OUT"
+      },
+      "type": "Calf",
+      "location": "Leg",
+      "detail": "Strain",
+      "side": "Left",
+      "returnDate": "2026-10-24"
+     },
+     "athlete": {
+      "id": null,
+      "displayName": "Coby White"
+     }
+    }
+   ]
+  }
+ ]
+}

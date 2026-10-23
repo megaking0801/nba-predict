@@ -1,10 +1,12 @@
-"""Snapshot today's injury report from ESPN's JSON endpoint (replaces the old
-brittle HTML scrape). One row per (day, team, player); re-runs upsert.
+"""Snapshot the injury report from ESPN's JSON endpoint (replaces the old
+brittle HTML scrape). injury_snapshots keeps one row per (day, team, player) and
+upserts; injury_reports appends every capture (with ESPN's own report time).
 
 Run: python -m jobs.snapshot_injuries
 """
 from __future__ import annotations
 
+import datetime as dt
 import sys
 from typing import List, Optional
 
@@ -28,6 +30,13 @@ ON CONFLICT (snapshot_date_et, source, team_abbr, player_name) DO UPDATE SET
   captured_at    = now()
 """
 
+INSERT_REPORT_SQL = """
+INSERT INTO public.injury_reports
+  (captured_at, reported_at, snapshot_date_et, team_abbr, player_name,
+   espn_player_id, status, detail, source)
+VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'espn')
+"""
+
 
 def _player_id(athlete: dict) -> Optional[int]:
     try:
@@ -36,13 +45,17 @@ def _player_id(athlete: dict) -> Optional[int]:
         return None
 
 
-def fetch_injury_rows() -> List[tuple]:
-    r = requests.get(INJURIES_URL, timeout=25)
-    r.raise_for_status()
-    payload = r.json()
+def _reported_at(raw) -> Optional[dt.datetime]:
+    """ESPN '2026-10-19T19:38Z' -> aware UTC datetime; anything odd -> None."""
+    try:
+        ts = dt.datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    return ts if ts.tzinfo else ts.replace(tzinfo=dt.timezone.utc)
 
-    today = et_today()
-    rows: List[tuple] = []
+
+def parse_injuries(payload: dict, today: dt.date) -> List[dict]:
+    rows: List[dict] = []
     for team_entry in payload.get("injuries") or []:
         team_name = team_entry.get("displayName") or ""
         abbr = abbr_from_team_name(team_name)
@@ -58,23 +71,39 @@ def fetch_injury_rows() -> List[tuple]:
             details = inj.get("details") or {}
             detail = (details.get("detail") or details.get("type")
                       or inj.get("shortComment") or "")
-            rows.append((today, abbr, name, _player_id(athlete), status,
-                         (detail or "")[:500] or None))
+            rows.append({
+                "snapshot_date_et": today, "team_abbr": abbr, "player_name": name,
+                "espn_player_id": _player_id(athlete), "status": status,
+                "detail": (detail or "")[:500] or None,
+                "reported_at": _reported_at(inj.get("date")),
+            })
     return rows
+
+
+def fetch_injury_rows() -> List[dict]:
+    r = requests.get(INJURIES_URL, timeout=25)
+    r.raise_for_status()
+    return parse_injuries(r.json(), et_today())
 
 
 def main() -> None:
     rows = fetch_injury_rows()
+    captured_at = dt.datetime.now(dt.timezone.utc)
     conn = db_connect()
     try:
         ensure_schema(conn)
         with conn.cursor() as cur:
-            for row in rows:
-                cur.execute(UPSERT_SQL, row)
+            for r in rows:
+                cur.execute(UPSERT_SQL, (r["snapshot_date_et"], r["team_abbr"], r["player_name"],
+                                         r["espn_player_id"], r["status"], r["detail"]))
+                cur.execute(INSERT_REPORT_SQL, (captured_at, r["reported_at"], r["snapshot_date_et"],
+                                                r["team_abbr"], r["player_name"],
+                                                r["espn_player_id"], r["status"], r["detail"]))
         conn.commit()
     finally:
         conn.close()
-    print(f"[OK] snapshot_injuries upserted {len(rows)} rows for {et_today()}", flush=True)
+    print(f"[OK] snapshot_injuries upserted {len(rows)} rows for {et_today()} "
+          f"(+{len(rows)} appended to injury_reports)", flush=True)
 
 
 if __name__ == "__main__":

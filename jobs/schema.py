@@ -9,7 +9,7 @@ from __future__ import annotations
 from jobs.db_utils import db_connect
 from jobs.teams import seed_rows
 
-SCHEMA_VERSION = "2"
+SCHEMA_VERSION = "3"
 
 DDL = """
 CREATE TABLE IF NOT EXISTS public.schema_meta (
@@ -150,6 +150,38 @@ CREATE TABLE IF NOT EXISTS public.model_registry_v2 (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS uq_model_active
   ON public.model_registry_v2 (model_name) WHERE is_active;
+
+-- Append-only injury history: every capture is kept (injury_snapshots upserts, so a
+-- later capture on the same day overwrites an earlier one). reported_at is the time
+-- ESPN says the entry was updated; captured_at is when we fetched it.
+CREATE TABLE IF NOT EXISTS public.injury_reports (
+  report_id        BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  captured_at      TIMESTAMPTZ NOT NULL,
+  reported_at      TIMESTAMPTZ,
+  snapshot_date_et DATE NOT NULL,
+  team_abbr        TEXT NOT NULL REFERENCES public.teams(team_abbr),
+  player_name      TEXT NOT NULL,
+  espn_player_id   BIGINT,
+  status           TEXT,
+  detail           TEXT,
+  source           TEXT NOT NULL DEFAULT 'espn'
+);
+CREATE INDEX IF NOT EXISTS idx_injrep_date ON public.injury_reports (snapshot_date_et);
+CREATE INDEX IF NOT EXISTS idx_injrep_player ON public.injury_reports (espn_player_id, captured_at);
+
+-- One roster per team per ET day (re-runs the same day upsert); lets us see trades.
+CREATE TABLE IF NOT EXISTS public.roster_snapshots (
+  snapshot_date_et DATE NOT NULL,
+  captured_at      TIMESTAMPTZ NOT NULL,
+  team_abbr        TEXT NOT NULL REFERENCES public.teams(team_abbr),
+  espn_player_id   BIGINT NOT NULL,
+  player_name      TEXT NOT NULL,
+  position         TEXT,
+  jersey           TEXT,
+  status           TEXT,
+  injury_status    TEXT,
+  PRIMARY KEY (snapshot_date_et, team_abbr, espn_player_id)
+);
 """
 
 # Additive, re-entrant migrations for tables created by an earlier DDL run
