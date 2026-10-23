@@ -38,9 +38,17 @@ def track_record(run: Run) -> dict:
     if not df.empty:
         m = df.iloc[0]["metrics"] if isinstance(df.iloc[0]["metrics"], dict) else {}
         wf = (m.get("report_betting") or {}).get("straight_up") or {}
-    rec = run("SELECT count(*) FILTER (WHERE (p_home_win>=0.5)=(win_result=1)) AS hit, "
-              "count(*) AS n FROM public.predictions "
-              "WHERE p_home_win IS NOT NULL AND win_result IS NOT NULL", ())
+    # One prediction per game (a game is predicted up to 3 days running): prefer the
+    # last one made before tipoff, else the latest. A preference, not a filter, so
+    # backfilled predictions dated after tipoff still count.
+    rec = run("WITH last AS ("
+              "SELECT DISTINCT ON (p.game_id) p.p_home_win, p.win_result "
+              "FROM public.predictions p JOIN public.games_v2 g ON g.game_id = p.game_id "
+              "WHERE p.p_home_win IS NOT NULL AND p.win_result IS NOT NULL "
+              "ORDER BY p.game_id, (p.predicted_at < g.tipoff_utc) DESC NULLS LAST, "
+              "p.predicted_at DESC) "
+              "SELECT count(*) FILTER (WHERE (p_home_win>=0.5)=(win_result=1)) AS hit, "
+              "count(*) AS n FROM last", ())
 
     # totals (大小分): walk-forward O/U accuracy + live settled O/U record
     tdf = run("SELECT metrics FROM public.model_registry_v2 "
@@ -49,9 +57,14 @@ def track_record(run: Run) -> dict:
     if not tdf.empty:
         tm = tdf.iloc[0]["metrics"] if isinstance(tdf.iloc[0]["metrics"], dict) else {}
         over = (tm.get("report_over") or {}) if isinstance(tm, dict) else {}
-    reco = run("SELECT count(*) FILTER (WHERE (p_over>=0.5)=(over_result=1)) AS hit, "
-               "count(*) AS n FROM public.predictions "
-               "WHERE p_over IS NOT NULL AND over_result IN (0,1)", ())
+    reco = run("WITH last AS ("
+               "SELECT DISTINCT ON (p.game_id) p.p_over, p.over_result "
+               "FROM public.predictions p JOIN public.games_v2 g ON g.game_id = p.game_id "
+               "WHERE p.p_over IS NOT NULL AND p.over_result IN (0,1) "
+               "ORDER BY p.game_id, (p.predicted_at < g.tipoff_utc) DESC NULLS LAST, "
+               "p.predicted_at DESC) "
+               "SELECT count(*) FILTER (WHERE (p_over>=0.5)=(over_result=1)) AS hit, "
+               "count(*) AS n FROM last", ())
     return {"wf_acc": wf.get("winner_accuracy"), "wf_n": wf.get("n"),
             "rec_hit": int(rec.iloc[0]["hit"] or 0), "rec_n": int(rec.iloc[0]["n"] or 0),
             "over_wf_acc": over.get("accuracy"), "over_wf_n": over.get("n"),

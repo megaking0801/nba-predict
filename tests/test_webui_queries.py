@@ -42,3 +42,28 @@ def test_recent_games_passes_limit():
     db = fakes.scenario_board()
     queries.recent_games(db.run, 7)
     assert db.calls[-1][1] == (7,)
+
+
+def test_track_record_dedups_per_game():
+    """Each settled game counts once: the last pre-tipoff prediction, else the latest."""
+    seen: list[str] = []
+    db = fakes.scenario_board()
+
+    def spy(sql, params=()):
+        seen.append(" ".join(sql.split()))
+        return db.run(sql, params)
+
+    tr = queries.track_record(spy)
+    assert set(tr) == {"wf_acc", "wf_n", "rec_hit", "rec_n", "over_wf_acc",
+                       "over_wf_n", "over_rec_hit", "over_rec_n"}
+    home = next(s for s in seen if "(p_home_win>=0.5)" in s)
+    over = next(s for s in seen if "(p_over>=0.5)" in s)
+    for sql in (home, over):
+        assert "DISTINCT ON (p.game_id)" in sql
+        assert "(p.predicted_at < g.tipoff_utc) DESC NULLS LAST" in sql
+        assert "p.predicted_at DESC" in sql
+        # a preference, not a filter: backfilled predictions dated after tipoff still count
+        assert "WHERE p.predicted_at < g.tipoff_utc" not in sql
+        assert "AND p.predicted_at < g.tipoff_utc" not in sql
+    assert "win_result IS NOT NULL" in home
+    assert "over_result IN (0,1)" in over
