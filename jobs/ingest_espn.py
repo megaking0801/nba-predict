@@ -11,8 +11,9 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import math
 from concurrent.futures import ThreadPoolExecutor
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, NamedTuple, Optional, Tuple
 from zoneinfo import ZoneInfo
 
 import psycopg2.extras
@@ -108,29 +109,93 @@ def _player_stat_dict(keys: List[str], stats: List[str]) -> Dict[str, str]:
     return dict(zip(keys, stats))
 
 
-def parse_summary(meta: dict, bs: dict) -> Tuple[List[tuple], List[tuple]]:
-    """Returns (team_rows, player_rows) for one game. Empty lists if no box."""
+class SummaryRows(NamedTuple):
+    """Everything parse_summary extracts from one game. team_rows/player_rows feed
+    team_game_stats/player_game_stats and must not change shape: the others are new."""
+    team_rows: List[tuple]
+    player_rows: List[tuple]
+    status_rows: List[tuple]    # (game_id, player_id, team_abbr, player_name, starter, did_not_play, dnp_reason, ejected)
+    official_rows: List[tuple]  # (game_id, official_order, official_name)
+    shot_rows: List[tuple]      # (game_id, team_abbr, pts_value, dist_bucket, corner, fga, fgm)
+
+
+# ESPN shot coordinates are whole feet with the basket at about (25, 0).
+BASKET_XY = (25.0, 0.0)
+DIST_BUCKETS = ((4.0, "0-4"), (8.0, "4-8"), (14.0, "8-14"), (24.0, "14-24"))
+CORNER_MAX_Y = 9.0  # corner three: the 22 ft sideline segment meets the arc at y ~ 8.95
+
+
+def shot_bucket(x, y, pts_value: int) -> Tuple[str, bool]:
+    """(distance bucket, corner-three flag) for one field-goal attempt. Missing or
+    absurd coordinates (ESPN uses sentinels like -214748340) are 'unknown'."""
+    try:
+        fx, fy = float(x), float(y)
+    except (TypeError, ValueError):
+        return "unknown", False
+    if not (math.isfinite(fx) and math.isfinite(fy)) or abs(fx) > 1000 or abs(fy) > 1000:
+        return "unknown", False
+    dist = math.hypot(fx - BASKET_XY[0], fy - BASKET_XY[1])
+    bucket = next((name for limit, name in DIST_BUCKETS if dist < limit), "24+")
+    return bucket, (pts_value == 3 and fy <= CORNER_MAX_Y)
+
+
+def _parse_shots(gid: str, bs: dict, abbr_by_team_id: Dict[str, str]) -> List[tuple]:
+    counts: Dict[tuple, List[int]] = {}
+    unmatched = 0
+    for play in (bs or {}).get("plays") or []:
+        if not play.get("shootingPlay"):
+            continue
+        if "Free Throw" in ((play.get("type") or {}).get("text") or ""):
+            continue
+        pts = play.get("pointsAttempted")
+        if pts not in (2, 3):
+            continue
+        abbr = abbr_by_team_id.get(str((play.get("team") or {}).get("id")))
+        if abbr is None:
+            unmatched += 1
+            continue
+        coord = play.get("coordinate") or {}
+        bucket, corner = shot_bucket(coord.get("x"), coord.get("y"), pts)
+        cell = counts.setdefault((abbr, pts, bucket, corner), [0, 0])
+        cell[0] += 1
+        cell[1] += 1 if play.get("scoringPlay") else 0
+    if unmatched:
+        print(f"[WARN] game {gid}: {unmatched} shot plays without a matching team", flush=True)
+    return [(gid, abbr, pts, bucket, corner, fga, fgm)
+            for (abbr, pts, bucket, corner), (fga, fgm) in sorted(counts.items())]
+
+
+def parse_summary(meta: dict, bs: dict) -> SummaryRows:
+    """Rows for one game. All lists are empty if there is no box score."""
     box = (bs or {}).get("boxscore") or {}
     players_block = box.get("players") or []
     teams_block = box.get("teams") or []
     if not players_block or not teams_block:
-        return [], []
+        return SummaryRows([], [], [], [], [])
 
     gid = meta["game_id"]
     score = {meta["home_abbr"]: meta["home_score"], meta["away_abbr"]: meta["away_score"]}
 
     # --- players (also accumulate team minutes) ---
     player_rows: List[tuple] = []
+    status_rows: List[tuple] = []
     team_minutes: Dict[str, float] = {}
     for tb in players_block:
         abbr = normalize_espn_abbr(tb["team"]["abbreviation"])
         st = (tb.get("statistics") or [{}])[0]
         keys = st.get("keys") or []
         for ath in st.get("athletes") or []:
-            if ath.get("didNotPlay") or not ath.get("stats"):
-                continue
             athlete = ath.get("athlete") or {}
             pid = _int(athlete.get("id"))
+            if pid is not None:  # availability for EVERY listed player, DNP included
+                status_rows.append((gid, pid, abbr, athlete.get("displayName"),
+                                    bool(ath.get("starter")), bool(ath.get("didNotPlay")),
+                                    # ESPN also fills `reason` for players who played; it only
+                                    # means something when they did not
+                                    (ath.get("reason") or None) if ath.get("didNotPlay") else None,
+                                    bool(ath.get("ejected"))))
+            if ath.get("didNotPlay") or not ath.get("stats"):
+                continue
             if pid is None:  # team-total rows / players without an ESPN id
                 continue
             s = _player_stat_dict(keys, ath["stats"])
@@ -171,7 +236,16 @@ def parse_summary(meta: dict, bs: dict) -> Tuple[List[tuple], List[tuple]]:
             _int(d.get("totalRebounds")), _int(d.get("assists")), _int(d.get("steals")),
             _int(d.get("blocks")), _int(d.get("turnovers")), _int(d.get("fouls")), pm,
         ))
-    return team_rows, player_rows
+
+    officials = [(gid, i, name)
+                 for i, name in enumerate(
+                     ((o.get("displayName") or o.get("fullName") or "").strip()
+                      for o in ((bs or {}).get("gameInfo") or {}).get("officials") or []), start=1)
+                 if name]
+    abbr_by_team_id = {str(tb["team"].get("id")): normalize_espn_abbr(tb["team"]["abbreviation"])
+                       for tb in teams_block}
+    return SummaryRows(team_rows, player_rows, status_rows, officials,
+                       _parse_shots(gid, bs, abbr_by_team_id))
 
 
 # ----- DB upserts -----
@@ -273,9 +347,9 @@ def ingest_dates(dates: List[str], finals_only: bool) -> Tuple[int, int, int]:
         game_rows.append(_game_row(m))
         if m["status"] == "final" and bs:
             try:
-                tr, pr = parse_summary(m, bs)
-                team_rows.extend(tr)
-                player_rows.extend(pr)
+                parsed = parse_summary(m, bs)
+                team_rows.extend(parsed.team_rows)
+                player_rows.extend(parsed.player_rows)
             except Exception as ex:  # noqa: BLE001 — one odd game must not kill the batch
                 print(f"[WARN] parse_summary failed game={m['game_id']} err={ex}", flush=True)
 
