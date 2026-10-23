@@ -1,41 +1,23 @@
 """Daily orchestrator (replaces preload_nba_data.py in the rebuilt pipeline).
 
 Every step runs even if an earlier one fails — line/injury snapshots are
-append-only history that must accumulate even on a day stats.nba.com is down.
+append-only history that must accumulate even on a day one source is down.
 Exit code is non-zero if anything failed so the Actions run shows red.
+Data comes from ESPN only (stats.nba.com / cdn.nba.com block GitHub runners).
 
-Run: python -m jobs.run_daily
+Run: python -m jobs.run_daily           # full daily run, makes the day's prediction
+     python -m jobs.run_daily --close   # near-tipoff snapshots only
 """
 from __future__ import annotations
 
-import os
+import argparse
 import sys
 import traceback
 
 
-def _step_ingest_games():
-    from jobs import ingest_games
-    ingest_games.main()
-
-
-def _step_ingest_stats():
-    from jobs.db_utils import db_connect
-    from jobs.ingest_stats import ingest_season, parse_season_types
-    from jobs.nba_http import CircuitBreaker, make_http_session
-    from jobs.schema import ensure_schema
-
-    season = (os.environ.get("NBA_SEASON") or "2025-26").strip()
-    season_types = parse_season_types(
-        os.environ.get("DAILY_SEASON_TYPES") or "regular,playin,playoffs")
-    conn = db_connect()
-    cb = CircuitBreaker()
-    try:
-        ensure_schema(conn)
-        ingest_season(conn, make_http_session(), cb, season, season_types)
-    finally:
-        conn.close()
-    if not cb.allow():
-        raise RuntimeError("circuit breaker opened during daily stats ingest")
+def _step_ingest_espn():
+    from jobs import ingest_espn
+    ingest_espn.daily(days_back=3, days_ahead=2)
 
 
 def _step_settle():
@@ -48,9 +30,23 @@ def _step_injuries():
     snapshot_injuries.main()
 
 
+def _step_rosters():
+    from jobs import snapshot_rosters
+    snapshot_rosters.main()
+
+
 def _step_espn_odds():
     from jobs.ingest_espn import snapshot_espn_odds
     snapshot_espn_odds()
+
+
+# Close snapshots only fetch games tipping off within this many minutes.
+CLOSE_WINDOW_MINUTES = 150
+
+
+def _step_espn_odds_close():
+    from jobs.ingest_espn import snapshot_espn_odds
+    snapshot_espn_odds(window_minutes=CLOSE_WINDOW_MINUTES)
 
 
 def _step_lines():
@@ -63,20 +59,34 @@ def _step_predict():
     predict_daily.main()
 
 
+# Full daily run (10:30 UTC = 18:30 Taipei): the official prediction of the day.
 STEPS = [
-    ("ingest_games", _step_ingest_games),
-    ("ingest_stats", _step_ingest_stats),
+    ("ingest_espn", _step_ingest_espn),
     ("settle", _step_settle),
     ("snapshot_injuries", _step_injuries),
+    ("snapshot_rosters", _step_rosters),
     ("espn_odds", _step_espn_odds),
     ("snapshot_lines", _step_lines),
     ("predict_daily", _step_predict),
 ]
 
+# Close snapshots (--close): lines and injuries near tipoff, never a prediction.
+CLOSE_STEPS = [
+    ("espn_odds_close", _step_espn_odds_close),
+    ("snapshot_injuries", _step_injuries),
+    ("snapshot_lines", _step_lines),
+]
 
-def main() -> None:
+
+def main(argv=None) -> None:
+    parser = argparse.ArgumentParser(description="Daily pipeline")
+    parser.add_argument("--close", action="store_true",
+                        help="close-snapshot mode: odds/injuries near tipoff, no prediction")
+    args = parser.parse_args(argv)
+    steps = CLOSE_STEPS if args.close else STEPS
+
     failures = []
-    for name, fn in STEPS:
+    for name, fn in steps:
         print(f"===== [run_daily] {name} =====", flush=True)
         try:
             fn()

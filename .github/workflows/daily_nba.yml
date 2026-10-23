@@ -12,9 +12,9 @@ on:
         required: true
         default: "v2_daily"
       season:
-        description: "NBA season (e.g. 2025-26)"
+        description: "NBA season (e.g. 2026-27)"
         required: false
-        default: "2025-26"
+        default: "2026-27"
       seasons:
         description: "v2_backfill: comma-separated seasons"
         required: false
@@ -48,11 +48,14 @@ on:
         required: false
         default: "200"
   schedule:
-    # 10:30 UTC = 18:30 Asia/Taipei — full daily run (legacy preload + v2 daily)
+    # 10:30 UTC = 18:30 Asia/Taipei — v2 full daily run: the day's official prediction
     - cron: "30 10 * * *"
-    # 22:00 UTC = 06:00 Asia/Taipei (near tipoff) — v2 line snapshot + re-predict
-    - cron: "0 22 * * *"
-    # Monday 12:00 UTC — weekly v2 retrain (no-ops below MIN_TRAIN_ROWS)
+    # Close snapshots (lines + injuries for games tipping off within ~2.5 h; no prediction).
+    # 22:30 / 00:30 / 02:00 UTC cover 7, 8 and 10 pm ET tipoffs in both EDT and EST.
+    - cron: "30 22 * * *"
+    - cron: "30 0 * * *"
+    - cron: "0 2 * * *"
+    # Monday 12:00 UTC — weekly v2 retrain (no-ops below MIN_TRAIN_ROWS) + keepalive
     - cron: "0 12 * * 1"
 
 concurrency:
@@ -65,7 +68,7 @@ jobs:
     timeout-minutes: 90
     env:
       PYTHONUNBUFFERED: "1"
-      NBA_SEASON: ${{ inputs.season || vars.NBA_SEASON || '2025-26' }}
+      NBA_SEASON: ${{ inputs.season || vars.NBA_SEASON || '2026-27' }}
       CACHE_PAST_DAYS: ${{ inputs.cache_past_days || vars.CACHE_PAST_DAYS || '14' }}
       CACHE_FUTURE_DAYS: ${{ inputs.cache_future_days || vars.CACHE_FUTURE_DAYS || '7' }}
       BACKFILL_PAST_DAYS: ${{ inputs.backfill_past_days || vars.BACKFILL_PAST_DAYS || '30' }}
@@ -74,6 +77,8 @@ jobs:
       BASE_MIN_ROWS: ${{ inputs.base_min_rows || vars.BASE_MIN_ROWS || '200' }}
       OVERRIDE_US_DATE: ${{ inputs.verify_us_date }}
       USE_ODDS: ${{ vars.USE_ODDS || '0' }}
+      # Predictions stay paper until the model is shown to beat the market (P5).
+      PAPER_MODE: "1"
       SUPABASE_HOST: ${{ secrets.SUPABASE_HOST }}
       SUPABASE_DB: ${{ secrets.SUPABASE_DB }}
       SUPABASE_USER: ${{ secrets.SUPABASE_USER }}
@@ -105,7 +110,7 @@ jobs:
       # ---------- legacy pipeline (parallel-run period; removed at cutover) ----------
 
       - name: Legacy daily preload to DB
-        if: ${{ github.event.schedule == '30 10 * * *' || (github.event_name == 'workflow_dispatch' && (inputs.run == 'preload' || inputs.run == 'all')) }}
+        if: ${{ github.event_name == 'workflow_dispatch' && (inputs.run == 'preload' || inputs.run == 'all') }}
         run: |
           EXTRA_ARGS=""
           if [ "${USE_ODDS}" = "1" ]; then
@@ -178,11 +183,9 @@ jobs:
           python -u -m jobs.ingest_games
           python -u -m jobs.ingest_stats --season "${NBA_SEASON}"
 
-      - name: v2 near-tipoff lines + re-predict
-        if: ${{ github.event.schedule == '0 22 * * *' || (github.event_name == 'workflow_dispatch' && inputs.run == 'v2_lines') }}
-        run: |
-          python -u -m jobs.snapshot_lines
-          python -u -m jobs.predict_daily
+      - name: v2 close snapshot
+        if: ${{ github.event.schedule == '30 22 * * *' || github.event.schedule == '30 0 * * *' || github.event.schedule == '0 2 * * *' || (github.event_name == 'workflow_dispatch' && inputs.run == 'v2_lines') }}
+        run: python -u -m jobs.run_daily --close
 
       - name: v2 injuries only
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.run == 'v2_injuries' }}
@@ -209,3 +212,18 @@ jobs:
       - name: v2 evaluate (walk-forward + ATS ROI backtest)
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.run == 'v2_evaluate' }}
         run: python -u -m jobs.evaluate
+
+  # Re-enables this workflow weekly so GitHub's 60-day inactivity rule does not
+  # silently stop the schedule. Whether re-enabling resets that timer is NOT
+  # documented by GitHub (unverified); the site's staleness notice is the alarm.
+  keepalive:
+    if: ${{ github.event.schedule == '0 12 * * 1' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - name: Re-enable daily_nba
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh api -X PUT "repos/${{ github.repository }}/actions/workflows/daily_nba.yml/enable"
