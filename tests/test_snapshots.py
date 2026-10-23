@@ -20,7 +20,7 @@ def _load(name: str) -> dict:
 def test_schema_has_new_tables_idempotent():
     assert "CREATE TABLE IF NOT EXISTS public.injury_reports" in schema.DDL
     assert "CREATE TABLE IF NOT EXISTS public.roster_snapshots" in schema.DDL
-    assert schema.SCHEMA_VERSION == "3"
+    assert schema.SCHEMA_VERSION == "4"
     assert "DROP" not in schema.MIGRATIONS.upper()
 
 
@@ -233,3 +233,13 @@ def test_main_replaces_same_day_rows_for_fetched_teams_only(monkeypatch):
     # the delete happens before the insert
     kinds = [("delete" if str(sql).startswith("DELETE") else "insert") for sql, _ in log]
     assert kinds.index("delete") < kinds.index("insert")
+
+
+def test_schema_v4_additions():
+    for table in ("player_game_status", "game_officials", "team_shot_buckets"):
+        assert f"CREATE TABLE IF NOT EXISTS public.{table}" in schema.DDL
+    for col in ("neutral_site", "price_point", "total_price_point"):
+        assert f"ADD COLUMN IF NOT EXISTS {col}" in schema.MIGRATIONS
+    assert "PRIMARY KEY (game_id, player_id)" in schema.DDL
+    assert "PRIMARY KEY (game_id, team_abbr, pts_value, dist_bucket, corner)" in schema.DDL
+    assert "DROP" not in schema.MIGRATIONS.upper() and "DROP" not in schema.DDL.upper()

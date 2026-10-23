@@ -9,7 +9,7 @@ from __future__ import annotations
 from jobs.db_utils import db_connect
 from jobs.teams import seed_rows
 
-SCHEMA_VERSION = "3"
+SCHEMA_VERSION = "4"
 
 DDL = """
 CREATE TABLE IF NOT EXISTS public.schema_meta (
@@ -182,11 +182,54 @@ CREATE TABLE IF NOT EXISTS public.roster_snapshots (
   injury_status    TEXT,
   PRIMARY KEY (snapshot_date_et, team_abbr, espn_player_id)
 );
+
+-- Per-game availability for EVERY player ESPN lists in the box score (starter, DNP and
+-- why, ejection). Kept apart from player_game_stats so averages over played games are
+-- not diluted by 0-minute rows.
+CREATE TABLE IF NOT EXISTS public.player_game_status (
+  game_id       TEXT NOT NULL REFERENCES public.games_v2(game_id),
+  player_id     BIGINT NOT NULL,
+  team_abbr     TEXT NOT NULL REFERENCES public.teams(team_abbr),
+  player_name   TEXT,
+  starter       BOOLEAN NOT NULL DEFAULT FALSE,
+  did_not_play  BOOLEAN NOT NULL DEFAULT FALSE,
+  dnp_reason    TEXT,
+  ejected       BOOLEAN NOT NULL DEFAULT FALSE,
+  PRIMARY KEY (game_id, player_id)
+);
+
+CREATE TABLE IF NOT EXISTS public.game_officials (
+  game_id        TEXT NOT NULL REFERENCES public.games_v2(game_id),
+  official_order SMALLINT NOT NULL,
+  official_name  TEXT NOT NULL,
+  PRIMARY KEY (game_id, official_order)
+);
+
+-- Field-goal attempts per team per game in fine distance buckets (feet from the basket),
+-- so features can regroup them without re-fetching. Free throws are excluded.
+CREATE TABLE IF NOT EXISTS public.team_shot_buckets (
+  game_id     TEXT NOT NULL REFERENCES public.games_v2(game_id),
+  team_abbr   TEXT NOT NULL REFERENCES public.teams(team_abbr),
+  pts_value   SMALLINT NOT NULL,          -- 2 or 3
+  dist_bucket TEXT NOT NULL,              -- 0-4 | 4-8 | 8-14 | 14-24 | 24+ | unknown
+  corner      BOOLEAN NOT NULL,           -- corner three
+  fga         INTEGER NOT NULL,
+  fgm         INTEGER NOT NULL,
+  PRIMARY KEY (game_id, team_abbr, pts_value, dist_bucket, corner)
+);
 """
 
 # Additive, re-entrant migrations for tables created by an earlier DDL run
 # (CREATE TABLE IF NOT EXISTS won't add columns to a table that already exists).
 MIGRATIONS = """
+-- P2: venue flag and which price point (close/current/open) each stored line came from.
+ALTER TABLE public.games_v2
+  ADD COLUMN IF NOT EXISTS neutral_site BOOLEAN;
+ALTER TABLE public.market_lines
+  ADD COLUMN IF NOT EXISTS price_point TEXT;        -- where the spread came from
+ALTER TABLE public.market_lines
+  ADD COLUMN IF NOT EXISTS total_price_point TEXT;  -- where the total came from
+
 ALTER TABLE public.predictions
   ADD COLUMN IF NOT EXISTS p_home_win DOUBLE PRECISION;  -- straight-up win prob, line-independent
 ALTER TABLE public.predictions

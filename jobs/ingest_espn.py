@@ -97,6 +97,8 @@ def parse_scoreboard_events(sb: dict) -> List[dict]:
                 "away_abbr": normalize_espn_abbr(away["team"]["abbreviation"]),
                 "home_score": _int(home.get("score")),
                 "away_score": _int(away.get("score")),
+                "neutral_site": (None if comp.get("neutralSite") is None
+                                 else bool(comp.get("neutralSite"))),
             })
         except Exception as ex:  # noqa: BLE001
             print(f"[WARN] scoreboard event parse failed id={e.get('id')} err={ex}", flush=True)
@@ -253,14 +255,15 @@ def parse_summary(meta: dict, bs: dict) -> SummaryRows:
 UPSERT_GAMES = """
 INSERT INTO public.games_v2
   (game_id, season, season_type, game_date_et, tipoff_utc, home_abbr, away_abbr,
-   status, home_score, away_score, margin)
+   status, home_score, away_score, margin, neutral_site)
 VALUES %s
 ON CONFLICT (game_id) DO UPDATE SET
   season=EXCLUDED.season, season_type=EXCLUDED.season_type,
   game_date_et=EXCLUDED.game_date_et, tipoff_utc=EXCLUDED.tipoff_utc,
   home_abbr=EXCLUDED.home_abbr, away_abbr=EXCLUDED.away_abbr,
   status=EXCLUDED.status, home_score=EXCLUDED.home_score,
-  away_score=EXCLUDED.away_score, margin=EXCLUDED.margin, updated_at=now()
+  away_score=EXCLUDED.away_score, margin=EXCLUDED.margin,
+  neutral_site=COALESCE(EXCLUDED.neutral_site, games_v2.neutral_site), updated_at=now()
 """
 
 UPSERT_TEAM = """
@@ -292,12 +295,37 @@ ON CONFLICT (game_id, player_id) DO UPDATE SET
 """
 
 
+UPSERT_STATUS = """
+INSERT INTO public.player_game_status
+  (game_id, player_id, team_abbr, player_name, starter, did_not_play, dnp_reason, ejected)
+VALUES %s
+ON CONFLICT (game_id, player_id) DO UPDATE SET
+  team_abbr=EXCLUDED.team_abbr, player_name=EXCLUDED.player_name, starter=EXCLUDED.starter,
+  did_not_play=EXCLUDED.did_not_play, dnp_reason=EXCLUDED.dnp_reason, ejected=EXCLUDED.ejected
+"""
+
+UPSERT_OFFICIALS = """
+INSERT INTO public.game_officials (game_id, official_order, official_name)
+VALUES %s
+ON CONFLICT (game_id, official_order) DO UPDATE SET official_name=EXCLUDED.official_name
+"""
+
+UPSERT_SHOTS = """
+INSERT INTO public.team_shot_buckets
+  (game_id, team_abbr, pts_value, dist_bucket, corner, fga, fgm)
+VALUES %s
+ON CONFLICT (game_id, team_abbr, pts_value, dist_bucket, corner) DO UPDATE SET
+  fga=EXCLUDED.fga, fgm=EXCLUDED.fgm
+"""
+
+
 def _game_row(m: dict) -> tuple:
     return (m["game_id"], m["season"], m["season_type"], _et_date(m["date_utc"]),
             _utc(m["date_utc"]), m["home_abbr"], m["away_abbr"], m["status"],
             m["home_score"], m["away_score"],
             (m["home_score"] - m["away_score"]) if m["home_score"] is not None
-            and m["away_score"] is not None else None)
+            and m["away_score"] is not None else None,
+            m.get("neutral_site"))
 
 
 def _date_range(start: dt.date, end: dt.date) -> List[str]:
@@ -314,6 +342,11 @@ SEASON_WINDOWS = {  # ET calendar windows generous enough to cover play-in/final
     "2025-26": (dt.date(2025, 10, 1), dt.date(2026, 6, 30)),
     "2026-27": (dt.date(2026, 10, 1), dt.date(2027, 6, 30)),
 }
+# Backfill seasons (ET). 2019-20 runs to the October 2020 bubble Finals; 2020-21 started in December.
+for _y in (2015, 2016, 2017, 2018, 2021, 2022):
+    SEASON_WINDOWS[f"{_y}-{str(_y + 1)[-2:]}"] = (dt.date(_y, 10, 1), dt.date(_y + 1, 6, 30))
+SEASON_WINDOWS["2019-20"] = (dt.date(2019, 10, 1), dt.date(2020, 10, 15))
+SEASON_WINDOWS["2020-21"] = (dt.date(2020, 12, 1), dt.date(2021, 7, 31))
 
 
 def ingest_dates(dates: List[str], finals_only: bool) -> Tuple[int, int, int]:
@@ -343,6 +376,7 @@ def ingest_dates(dates: List[str], finals_only: bool) -> Tuple[int, int, int]:
         summaries = list(ex.map(lambda m: (m, summary(m["game_id"])), metas))
 
     game_rows, team_rows, player_rows = [], [], []
+    status_rows, official_rows, shot_rows = [], [], []
     for m, bs in summaries:
         game_rows.append(_game_row(m))
         if m["status"] == "final" and bs:
@@ -350,6 +384,9 @@ def ingest_dates(dates: List[str], finals_only: bool) -> Tuple[int, int, int]:
                 parsed = parse_summary(m, bs)
                 team_rows.extend(parsed.team_rows)
                 player_rows.extend(parsed.player_rows)
+                status_rows.extend(parsed.status_rows)
+                official_rows.extend(parsed.official_rows)
+                shot_rows.extend(parsed.shot_rows)
             except Exception as ex:  # noqa: BLE001 — one odd game must not kill the batch
                 print(f"[WARN] parse_summary failed game={m['game_id']} err={ex}", flush=True)
 
@@ -363,13 +400,30 @@ def ingest_dates(dates: List[str], finals_only: bool) -> Tuple[int, int, int]:
                 psycopg2.extras.execute_values(cur, UPSERT_TEAM, team_rows, page_size=500)
             if player_rows:
                 psycopg2.extras.execute_values(cur, UPSERT_PLAYER, player_rows, page_size=500)
+            if status_rows:
+                psycopg2.extras.execute_values(cur, UPSERT_STATUS, status_rows, page_size=500)
+            if official_rows:
+                psycopg2.extras.execute_values(cur, UPSERT_OFFICIALS, official_rows, page_size=500)
+            if shot_rows:
+                psycopg2.extras.execute_values(cur, UPSERT_SHOTS, shot_rows, page_size=500)
         conn.commit()
     finally:
         conn.close()
     return len(game_rows), len(team_rows), len(player_rows)
 
 
+def _ensure_schema() -> None:
+    """New columns/tables must exist before the first write (run_daily does not call
+    ensure_schema before its ESPN ingest step)."""
+    conn = db_connect()
+    try:
+        ensure_schema(conn)
+    finally:
+        conn.close()
+
+
 def backfill(seasons: List[str]) -> None:
+    _ensure_schema()
     for s in seasons:
         if s not in SEASON_WINDOWS:
             print(f"[WARN] unknown season {s}; skip", flush=True)
@@ -387,6 +441,7 @@ def backfill(seasons: List[str]) -> None:
 
 
 def daily(days_back: int, days_ahead: int = 2) -> None:
+    _ensure_schema()
     today = dt.datetime.now(ET).date()
     dates = _date_range(today - dt.timedelta(days=days_back),
                         today + dt.timedelta(days=days_ahead))
