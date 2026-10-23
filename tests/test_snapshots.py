@@ -198,3 +198,38 @@ def test_main_writes_rosters_and_reports_failed_teams(monkeypatch):
     assert len(written) == 29 * 3
     assert len({r[1] for r in written}) == 1
     assert "NYK" not in {r[2] for r in written}
+
+
+def test_main_fails_when_roster_format_parses_to_nothing(monkeypatch):
+    import pytest
+    grouped = {"team": {"id": "13"}, "athletes": [{"position": "Guards", "items": []}]}
+    teams = _load("teams_sample.json")
+    monkeypatch.setattr(snapshot_rosters, "get_json",
+                        lambda url, **kw: teams if url.endswith("/teams") else grouped)
+    monkeypatch.setattr(snapshot_rosters, "db_connect", lambda: _Conn([]))
+    monkeypatch.setattr(snapshot_rosters, "ensure_schema", lambda conn: None)
+    written: list = []
+    monkeypatch.setattr(snapshot_rosters.psycopg2.extras, "execute_values",
+                        lambda cur, sql, rows, page_size=0: written.extend(rows))
+    with pytest.raises(RuntimeError, match="LAL"):
+        snapshot_rosters.main()
+    assert written == []
+
+
+def test_main_replaces_same_day_rows_for_fetched_teams_only(monkeypatch):
+    import pytest
+    log: list = []
+    monkeypatch.setattr(snapshot_rosters, "get_json", _fake_get_json(failing_team_id="18"))
+    monkeypatch.setattr(snapshot_rosters, "db_connect", lambda: _Conn(log))
+    monkeypatch.setattr(snapshot_rosters, "ensure_schema", lambda conn: None)
+    monkeypatch.setattr(snapshot_rosters.psycopg2.extras, "execute_values",
+                        lambda cur, sql, rows, page_size=0: log.append(("insert", None)))
+    with pytest.raises(RuntimeError):
+        snapshot_rosters.main()
+    deletes = [p for sql, p in log if sql.startswith("DELETE FROM public.roster_snapshots")]
+    assert len(deletes) == 1
+    teams = deletes[0][1]
+    assert len(teams) == 29 and "NYK" not in teams
+    # the delete happens before the insert
+    kinds = [("delete" if str(sql).startswith("DELETE") else "insert") for sql, _ in log]
+    assert kinds.index("delete") < kinds.index("insert")

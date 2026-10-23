@@ -177,11 +177,9 @@ jobs:
         if: ${{ github.event.schedule == '30 10 * * *' || (github.event_name == 'workflow_dispatch' && (inputs.run == 'v2_daily' || inputs.run == 'all')) }}
         run: python -u -m jobs.run_daily
 
-      - name: v2 ingest only (schedule + stats)
+      - name: v2 ingest only (ESPN games + box scores)
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.run == 'v2_ingest' }}
-        run: |
-          python -u -m jobs.ingest_games
-          python -u -m jobs.ingest_stats --season "${NBA_SEASON}"
+        run: python -u -m jobs.ingest_espn --days-back 3
 
       - name: v2 close snapshot
         if: ${{ github.event.schedule == '30 22 * * *' || github.event.schedule == '30 0 * * *' || github.event.schedule == '0 2 * * *' || (github.event_name == 'workflow_dispatch' && inputs.run == 'v2_lines') }}

@@ -78,3 +78,9 @@ def test_keepalive_job():
     assert "/actions/workflows/daily_nba.yml/enable" in job
     assert "secrets." not in job
     assert "'0 12 * * 1'" in job
+
+
+def test_manual_ingest_never_writes_nba_format_ids():
+    step = _block(r"- name: v2 ingest only")
+    assert "jobs.ingest_espn" in step
+    assert "ingest_games" not in step and "ingest_stats" not in step

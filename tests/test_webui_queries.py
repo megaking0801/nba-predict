@@ -81,3 +81,13 @@ def test_next_tipoff_ignores_started_games():
     db = fakes.scenario_board()
     queries.next_tipoff(lambda sql, params=(): (seen.append(" ".join(sql.split())), db.run(sql, params))[1])
     assert "status='scheduled'" in seen[0] and "tipoff_utc > now()" in seen[0]
+
+
+def test_over_record_picks_row_before_filtering_on_result():
+    """Choosing which prediction represents a game must not depend on its result."""
+    seen: list[str] = []
+    db = fakes.scenario_board()
+    queries.track_record(lambda sql, params=(): (seen.append(" ".join(sql.split())), db.run(sql, params))[1])
+    over = next(s for s in seen if "(p_over>=0.5)" in s)
+    assert "p.over_result IS NOT NULL" in over
+    assert "FROM last WHERE over_result IN (0,1)" in over

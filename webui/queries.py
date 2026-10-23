@@ -60,11 +60,11 @@ def track_record(run: Run) -> dict:
     reco = run("WITH last AS ("
                "SELECT DISTINCT ON (p.game_id) p.p_over, p.over_result "
                "FROM public.predictions p JOIN public.games_v2 g ON g.game_id = p.game_id "
-               "WHERE p.p_over IS NOT NULL AND p.over_result IN (0,1) "
+               "WHERE p.p_over IS NOT NULL AND p.over_result IS NOT NULL "
                "ORDER BY p.game_id, (p.predicted_at < g.tipoff_utc) DESC NULLS LAST, "
                "p.predicted_at DESC) "
                "SELECT count(*) FILTER (WHERE (p_over>=0.5)=(over_result=1)) AS hit, "
-               "count(*) AS n FROM last", ())
+               "count(*) AS n FROM last WHERE over_result IN (0,1)", ())
     return {"wf_acc": wf.get("winner_accuracy"), "wf_n": wf.get("n"),
             "rec_hit": int(rec.iloc[0]["hit"] or 0), "rec_n": int(rec.iloc[0]["n"] or 0),
             "over_wf_acc": over.get("accuracy"), "over_wf_n": over.get("n"),

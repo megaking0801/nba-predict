@@ -23,6 +23,11 @@ from jobs.tz import et_today
 
 MAX_WORKERS = 8
 
+DELETE_TEAMS_SQL = """
+DELETE FROM public.roster_snapshots
+WHERE snapshot_date_et = %s AND team_abbr = ANY(%s)
+"""
+
 UPSERT_ROSTER_SQL = """
 INSERT INTO public.roster_snapshots
   (snapshot_date_et, captured_at, team_abbr, espn_player_id, player_name,
@@ -94,7 +99,11 @@ def main() -> None:
         if not payload:
             failed.append(abbr)
             continue
-        for r in parse_roster(payload, abbr, today):
+        parsed = parse_roster(payload, abbr, today)
+        if not parsed:  # a format change must not look like a successful empty roster
+            failed.append(abbr)
+            continue
+        for r in parsed:
             rows[(r["snapshot_date_et"], abbr, r["espn_player_id"])] = (
                 r["snapshot_date_et"], captured_at, abbr, r["espn_player_id"], r["player_name"],
                 r["position"], r["jersey"], r["status"], r["injury_status"])
@@ -103,7 +112,11 @@ def main() -> None:
     try:
         ensure_schema(conn)
         if rows:
+            fetched = sorted({key[1] for key in rows})
             with conn.cursor() as cur:
+                # A re-run on the same ET day replaces each fetched team's roster, so a
+                # player traded in between does not stay listed on the old team.
+                cur.execute(DELETE_TEAMS_SQL, (today, fetched))
                 psycopg2.extras.execute_values(cur, UPSERT_ROSTER_SQL, list(rows.values()),
                                                page_size=500)
         conn.commit()
