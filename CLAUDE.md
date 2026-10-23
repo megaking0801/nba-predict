@@ -24,7 +24,10 @@ python -m webui.build_site --out site  # 從 DB 產生靜態網站到 site/（�
 - `jobs/`：v2 流程，資料只走 ESPN。`ingest_espn.py`（比賽、box score、盤口；scoreboard 抓失敗過半會 raise）、`snapshot_injuries.py`（傷兵）、`snapshot_rosters.py`（名單；隊伍 id 每次從 ESPN `/teams` 取）
   → `features.py`（`FeatureBuilder`）→ `train.py` / `calibrate.py` / `evaluate.py` → `predict_daily.py`（用 `picks.py` 決定出手）→ `settle.py`。
 - 所有參數集中在 `jobs/config.py`；每個模型版本與預測都記錄 `CONFIG_HASH`。
-- DDL 在 `jobs/schema.py`。表：`games_v2`、`team_game_stats`、`player_game_stats`、`market_lines`、`injury_snapshots`、`predictions`、`model_registry_v2`。
+- DDL 在 `jobs/schema.py`。表：`games_v2`（含 `neutral_site`）、`team_game_stats`、`player_game_stats`（只含有上場的球員，沒有 DNP 列）、`market_lines`（含 `price_point`／`total_price_point`，標示讓分與總分各取自 close／current／open）、`injury_snapshots`、`predictions`、`model_registry_v2`。
+  P2 新表：`player_game_status`（box score 列出的每位球員：先發、DNP 與原因、驅逐）、`game_officials`、`team_shot_buckets`（每隊每場的投籃距離桶，罰球不計；P4 自行重新分組）。
+  `neutral_site` 來自 scoreboard，**抓不到 2020 泡泡賽**（實測為 False），P4 要用日期區間標記泡泡。
+  `ingest_espn` 的 `daily()`／`backfill()` 會先 `ensure_schema`，因為 `run_daily` 在 ESPN 抓取前不會呼叫它。
   view：`v_latest_lines`、`v_closing_lines`、`v_app_board`。
 - 排程：10:30 UTC（台北 18:30）`run_daily` 全流程，是當天的正式預測；22:30、00:30、02:00 UTC 跑 `run_daily --close`（只抓開賽前 150 分鐘內比賽的盤口與傷兵，**不預測**）；週一 12:00 UTC 重新訓練與 keepalive。
 - 傷兵與名單歷史：`injury_reports`（每次抓取 append，含 ESPN 的 `reported_at`）、`roster_snapshots`（每隊每個 ET 日一份）；舊表 `injury_snapshots` 照寫，`predict_daily` 讀它。
