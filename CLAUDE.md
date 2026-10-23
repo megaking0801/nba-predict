@@ -46,7 +46,7 @@ python -m webui.build_site --out site  # 從 DB 產生靜態網站到 site/（�
 **資料與 DB**
 - 時間：DB 存 UTC；比賽日用 ET；台北時間只出現在 App 顯示層。
 - schema 變更只做可重複執行、只新增的 migration（`ADD COLUMN IF NOT EXISTS`）。`v_app_board` 的新欄位只能加在最後，`CREATE OR REPLACE VIEW` 不能重排欄位。
-- `market_lines`、`predictions` 設計上是 append-only。除了 `predict_history.py` 與 `ingest_espn --odds` 這兩個既有的重建流程，不要刪改歷史列。
+- `market_lines`、`predictions` 設計上是 append-only。除了 `predict_history.py` 與 `ingest_espn --odds --force-rebuild` 這兩個既有的重建流程，不要刪改歷史列。`--odds` 預設拒絕執行，加 `--force-rebuild` 也只刪回填列（`captured_at` 等於開賽時間），不會動即時盤口快照；一般補盤口用 `backfill_odds_missing`（只補缺的，不刪）。
 - `webui/queries.py` 只准 SELECT；`webui/render.py` 不 import streamlit，DB 來的文字一律經 `esc()`。`build_site` 連線必須 `readonly`。
 - Streamlit 頁面輸出由 `tests/test_streamlit_golden.py` 的整頁 golden 鎖住；改渲染時 golden 不可因搬動而變，要改就是刻意的行為變更並說明。
 - 新的資料來源用 ESPN。stats.nba.com 會擋 GitHub runner 與非美國 IP。

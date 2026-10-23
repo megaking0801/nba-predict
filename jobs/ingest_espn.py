@@ -473,20 +473,30 @@ def _block_total(block: Optional[dict]) -> Tuple[Optional[float], Optional[float
     return tl, (float(op) if op else None), (float(up) if up else None)
 
 
+POINTS = ("close", "current", "open")
+
+
+def _pick_block(odds_side: dict):
+    """(block, point): the first of close -> current -> open that is present."""
+    for point in POINTS:
+        if odds_side.get(point):
+            return odds_side[point], point
+    return {}, None
+
+
 def parse_close_line(items: List[dict]) -> Optional[dict]:
-    """Spread + total lines from the priority provider, preferring close → current
-    → open (so settled games use the close, upcoming games still get a live line).
-    Decimal prices default to 1.91 (-110) when absent. Returns None if no spread."""
+    """Spread + total lines from the priority provider, preferring close -> current
+    -> open (so settled games use the close, upcoming games still get a live line).
+    price_point / total_price_point say which of the three each number came from (they
+    can differ: a closing spread with a current-only total). Decimal prices default to
+    1.91 (-110) when absent. Returns None if no spread."""
     prov = next((it for it in items if (it.get("provider") or {}).get("priority") == 0),
                 items[0] if items else None)
     if not prov:
         return None
 
-    def side_block(side: str) -> dict:
-        o = prov.get(side) or {}
-        return o.get("close") or o.get("current") or o.get("open") or {}
-
-    hb, ab = side_block("homeTeamOdds"), side_block("awayTeamOdds")
+    hb, price_point = _pick_block(prov.get("homeTeamOdds") or {})
+    ab, _ = _pick_block(prov.get("awayTeamOdds") or {})
     hs = _spread_num((hb.get("pointSpread") or {}).get("american"))
     if hs is None:
         return None  # market_lines.home_spread is NOT NULL
@@ -494,12 +504,15 @@ def parse_close_line(items: List[dict]) -> Optional[dict]:
     ap_ = (ab.get("spread") or {}).get("decimal")
 
     tl = op = up = None
-    for blk in (prov.get("close"), prov.get("current"), prov.get("open")):
-        tl, op, up = _block_total(blk)
+    total_point = None
+    for point in POINTS:
+        tl, op, up = _block_total(prov.get(point))
         if tl is not None:
+            total_point = point
             break
     if tl is None and prov.get("overUnder") is not None:
         tl = _spread_num(prov.get("overUnder"))
+        total_point = "current" if tl is not None else None
 
     return {
         "home_spread": hs,
@@ -508,29 +521,29 @@ def parse_close_line(items: List[dict]) -> Optional[dict]:
         "total_line": tl,
         "over_price": float(op or 1.91) if tl is not None else None,
         "under_price": float(up or 1.91) if tl is not None else None,
+        "price_point": price_point,
+        "total_price_point": total_point,
     }
 
 
 INSERT_LINE = """
 INSERT INTO public.market_lines
   (game_id, captured_at, source, book, home_spread, home_price, away_price,
-   total_line, over_price, under_price)
+   total_line, over_price, under_price, price_point, total_price_point)
 VALUES %s
 """
 
 
-def backfill_odds() -> None:
-    """Fetch ESPN closing lines for every final game and (re)load market_lines.
-    captured_at is set to tipoff so v_closing_lines includes them."""
-    conn = db_connect()
-    try:
-        with conn.cursor() as cur:
-            cur.execute("SELECT game_id, tipoff_utc, game_date_et FROM public.games_v2 "
-                        "WHERE status='final' ORDER BY game_date_et")
-            games = cur.fetchall()
-    finally:
-        conn.close()
+def _line_row(gid: str, captured_at: dt.datetime, parsed: dict) -> tuple:
+    return (gid, captured_at, "espn", "espn", parsed["home_spread"],
+            parsed["home_price"], parsed["away_price"],
+            parsed["total_line"], parsed["over_price"], parsed["under_price"],
+            parsed.get("price_point"), parsed.get("total_price_point"))
 
+
+def _fetch_backfill_lines(games: list) -> Tuple[list, int]:
+    """ESPN lines for (game_id, tipoff_utc, game_date_et) rows. captured_at is set to
+    tipoff (23:00 ET on the game date when unknown) so v_closing_lines includes them."""
     def fetch(g):
         gid, tip, gdate = g
         d = odds(gid)
@@ -540,13 +553,11 @@ def backfill_odds() -> None:
         if not parsed:
             return None
         captured = tip or dt.datetime.combine(gdate, dt.time(23, 0), tzinfo=ET)
-        return (gid, captured, "espn", "espn", parsed["home_spread"],
-                parsed["home_price"], parsed["away_price"],
-                parsed["total_line"], parsed["over_price"], parsed["under_price"])
+        return _line_row(gid, captured, parsed)
 
-    rows = []
-    total = len(games)
+    rows: list = []
     with_total = 0
+    total = len(games)
     for i in range(0, total, 200):
         chunk = games[i:i + 200]
         with ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
@@ -556,16 +567,66 @@ def backfill_odds() -> None:
                     with_total += 1
         print(f"[..] odds {i + len(chunk)}/{total} (with line: {len(rows)}, "
               f"with total: {with_total})", flush=True)
+    return rows, with_total
+
+
+def backfill_odds_missing(seasons: List[str]) -> None:
+    """Append ESPN lines for finished games of ``seasons`` that have NO ESPN line yet.
+    Never deletes anything, so the live snapshots taken since P1 are safe."""
+    conn = db_connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT g.game_id, g.tipoff_utc, g.game_date_et FROM public.games_v2 g "
+                "WHERE g.season = ANY(%s) AND g.status = 'final' "
+                "AND NOT EXISTS (SELECT 1 FROM public.market_lines ml "
+                "WHERE ml.game_id = g.game_id AND ml.source = 'espn') "
+                "ORDER BY g.game_date_et", (list(seasons),))
+            games = cur.fetchall()
+    finally:
+        conn.close()
+    rows, with_total = _fetch_backfill_lines(games)
+    if rows:
+        conn = db_connect()
+        try:
+            with conn.cursor() as cur:
+                psycopg2.extras.execute_values(cur, INSERT_LINE, rows, page_size=500)
+            conn.commit()
+        finally:
+            conn.close()
+    print(f"[OK] odds backfill {','.join(seasons)}: {len(rows)}/{len(games)} games got a line "
+          f"({with_total} with totals)", flush=True)
+
+
+def backfill_odds(force_rebuild: bool = False) -> None:
+    """Reload ESPN closing lines for EVERY final game (deleting the backfilled ones first).
+    Refuses to run without force_rebuild: use backfill_odds_missing for normal backfills."""
+    if not force_rebuild:
+        raise RuntimeError("backfill_odds deletes and reloads every backfilled ESPN line; "
+                           "use backfill_odds_missing, or pass --force-rebuild to do it anyway")
+    conn = db_connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT game_id, tipoff_utc, game_date_et FROM public.games_v2 "
+                        "WHERE status='final' ORDER BY game_date_et")
+            games = cur.fetchall()
+    finally:
+        conn.close()
+    rows, with_total = _fetch_backfill_lines(games)
 
     conn = db_connect()
     try:
         with conn.cursor() as cur:
-            cur.execute("DELETE FROM public.market_lines WHERE source='espn'")  # idempotent re-load
+            # Only the backfilled rows (captured_at == tipoff); live snapshots keep their
+            # real capture times and are never touched.
+            cur.execute("DELETE FROM public.market_lines ml USING public.games_v2 g "
+                        "WHERE ml.game_id = g.game_id AND ml.source = 'espn' "
+                        "AND ml.captured_at = g.tipoff_utc")
             psycopg2.extras.execute_values(cur, INSERT_LINE, rows, page_size=500)
         conn.commit()
     finally:
         conn.close()
-    print(f"[OK] odds backfill: {len(rows)}/{total} games got a line "
+    print(f"[OK] odds backfill: {len(rows)}/{len(games)} games got a line "
           f"({with_total} with totals)", flush=True)
 
 
@@ -614,9 +675,7 @@ def snapshot_espn_odds(days_back: int = 3, days_ahead: int = 2,
         parsed = parse_close_line(d.get("items", []))
         if not parsed:
             return None
-        return (gid, now_utc, "espn", "espn", parsed["home_spread"],
-                parsed["home_price"], parsed["away_price"],
-                parsed["total_line"], parsed["over_price"], parsed["under_price"])
+        return _line_row(gid, now_utc, parsed)
 
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
         rows = [r for r in ex.map(fetch, games) if r]
@@ -633,24 +692,29 @@ def snapshot_espn_odds(days_back: int = 3, days_ahead: int = 2,
     print(f"[OK] snapshot_espn_odds: appended {len(rows)} lines ({lo}..{hi})", flush=True)
 
 
-def main() -> None:
+def main(argv: Optional[List[str]] = None) -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--seasons", help="comma-separated, e.g. 2023-24,2024-25,2025-26")
     ap.add_argument("--days-back", type=int, default=3)
-    ap.add_argument("--odds", action="store_true", help="backfill ESPN closing lines (spread+total) for all final games")
+    ap.add_argument("--odds", action="store_true",
+                    help="reload ESPN closing lines for all final games (needs --force-rebuild)")
+    ap.add_argument("--force-rebuild", action="store_true",
+                    help="allow --odds to delete and reload the backfilled lines")
     ap.add_argument("--snapshot-odds", action="store_true", help="append current ESPN lines for recent/upcoming games")
-    args = ap.parse_args()
+    args = ap.parse_args(argv)
     conn = db_connect()
     try:
         ensure_schema(conn)
     finally:
         conn.close()
     if args.odds:
-        backfill_odds()
+        backfill_odds(force_rebuild=args.force_rebuild)
     elif args.snapshot_odds:
         snapshot_espn_odds(args.days_back)
     elif args.seasons:
-        backfill([s.strip() for s in args.seasons.split(",") if s.strip()])
+        for season in (x.strip() for x in args.seasons.split(",") if x.strip()):
+            backfill([season])
+            backfill_odds_missing([season])
     else:
         daily(args.days_back)
 

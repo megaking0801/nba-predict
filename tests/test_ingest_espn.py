@@ -228,3 +228,144 @@ def test_daily_and_backfill_ensure_schema_first(monkeypatch):
     order.clear()
     ingest_espn.backfill(["2022-23"])
     assert order[0] == "schema" and "ingest" in order
+
+
+# ---------- P2: price points, backfill only what is missing, guarded rebuild ----------
+
+def _odds_item(spread_blocks: dict, total_blocks: dict | None = None, over_under=None):
+    """Core-API odds item: spread under homeTeamOdds, totals under provider-level close/current/open."""
+    def side(blocks):
+        return {k: {"pointSpread": {"american": v}, "spread": {"decimal": "1.91"}}
+                for k, v in blocks.items()}
+    item = {"provider": {"priority": 0}, "homeTeamOdds": side(spread_blocks),
+            "awayTeamOdds": side({k: "+3.5" for k in spread_blocks})}
+    for k, tot in (total_blocks or {}).items():
+        item[k] = {"total": {"american": tot}, "over": {"decimal": "1.9"}, "under": {"decimal": "1.9"}}
+    if over_under is not None:
+        item["overUnder"] = over_under
+    return item
+
+
+def test_parse_close_line_points():
+    only_current = ingest_espn.parse_close_line(
+        [_odds_item({"current": "-3.5"}, {"current": "220.5"})])
+    assert only_current["price_point"] == "current"
+    assert only_current["total_price_point"] == "current"
+    mixed = ingest_espn.parse_close_line(
+        [_odds_item({"close": "-4.5", "current": "-3.5"}, {"current": "221.5"})])
+    assert mixed["price_point"] == "close" and mixed["total_price_point"] == "current"
+    assert mixed["home_spread"] == -4.5 and mixed["total_line"] == 221.5
+    no_total = ingest_espn.parse_close_line([_odds_item({"open": "-2.5"})])
+    assert no_total["price_point"] == "open" and no_total["total_price_point"] is None
+    assert no_total["total_line"] is None
+    from_over_under = ingest_espn.parse_close_line(
+        [_odds_item({"close": "-2.5"}, None, over_under="219.5")])
+    assert from_over_under["total_line"] == 219.5
+    assert from_over_under["total_price_point"] == "current"
+
+
+def test_parse_close_line_without_spread_is_none():
+    assert ingest_espn.parse_close_line([{"provider": {"priority": 0}}]) is None
+
+
+def test_backfill_odds_requires_force(monkeypatch):
+    import pytest
+    with pytest.raises(RuntimeError, match="backfill_odds_missing"):
+        ingest_espn.backfill_odds()
+
+
+class _SqlLog:
+    def __init__(self, games):
+        self.games = games
+        self.sql: list[str] = []
+        self.commits = 0
+
+    def cursor(self):
+        log = self
+
+        class Cur(_Cur):
+            def execute(self, sql, params=None):
+                log.sql.append(" ".join(sql.split()))
+
+            def fetchall(self):
+                return log.games
+
+        return Cur([])
+
+    def commit(self):
+        self.commits += 1
+
+    def close(self):
+        pass
+
+
+def test_force_rebuild_deletes_only_backfilled_rows(monkeypatch):
+    log = _SqlLog([])
+    monkeypatch.setattr(ingest_espn, "db_connect", lambda: log)
+    monkeypatch.setattr(ingest_espn.psycopg2.extras, "execute_values", lambda *a, **k: None)
+    ingest_espn.backfill_odds(force_rebuild=True)
+    deletes = [s for s in log.sql if s.startswith("DELETE")]
+    assert len(deletes) == 1
+    assert "ml.captured_at = g.tipoff_utc" in deletes[0] and "ml.source = 'espn'" in deletes[0]
+    assert "DELETE FROM public.market_lines WHERE source='espn'" not in deletes[0]
+
+
+def test_backfill_odds_missing_never_deletes(monkeypatch):
+    now = dt.datetime(2022, 1, 1, 0, 0, tzinfo=UTC)
+    log = _SqlLog([("g1", now, now.date()), ("g2", None, now.date())])
+    monkeypatch.setattr(ingest_espn, "db_connect", lambda: log)
+    monkeypatch.setattr(ingest_espn, "odds", lambda gid, **kw: {"items": []})
+    monkeypatch.setattr(ingest_espn, "parse_close_line", lambda items: {
+        "home_spread": -3.5, "home_price": 1.9, "away_price": 1.9, "total_line": 220.5,
+        "over_price": 1.9, "under_price": 1.9, "price_point": "current",
+        "total_price_point": "current"})
+    rows: list = []
+    monkeypatch.setattr(ingest_espn.psycopg2.extras, "execute_values",
+                        lambda cur, sql, r, page_size=0: rows.extend(r))
+    ingest_espn.backfill_odds_missing(["2021-22"])
+    assert not any("DELETE" in s.upper() for s in log.sql)
+    select = next(s for s in log.sql if s.startswith("SELECT"))
+    assert "NOT EXISTS" in select and "ml.source = 'espn'" in select and "g.season = ANY" in select
+    assert len(rows) == 2
+    assert rows[0][1] == now                       # captured_at = tipoff
+    assert rows[1][1].tzinfo is not None           # no tipoff: 23:00 ET fallback
+    assert rows[0][-2:] == ("current", "current")  # price points are written
+
+
+def test_main_seasons_runs_ingest_then_odds(monkeypatch):
+    calls: list = []
+    monkeypatch.setattr(ingest_espn, "db_connect", lambda: _RecConn())
+    monkeypatch.setattr(ingest_espn, "ensure_schema", lambda conn: None)
+    monkeypatch.setattr(ingest_espn, "backfill", lambda seasons: calls.append(("backfill", list(seasons))))
+    monkeypatch.setattr(ingest_espn, "backfill_odds_missing",
+                        lambda seasons: calls.append(("odds", list(seasons))))
+    ingest_espn.main(["--seasons", "2022-23,2021-22"])
+    assert calls == [("backfill", ["2022-23"]), ("odds", ["2022-23"]),
+                     ("backfill", ["2021-22"]), ("odds", ["2021-22"])]
+
+
+def test_main_odds_flag_needs_force_rebuild(monkeypatch):
+    import pytest
+    monkeypatch.setattr(ingest_espn, "db_connect", lambda: _RecConn())
+    monkeypatch.setattr(ingest_espn, "ensure_schema", lambda conn: None)
+    with pytest.raises(RuntimeError):
+        ingest_espn.main(["--odds"])
+    seen = {}
+    monkeypatch.setattr(ingest_espn, "backfill_odds", lambda force_rebuild=False: seen.update(f=force_rebuild))
+    ingest_espn.main(["--odds", "--force-rebuild"])
+    assert seen == {"f": True}
+
+
+def test_snapshot_rows_carry_price_points(monkeypatch):
+    now = dt.datetime.now(UTC)
+    monkeypatch.setattr(ingest_espn, "db_connect", lambda: _Conn([("soon", now + dt.timedelta(minutes=60), now.date())]))
+    monkeypatch.setattr(ingest_espn, "odds", lambda gid, **kw: {"items": []})
+    monkeypatch.setattr(ingest_espn, "parse_close_line", lambda items: {
+        "home_spread": -3.5, "home_price": 1.9, "away_price": 1.9, "total_line": None,
+        "over_price": None, "under_price": None, "price_point": "current", "total_price_point": None})
+    inserted: list = []
+    monkeypatch.setattr(ingest_espn.psycopg2.extras, "execute_values",
+                        lambda cur, sql, rows, page_size=0: inserted.extend(rows))
+    ingest_espn.snapshot_espn_odds()
+    assert inserted[0][-2:] == ("current", None)
+    assert "price_point, total_price_point" in ingest_espn.INSERT_LINE
