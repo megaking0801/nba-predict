@@ -21,12 +21,15 @@ python -m webui.build_site --out site  # 從 DB 產生靜態網站到 site/（�
 - `auto_nba_predict.py`：Streamlit 前端外殼，只讀 DB（`v_app_board` 等），不在前端跑模型。渲染與 SQL 已抽到 `webui/`。
 - `webui/`：`render.py`（純 HTML 渲染，不 import streamlit、不查 DB）、`queries.py`（只含 SELECT）、`build_site.py`（產生靜態站）。
   靜態站由 `.github/workflows/site.yml` 部署到 GitHub Pages（`daily_nba` 完成後、手動、或 `webui/**` 等路徑變動時觸發）。
-- `jobs/`：v2 流程。ESPN 資料（`ingest_espn.py`：比賽、box score、盤口）、NBA CDN 賽程（`ingest_games.py`）、ESPN 傷兵（`snapshot_injuries.py`）
+- `jobs/`：v2 流程，資料只走 ESPN。`ingest_espn.py`（比賽、box score、盤口；scoreboard 抓失敗過半會 raise）、`snapshot_injuries.py`（傷兵）、`snapshot_rosters.py`（名單；隊伍 id 每次從 ESPN `/teams` 取）
   → `features.py`（`FeatureBuilder`）→ `train.py` / `calibrate.py` / `evaluate.py` → `predict_daily.py`（用 `picks.py` 決定出手）→ `settle.py`。
 - 所有參數集中在 `jobs/config.py`；每個模型版本與預測都記錄 `CONFIG_HASH`。
 - DDL 在 `jobs/schema.py`。表：`games_v2`、`team_game_stats`、`player_game_stats`、`market_lines`、`injury_snapshots`、`predictions`、`model_registry_v2`。
   view：`v_latest_lines`、`v_closing_lines`、`v_app_board`。
-- 排程：10:30 UTC 全流程；22:00 UTC 臨近開賽抓盤並重新預測；週一 12:00 UTC 重新訓練。
+- 排程：10:30 UTC（台北 18:30）`run_daily` 全流程，是當天的正式預測；22:30、00:30、02:00 UTC 跑 `run_daily --close`（只抓開賽前 150 分鐘內比賽的盤口與傷兵，**不預測**）；週一 12:00 UTC 重新訓練與 keepalive。
+- 傷兵與名單歷史：`injury_reports`（每次抓取 append，含 ESPN 的 `reported_at`）、`roster_snapshots`（每隊每個 ET 日一份）；舊表 `injury_snapshots` 照寫，`predict_daily` 讀它。
+- workflow 設 `PAPER_MODE=1`：模型證明贏得了市場（P5）之前，預測一律記為 paper。
+- `track_record()` 每場只算一次（`DISTINCT ON`，優先取開賽前最後一筆；是偏好不是過濾，回填的歷史預測才不會歸零）。
 - 模型通過 `evaluate.py` 的 gates 才會啟用；訓練列數低於 `MIN_TRAIN_ROWS` 時不訓練。
 
 ## 不能違反的規則
@@ -88,8 +91,8 @@ python -m webui.build_site --out site  # 從 DB 產生靜態網站到 site/（�
 - 不要改動已被追蹤的 `tests/__pycache__/*.pyc`（待清理）。
 
 ## 已知待釐清（不要擅自改）
-- `daily_nba` 因 60 天無活動被停用（`disabled_inactivity`），且 10:30 UTC 全流程的 `ingest_games` / `ingest_stats` 被 NBA 端點擋。靜態站內容會停在最後一次資料，頁面 36 小時後顯示「資料可能已過期」。恢復排程與改走 ESPN 是下一個子專案。
-- `run_daily` 的 `ingest_stats` 走 stats.nba.com，但 `ingest_espn.py` 的註解說它被擋。線上實際走哪條有效，要看 Actions 紀錄。
+- `daily_nba` 因 60 天無活動被停用（`disabled_inactivity`），程式已改走 ESPN，但**尚未啟用**；啟用前靜態站內容停在最後一次資料，頁面 36 小時後顯示「資料可能已過期」。新表（`injury_reports`、`roster_snapshots`）與 2026-27 的比賽都還沒寫進正式 DB。
+- `daily_nba.yml` 的 `keepalive` job 每週用 API 重新啟用 workflow，但「重新啟用能重置 60 天計時」**官方文件沒有說明（未驗證）**；合併後約 50 天人工跑 `gh workflow list` 確認仍為 active。網站的過期提示是停擺的警報。
 - `snapshot_lines.py` 的 Odds API 只抓 `spreads`，大小分盤口目前只靠 ESPN。
-- Legacy 流程仍在，且 `preload` 排程每天會跑：`public.games`、`cache_nba`、`sync_daily`、`settle_daily`、`train_base_model`、`train_calibrator`、
+- Legacy 流程仍在（P1 起 `preload` 不再排程，只剩手動 `workflow_dispatch`）：`public.games`、`cache_nba`、`sync_daily`、`settle_daily`、`train_base_model`、`train_calibrator`、
   `rebuild_features_from_boxscore`、`fill_b2b_nulls`、`preload_nba_data`、`export_legacy_csv`。不要擴充；要移除前先確認。
