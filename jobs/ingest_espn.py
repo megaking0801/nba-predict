@@ -238,6 +238,7 @@ SEASON_WINDOWS = {  # ET calendar windows generous enough to cover play-in/final
     "2023-24": (dt.date(2023, 10, 1), dt.date(2024, 6, 30)),
     "2024-25": (dt.date(2024, 10, 1), dt.date(2025, 6, 30)),
     "2025-26": (dt.date(2025, 10, 1), dt.date(2026, 6, 30)),
+    "2026-27": (dt.date(2026, 10, 1), dt.date(2027, 6, 30)),
 }
 
 
@@ -245,6 +246,14 @@ def ingest_dates(dates: List[str], finals_only: bool) -> Tuple[int, int, int]:
     # 1) scoreboards (concurrent)
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
         sbs = list(ex.map(lambda d: scoreboard(d), dates))
+    # scoreboard() returns None when the fetch failed (an outage), and a payload
+    # with no events when there simply were no games: only the former is an error.
+    failed = [d for d, sb in zip(dates, sbs) if sb is None]
+    if failed and len(failed) * 2 > len(dates):
+        raise RuntimeError(f"ESPN scoreboard fetch failed for {len(failed)}/{len(dates)} "
+                           f"dates: {', '.join(failed)}")
+    if failed:
+        print(f"[WARN] ESPN scoreboard fetch failed for dates: {', '.join(failed)}", flush=True)
     metas: List[dict] = []
     for sb in sbs:
         metas.extend(parse_scoreboard_events(sb))
@@ -431,9 +440,21 @@ def backfill_odds() -> None:
           f"({with_total} with totals)", flush=True)
 
 
-def snapshot_espn_odds(days_back: int = 3, days_ahead: int = 2) -> None:
+def in_close_window(tipoff_utc: Optional[dt.datetime], now: dt.datetime,
+                    window_minutes: int) -> bool:
+    """True when the game has not started and tips off within ``window_minutes``."""
+    if tipoff_utc is None:
+        return False
+    return now < tipoff_utc <= now + dt.timedelta(minutes=window_minutes)
+
+
+def snapshot_espn_odds(days_back: int = 3, days_ahead: int = 2,
+                       window_minutes: Optional[int] = None) -> None:
     """Append current ESPN spread+total lines for recent/upcoming games so live
-    predictions have fresh lines. Append-only; v_latest_lines picks the newest."""
+    predictions have fresh lines. Append-only; v_latest_lines picks the newest.
+
+    With ``window_minutes`` set (close-snapshot mode) only games that have not
+    started and tip off within that many minutes are fetched."""
     today = dt.datetime.now(ET).date()
     lo, hi = today - dt.timedelta(days=days_back), today + dt.timedelta(days=days_ahead)
     conn = db_connect()
@@ -449,6 +470,12 @@ def snapshot_espn_odds(days_back: int = 3, days_ahead: int = 2) -> None:
         return
 
     now_utc = dt.datetime.now(dt.timezone.utc)
+    if window_minutes is not None:
+        games = [g for g in games if in_close_window(g[1], now_utc, window_minutes)]
+        if not games:
+            print(f"[OK] snapshot_espn_odds: no games tipping off within "
+                  f"{window_minutes} min", flush=True)
+            return
 
     def fetch(g):
         gid, _tip, _gdate = g
