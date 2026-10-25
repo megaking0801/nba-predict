@@ -1,7 +1,7 @@
 """Run the checks, compare them with the known-problem baseline, print and exit.
 
     python -m jobs.quality [--all | --seasons 2025-26,2026-27] [--since 7d] [--with-espn]
-                           [--fail-on error|warn|none] [--json PATH] [--baseline PATH]
+                           [--fail-on error|warn|none] [--ignore-types preseason] [--json PATH] [--baseline PATH]
                            [--write-baseline PATH] [--verify-flags]
 
 Read-only: the connection is a read-only session and --write-baseline only writes a
@@ -80,7 +80,7 @@ def classify_d2(f: Finding, entry: Optional[dict]) -> Finding:
 
 
 def run(run_sql, scope: Scope, baseline: dict, *, with_espn: bool = False,
-        fetch_scoreboard: Optional[Callable] = None) -> List[Finding]:
+        fetch_scoreboard: Optional[Callable] = None, ignore_types: tuple = ()) -> List[Finding]:
     since_mode = scope.since is not None
     findings: List[Finding] = []
     for check_id, fn in list(REGISTRY):
@@ -89,6 +89,8 @@ def run(run_sql, scope: Scope, baseline: dict, *, with_espn: bool = False,
     if with_espn:
         _current["check"] = "A1"
         findings.extend(check_a1_espn_event_coverage(run_sql, scope, fetch_scoreboard))
+    if ignore_types:      # e.g. the daily CI step skips preseason, whose data the model never uses
+        findings = [f for f in findings if f.scope.split("/", 1)[-1] not in ignore_types]
     out = []
     for f in findings:
         if since_mode:
@@ -165,6 +167,7 @@ def _build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--since", help="only games after max(baseline date, today - N days), e.g. 7d")
     ap.add_argument("--with-espn", action="store_true", help="also run A1 (needs the network)")
     ap.add_argument("--fail-on", choices=("error", "warn", "none"), default="warn")
+    ap.add_argument("--ignore-types", help="comma-separated season types to leave out, e.g. preseason")
     ap.add_argument("--json", help="write findings to this file")
     ap.add_argument("--baseline", default=str(DEFAULT_BASELINE))
     ap.add_argument("--write-baseline", help="write the measured problems to this local file")
@@ -191,7 +194,8 @@ def _execute(args, conn) -> int:
         if int(n_new.iloc[0]["n"]) == 0:
             print(f"無新資料 (no games dated after {since.isoformat()})")
             return 0
-    findings = run(run_sql, scope, baseline, with_espn=args.with_espn)
+    ignore = tuple(t.strip() for t in args.ignore_types.split(",") if t.strip()) if args.ignore_types else ()
+    findings = run(run_sql, scope, baseline, with_espn=args.with_espn, ignore_types=ignore)
     _print(findings)
     if args.json:
         Path(args.json).write_text(json.dumps([dataclasses.asdict(f) for f in findings], indent=1,
@@ -206,8 +210,8 @@ def _execute(args, conn) -> int:
 
 def main(argv: Optional[List[str]] = None) -> int:
     args = _build_parser().parse_args(argv)
-    if args.write_baseline and (args.since or args.seasons):
-        print("--write-baseline needs a full run (--all, no --since): a window or a subset of seasons "
+    if args.write_baseline and (args.since or args.seasons or args.ignore_types):
+        print("--write-baseline needs a full run (--all, no --since, no --ignore-types): a window or a subset "
               "would record partial counts.")
         return 2
     try:
