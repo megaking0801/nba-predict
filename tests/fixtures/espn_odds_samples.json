@@ -1,0 +1,932 @@
+{
+ "old_2015_16": [
+  {
+   "provider": {
+    "id": "18",
+    "name": "5Dimes.eu",
+    "priority": 0
+   },
+   "details": "CLE -1.5",
+   "overUnder": 202.0,
+   "spread": 1.5,
+   "initialSpread": 2.5,
+   "initialOverUnder": 201.5,
+   "overOdds": -118.0,
+   "underOdds": -102.0,
+   "awayTeamOdds": {
+    "favorite": true,
+    "underdog": false,
+    "moneyLine": -117,
+    "spreadOdds": -102.0,
+    "current": {
+     "pointSpread": {
+      "american": "-1.5"
+     },
+     "spread": {
+      "american": "-102"
+     },
+     "moneyLine": {
+      "american": "-117"
+     }
+    }
+   },
+   "homeTeamOdds": {
+    "favorite": false,
+    "underdog": true,
+    "moneyLine": -103,
+    "spreadOdds": -118.0,
+    "current": {
+     "pointSpread": {
+      "american": "+1.5"
+     },
+     "spread": {
+      "american": "-118"
+     },
+     "moneyLine": {
+      "american": "-103"
+     }
+    }
+   },
+   "moneylineWinner": false,
+   "spreadWinner": false,
+   "current": {
+    "over": {
+     "american": "-118"
+    },
+    "under": {
+     "american": "-102"
+    },
+    "total": {
+     "american": "202"
+    }
+   }
+  },
+  {
+   "provider": {
+    "id": "20",
+    "name": "BOVADA.lv",
+    "priority": 0
+   },
+   "details": "CLE -2.5",
+   "overUnder": 203.0,
+   "spread": 2.5,
+   "initialSpread": 2.5,
+   "initialOverUnder": 201.5,
+   "overOdds": -110.0,
+   "underOdds": -110.0,
+   "awayTeamOdds": {
+    "favorite": true,
+    "underdog": false,
+    "moneyLine": 0,
+    "spreadOdds": -110.0,
+    "current": {
+     "pointSpread": {
+      "american": "-2.5"
+     },
+     "spread": {
+      "american": "-110"
+     }
+    }
+   },
+   "homeTeamOdds": {
+    "favorite": false,
+    "underdog": true,
+    "moneyLine": 0,
+    "spreadOdds": -110.0,
+    "current": {
+     "pointSpread": {
+      "american": "+2.5"
+     },
+     "spread": {
+      "american": "-110"
+     }
+    }
+   },
+   "moneylineWinner": false,
+   "spreadWinner": false,
+   "current": {
+    "over": {
+     "american": "-110"
+    },
+    "under": {
+     "american": "-110"
+    },
+    "total": {
+     "american": "203"
+    }
+   }
+  },
+  {
+   "provider": {
+    "id": "23",
+    "name": "Opening",
+    "priority": 0
+   },
+   "details": "CLE -2.5",
+   "overUnder": 201.5,
+   "spread": 2.5,
+   "initialSpread": 2.5,
+   "initialOverUnder": 201.5,
+   "overOdds": -110.0,
+   "underOdds": -110.0,
+   "awayTeamOdds": {
+    "favorite": true,
+    "underdog": false,
+    "moneyLine": -128,
+    "spreadOdds": -110.0,
+    "current": {
+     "pointSpread": {
+      "american": "-2.5"
+     },
+     "spread": {
+      "american": "-110"
+     },
+     "moneyLine": {
+      "american": "-128"
+     }
+    }
+   },
+   "homeTeamOdds": {
+    "favorite": false,
+    "underdog": true,
+    "moneyLine": 116,
+    "spreadOdds": -110.0,
+    "current": {
+     "pointSpread": {
+      "american": "+2.5"
+     },
+     "spread": {
+      "american": "-110"
+     },
+     "moneyLine": {
+      "american": "+116"
+     }
+    }
+   },
+   "moneylineWinner": false,
+   "spreadWinner": false,
+   "current": {
+    "over": {
+     "american": "-110"
+    },
+    "under": {
+     "american": "-110"
+    },
+    "total": {
+     "american": "201.5"
+    }
+   }
+  },
+  {
+   "provider": {
+    "id": "1004",
+    "name": "consensus",
+    "priority": 0
+   },
+   "details": "CLE -2.5",
+   "spread": 2.5,
+   "initialSpread": 2.5,
+   "initialOverUnder": 201.5,
+   "awayTeamOdds": {
+    "winPercentage": 62.0,
+    "favorite": true,
+    "underdog": false,
+    "current": {
+     "pointSpread": {
+      "american": "-2.5"
+     }
+    }
+   },
+   "homeTeamOdds": {
+    "winPercentage": 38.0,
+    "favorite": false,
+    "underdog": true,
+    "current": {
+     "pointSpread": {
+      "american": "+2.5"
+     }
+    }
+   },
+   "moneylineWinner": false,
+   "spreadWinner": false
+  }
+ ],
+ "new_2023_24": [
+  {
+   "provider": {
+    "id": "50",
+    "name": "BetfairSportsbook",
+    "priority": 0
+   },
+   "details": "NO -9.5",
+   "overUnder": 234.0,
+   "spread": 9.5,
+   "overOdds": -111.0,
+   "underOdds": -111.0,
+   "awayTeamOdds": {
+    "favorite": true,
+    "underdog": false,
+    "moneyLine": -450,
+    "spreadOdds": -111.0,
+    "open": {
+     "favorite": true,
+     "pointSpread": {
+      "american": "-5"
+     },
+     "spread": {
+      "value": 1.9,
+      "decimal": 1.9,
+      "american": "-111"
+     },
+     "moneyLine": {
+      "value": 1.47,
+      "decimal": 1.47,
+      "american": "-213"
+     }
+    },
+    "close": {
+     "pointSpread": {
+      "american": "-9.5"
+     },
+     "spread": {
+      "value": 1.9,
+      "decimal": 1.9,
+      "american": "-111"
+     },
+     "moneyLine": {
+      "value": 1.22,
+      "decimal": 1.22,
+      "american": "-450"
+     }
+    },
+    "current": {
+     "pointSpread": {
+      "american": "-9.5"
+     },
+     "spread": {
+      "value": 1.9,
+      "decimal": 1.9,
+      "american": "-111"
+     },
+     "moneyLine": {
+      "value": 1.22,
+      "decimal": 1.22,
+      "american": "-450"
+     }
+    }
+   },
+   "homeTeamOdds": {
+    "favorite": false,
+    "underdog": true,
+    "moneyLine": 310,
+    "spreadOdds": -111.0,
+    "open": {
+     "favorite": false,
+     "pointSpread": {
+      "value": 5.0,
+      "decimal": 5.0,
+      "american": "+5"
+     },
+     "spread": {
+      "value": 1.9,
+      "decimal": 1.9,
+      "american": "-111"
+     },
+     "moneyLine": {
+      "value": 2.63,
+      "decimal": 2.63,
+      "american": "+163"
+     }
+    },
+    "close": {
+     "pointSpread": {
+      "value": 9.5,
+      "decimal": 9.5,
+      "american": "+9.5"
+     },
+     "spread": {
+      "value": 1.9,
+      "decimal": 1.9,
+      "american": "-111"
+     },
+     "moneyLine": {
+      "value": 4.1,
+      "decimal": 4.1,
+      "american": "+310"
+     }
+    },
+    "current": {
+     "pointSpread": {
+      "value": 9.5,
+      "decimal": 9.5,
+      "american": "+9.5"
+     },
+     "spread": {
+      "value": 1.9,
+      "decimal": 1.9,
+      "american": "-111"
+     },
+     "moneyLine": {
+      "value": 4.1,
+      "decimal": 4.1,
+      "american": "+310"
+     }
+    }
+   },
+   "moneylineWinner": false,
+   "spreadWinner": false,
+   "open": {
+    "over": {
+     "value": 1.9,
+     "decimal": 1.9,
+     "american": "-111"
+    },
+    "under": {
+     "value": 1.9,
+     "decimal": 1.9,
+     "american": "-111"
+    },
+    "total": {
+     "value": 233.0,
+     "decimal": 233.0,
+     "american": "233"
+    }
+   },
+   "close": {
+    "over": {
+     "value": 1.9,
+     "decimal": 1.9,
+     "american": "-111"
+    },
+    "under": {
+     "value": 1.9,
+     "decimal": 1.9,
+     "american": "-111"
+    },
+    "total": {
+     "value": 234.0,
+     "decimal": 234.0,
+     "american": "234"
+    }
+   },
+   "current": {
+    "over": {
+     "value": 1.9,
+     "decimal": 1.9,
+     "american": "-111"
+    },
+    "under": {
+     "value": 1.9,
+     "decimal": 1.9,
+     "american": "-111"
+    },
+    "total": {
+     "value": 234.0,
+     "decimal": 234.0,
+     "american": "234"
+    }
+   }
+  },
+  {
+   "provider": {
+    "id": "52",
+    "name": "Caesars Sportsbook (Colorado)",
+    "priority": 0
+   },
+   "details": "NO -9.5",
+   "overUnder": 233.5,
+   "spread": 9.5,
+   "overOdds": -110.0,
+   "underOdds": -110.0,
+   "awayTeamOdds": {
+    "favorite": true,
+    "underdog": false,
+    "moneyLine": -420,
+    "spreadOdds": -110.0,
+    "open": {
+     "favorite": true,
+     "pointSpread": {
+      "american": "-6.5"
+     },
+     "spread": {
+      "value": 1.91,
+      "decimal": 1.91,
+      "american": "-110"
+     },
+     "moneyLine": {
+      "value": 1.38,
+      "decimal": 1.38,
+      "american": "-260"
+     }
+    },
+    "close": {
+     "pointSpread": {
+      "american": "-9.5"
+     },
+     "spread": {
+      "value": 1.91,
+      "decimal": 1.91,
+      "american": "-110"
+     },
+     "moneyLine": {
+      "value": 1.24,
+      "decimal": 1.24,
+      "american": "-420"
+     }
+    },
+    "current": {
+     "pointSpread": {
+      "american": "-9.5"
+     },
+     "spread": {
+      "value": 1.91,
+      "decimal": 1.91,
+      "american": "-110"
+     },
+     "moneyLine": {
+      "value": 1.24,
+      "decimal": 1.24,
+      "american": "-420"
+     }
+    }
+   },
+   "homeTeamOdds": {
+    "favorite": false,
+    "underdog": true,
+    "moneyLine": 320,
+    "spreadOdds": -110.0,
+    "open": {
+     "favorite": false,
+     "pointSpread": {
+      "value": 6.5,
+      "decimal": 6.5,
+      "american": "+6.5"
+     },
+     "spread": {
+      "value": 1.91,
+      "decimal": 1.91,
+      "american": "-110"
+     },
+     "moneyLine": {
+      "value": 3.1,
+      "decimal": 3.1,
+      "american": "+210"
+     }
+    },
+    "close": {
+     "pointSpread": {
+      "value": 9.5,
+      "decimal": 9.5,
+      "american": "+9.5"
+     },
+     "spread": {
+      "value": 1.91,
+      "decimal": 1.91,
+      "american": "-110"
+     },
+     "moneyLine": {
+      "value": 4.2,
+      "decimal": 4.2,
+      "american": "+320"
+     }
+    },
+    "current": {
+     "pointSpread": {
+      "value": 9.5,
+      "decimal": 9.5,
+      "american": "+9.5"
+     },
+     "spread": {
+      "value": 1.91,
+      "decimal": 1.91,
+      "american": "-110"
+     },
+     "moneyLine": {
+      "value": 4.2,
+      "decimal": 4.2,
+      "american": "+320"
+     }
+    }
+   },
+   "moneylineWinner": false,
+   "spreadWinner": false,
+   "open": {
+    "over": {
+     "value": 1.91,
+     "decimal": 1.91,
+     "american": "-110"
+    },
+    "under": {
+     "value": 1.91,
+     "decimal": 1.91,
+     "american": "-110"
+    },
+    "total": {
+     "value": 232.5,
+     "decimal": 232.5,
+     "american": "232.5"
+    }
+   },
+   "close": {
+    "over": {
+     "value": 1.91,
+     "decimal": 1.91,
+     "american": "-110"
+    },
+    "under": {
+     "value": 1.91,
+     "decimal": 1.91,
+     "american": "-110"
+    },
+    "total": {
+     "value": 233.5,
+     "decimal": 233.5,
+     "american": "233.5"
+    }
+   },
+   "current": {
+    "over": {
+     "value": 1.91,
+     "decimal": 1.91,
+     "american": "-110"
+    },
+    "under": {
+     "value": 1.91,
+     "decimal": 1.91,
+     "american": "-110"
+    },
+    "total": {
+     "value": 233.5,
+     "decimal": 233.5,
+     "american": "233.5"
+    }
+   }
+  }
+ ],
+ "live_2020_21": [
+  {
+   "provider": {
+    "id": "38",
+    "name": "Caesars",
+    "priority": 0
+   },
+   "details": "DAL -3.5",
+   "overUnder": 220.5,
+   "spread": 3.5,
+   "overOdds": -110.0,
+   "underOdds": -110.0,
+   "awayTeamOdds": {
+    "favorite": true,
+    "underdog": false,
+    "moneyLine": -150,
+    "spreadOdds": -110.0,
+    "current": {
+     "pointSpread": {
+      "american": "-3.5"
+     },
+     "spread": {
+      "american": "-110"
+     },
+     "moneyLine": {
+      "american": "-150"
+     }
+    }
+   },
+   "homeTeamOdds": {
+    "favorite": false,
+    "underdog": true,
+    "moneyLine": 130,
+    "spreadOdds": -110.0,
+    "current": {
+     "pointSpread": {
+      "american": "+3.5"
+     },
+     "spread": {
+      "american": "-110"
+     },
+     "moneyLine": {
+      "american": "+130"
+     }
+    }
+   },
+   "moneylineWinner": false,
+   "spreadWinner": false,
+   "current": {
+    "over": {
+     "american": "-110"
+    },
+    "under": {
+     "american": "-110"
+    },
+    "total": {
+     "american": "220.5"
+    }
+   }
+  },
+  {
+   "provider": {
+    "id": "44",
+    "name": "Caesars (New Jersey) - Live Odds",
+    "priority": 0
+   },
+   "details": "DAL -12.5",
+   "spread": 12.5,
+   "awayTeamOdds": {
+    "favorite": true,
+    "underdog": false,
+    "moneyLine": -3200,
+    "spreadOdds": -115.0,
+    "current": {
+     "pointSpread": {
+      "american": "-12.5"
+     },
+     "spread": {
+      "american": "-115"
+     },
+     "moneyLine": {
+      "american": "-3200"
+     }
+    }
+   },
+   "homeTeamOdds": {
+    "favorite": false,
+    "underdog": true,
+    "moneyLine": 1300,
+    "spreadOdds": -115.0,
+    "current": {
+     "pointSpread": {
+      "american": "+12.5"
+     },
+     "spread": {
+      "american": "-115"
+     },
+     "moneyLine": {
+      "american": "+1300"
+     }
+    }
+   },
+   "moneylineWinner": false,
+   "spreadWinner": false
+  }
+ ],
+ "single_2025_26": [
+  {
+   "provider": {
+    "id": "100",
+    "name": "Draft Kings",
+    "priority": 1
+   },
+   "details": "BOS -1.5",
+   "overUnder": 231.5,
+   "spread": -1.5,
+   "overOdds": -112.0,
+   "underOdds": -108.0,
+   "awayTeamOdds": {
+    "favorite": false,
+    "underdog": true,
+    "moneyLine": -102,
+    "spreadOdds": -112.0,
+    "open": {
+     "favorite": false,
+     "pointSpread": {
+      "american": "+1.5"
+     },
+     "spread": {
+      "value": 1.89,
+      "decimal": 1.89,
+      "american": "-112"
+     },
+     "moneyLine": {
+      "value": 1.98,
+      "decimal": 1.98,
+      "american": "-102"
+     }
+    },
+    "close": {
+     "pointSpread": {
+      "american": "+1.5"
+     },
+     "spread": {
+      "value": 1.89,
+      "decimal": 1.89,
+      "american": "-112"
+     },
+     "moneyLine": {
+      "value": 1.98,
+      "decimal": 1.98,
+      "american": "-102"
+     }
+    },
+    "current": {
+     "pointSpread": {
+      "american": "+1.5"
+     },
+     "spread": {
+      "value": 1.89,
+      "decimal": 1.89,
+      "american": "-112"
+     },
+     "moneyLine": {
+      "value": 1.98,
+      "decimal": 1.98,
+      "american": "-102"
+     }
+    }
+   },
+   "homeTeamOdds": {
+    "favorite": true,
+    "underdog": false,
+    "moneyLine": -118,
+    "spreadOdds": -108.0,
+    "open": {
+     "favorite": true,
+     "pointSpread": {
+      "american": "-1.5"
+     },
+     "spread": {
+      "value": 1.92,
+      "decimal": 1.92,
+      "american": "-108"
+     },
+     "moneyLine": {
+      "value": 1.84,
+      "decimal": 1.84,
+      "american": "-118"
+     }
+    },
+    "close": {
+     "pointSpread": {
+      "american": "-1.5"
+     },
+     "spread": {
+      "value": 1.92,
+      "decimal": 1.92,
+      "american": "-108"
+     },
+     "moneyLine": {
+      "value": 1.84,
+      "decimal": 1.84,
+      "american": "-118"
+     }
+    },
+    "current": {
+     "pointSpread": {
+      "american": "-1.5"
+     },
+     "spread": {
+      "value": 1.92,
+      "decimal": 1.92,
+      "american": "-108"
+     },
+     "moneyLine": {
+      "value": 1.84,
+      "decimal": 1.84,
+      "american": "-118"
+     }
+    }
+   },
+   "links": [
+    {
+     "language": "en-US",
+     "rel": [
+      "home",
+      "desktop",
+      "bets",
+      "draft-kings"
+     ],
+     "href": "https://sportsbook.draftkings.com/gateway?s=__s__&wpcid=__wpcid__&wpsrc=413&wpcn=ESPN&wpscn=Widget&wpcrn=BetSlipDeepLink&wpscid=__wpscid__&wpcrid=xx&preurl=https%3A%2F%2Fsportsbook.draftkings.com%2Fevent%2F33300104%3Foutcomes%3D0ML82601548_1",
+     "text": "Home Bet",
+     "shortText": "Home Bet",
+     "isExternal": true,
+     "isPremium": false
+    },
+    {
+     "language": "en-US",
+     "rel": [
+      "away",
+      "desktop",
+      "bets",
+      "draft-kings"
+     ],
+     "href": "https://sportsbook.draftkings.com/gateway?s=__s__&wpcid=__wpcid__&wpsrc=413&wpcn=ESPN&wpscn=Widget&wpcrn=BetSlipDeepLink&wpscid=__wpscid__&wpcrid=xx&preurl=https%3A%2F%2Fsportsbook.draftkings.com%2Fevent%2F33300104%3Foutcomes%3D0ML82601548_3",
+     "text": "Away Bet",
+     "shortText": "Away Bet",
+     "isExternal": true,
+     "isPremium": false
+    },
+    {
+     "language": "en-US",
+     "rel": [
+      "homeSpread",
+      "desktop",
+      "bets"
+     ],
+     "href": "https://sportsbook.draftkings.com/gateway?s=__s__&wpcid=__wpcid__&wpsrc=413&wpcn=ESPN&wpscn=Widget&wpcrn=BetSlipDeepLink&wpscid=__wpscid__&wpcrid=xx&preurl=https%3A%2F%2Fsportsbook.draftkings.com%2Fevent%2F33300104%3Foutcomes%3D0HC82601548N150_1",
+     "text": "Home Point Spread",
+     "shortText": "Home Point Spread",
+     "isExternal": true,
+     "isPremium": false
+    },
+    {
+     "language": "en-US",
+     "rel": [
+      "awaySpread",
+      "desktop",
+      "bets"
+     ],
+     "href": "https://sportsbook.draftkings.com/gateway?s=__s__&wpcid=__wpcid__&wpsrc=413&wpcn=ESPN&wpscn=Widget&wpcrn=BetSlipDeepLink&wpscid=__wpscid__&wpcrid=xx&preurl=https%3A%2F%2Fsportsbook.draftkings.com%2Fevent%2F33300104%3Foutcomes%3D0HC82601548P150_3",
+     "text": "Away Point Spread",
+     "shortText": "Away Point Spread",
+     "isExternal": true,
+     "isPremium": false
+    },
+    {
+     "language": "en-US",
+     "rel": [
+      "over",
+      "desktop",
+      "bets"
+     ],
+     "href": "https://sportsbook.draftkings.com/gateway?s=__s__&wpcid=__wpcid__&wpsrc=413&wpcn=ESPN&wpscn=Widget&wpcrn=BetSlipDeepLink&wpscid=__wpscid__&wpcrid=xx&preurl=https%3A%2F%2Fsportsbook.draftkings.com%2Fevent%2F33300104%3Foutcomes%3D0OU82601548O23150_1",
+     "text": "Over Odds",
+     "shortText": "Over Odds",
+     "isExternal": true,
+     "isPremium": false
+    },
+    {
+     "language": "en-US",
+     "rel": [
+      "under",
+      "desktop",
+      "bets"
+     ],
+     "href": "https://sportsbook.draftkings.com/gateway?s=__s__&wpcid=__wpcid__&wpsrc=413&wpcn=ESPN&wpscn=Widget&wpcrn=BetSlipDeepLink&wpscid=__wpscid__&wpcrid=xx&preurl=https%3A%2F%2Fsportsbook.draftkings.com%2Fevent%2F33300104%3Foutcomes%3D0OU82601548U23150_3",
+     "text": "Under Odds",
+     "shortText": "Under Odds",
+     "isExternal": true,
+     "isPremium": false
+    },
+    {
+     "language": "en-US",
+     "rel": [
+      "game",
+      "desktop",
+      "bets"
+     ],
+     "href": "https://sportsbook.draftkings.com/gateway?s=__s__&wpcid=__wpcid__&wpsrc=413&wpcn=ESPN&wpscn=Widget&wpcrn=BetSlipDeepLink&wpscid=__wpscid__&wpcrid=xx&preurl=https%3A%2F%2Fsportsbook.draftkings.com%2Fevent%2F33300104",
+     "text": "Game",
+     "shortText": "Game",
+     "isExternal": true,
+     "isPremium": false
+    }
+   ],
+   "moneylineWinner": false,
+   "spreadWinner": false,
+   "open": {
+    "over": {
+     "value": 1.9,
+     "decimal": 1.9,
+     "american": "-110"
+    },
+    "under": {
+     "value": 1.9,
+     "decimal": 1.9,
+     "american": "-110"
+    },
+    "total": {
+     "american": "230.5"
+    }
+   },
+   "close": {
+    "over": {
+     "value": 1.89,
+     "decimal": 1.89,
+     "american": "-112"
+    },
+    "under": {
+     "value": 1.92,
+     "decimal": 1.92,
+     "american": "-108"
+    },
+    "total": {
+     "american": "231.5"
+    }
+   },
+   "current": {
+    "over": {
+     "value": 1.89,
+     "decimal": 1.89,
+     "american": "-112"
+    },
+    "under": {
+     "value": 1.92,
+     "decimal": 1.92,
+     "american": "-108"
+    },
+    "total": {
+     "american": "231.5"
+    }
+   }
+  }
+ ]
+}
