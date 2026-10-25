@@ -39,6 +39,7 @@ REGISTRY: List[tuple] = [
     ("C3", checks_games.check_c3_officials_at_least_three),
     ("D1", checks_shots.check_d1_shots_present), ("D2", checks_shots.check_d2_shots_class_share),
     ("D3", checks_shots.check_d3_shots_3pa_match), ("D4", checks_shots.check_d4_shots_unknown_share),
+    ("D5", checks_shots.check_d5_shots_impossible_combo),
     ("E1", checks_lines.check_e1_line_coverage), ("E2", checks_lines.check_e2_spread_range),
     ("E3", checks_lines.check_e3_spread_health), ("E4", checks_lines.check_e4_total_range),
     ("E5", checks_lines.check_e5_total_health), ("E6", checks_lines.check_e6_price_point_provenance),

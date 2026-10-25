@@ -75,7 +75,19 @@ SELECT g.season, g.season_type, coalesce(sum(b.fga), 0) AS n_total,
  GROUP BY g.season, g.season_type ORDER BY g.season, g.season_type
 """
 
+_D5 = """/* qc:D5 */
+SELECT g.season, g.season_type, coalesce(sum(b.fga), 0) AS n_total,
+       coalesce(sum(b.fga) FILTER (
+         WHERE (b.pts_value = 2 AND b.dist_bucket = '24+')
+            OR (b.pts_value = 3 AND b.dist_bucket IN ('0-4', '4-8', '8-14'))), 0) AS n_bad
+  FROM public.team_shot_buckets b
+  JOIN public.games_v2 g ON g.game_id = b.game_id
+ WHERE g.status = 'final'{extra}
+ GROUP BY g.season, g.season_type ORDER BY g.season, g.season_type
+"""
+
 check_d1_shots_present = grouped_check("D1", "error", _D1)
+check_d5_shots_impossible_combo = grouped_check("D5", "warn", _D5)
 check_d3_shots_3pa_match = grouped_check("D3", "info", _D3)
 check_d4_shots_unknown_share = grouped_check("D4", "info", _D4)
 

@@ -75,5 +75,17 @@ def test_empty_data_gives_zero_findings():
         assert fn(run, ALL)[0].n_total == 0
 
 
+def test_d5_impossible_bucket_combinations():
+    run, db = fake_run({"qc:D5": frame([("2021-22", "regular", 180000, 700)], G)})
+    f = cs.check_d5_shots_impossible_combo(run, ALL)[0]
+    assert f.severity == "warn" and f.n_bad == 700 and f.n_total == 180000
+    sql = db.calls[0][0]
+    # a two beyond 24 ft, and a three inside 14 ft (even the corner three is 22 ft out)
+    assert "pts_value = 2 AND b.dist_bucket = '24+'" in sql
+    assert "pts_value = 3 AND b.dist_bucket IN ('0-4', '4-8', '8-14')" in sql
+    run, _ = fake_run({"qc:D5": frame([], G)})
+    assert cs.check_d5_shots_impossible_combo(run, ALL)[0].n_total == 0
+
+
 def test_all_sql_is_select_only():
     assert_select_only(Path(cs.__file__))
