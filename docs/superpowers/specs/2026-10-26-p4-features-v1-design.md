@@ -58,7 +58,7 @@
 | `altitude_edge` | `max(0, 本場場地海拔 − 客隊本場前主場海拔)/1000`；主要是 DEN（約 1,600 m）、UTA（約 1,300 m） | `TEAM_VENUE`；由既有 `ENABLE_ALTITUDE_FLAG` 控制 | 高海拔主場 |
 
 說明：
-- 中立場地比賽（巴黎、墨西哥城、盃賽決賽等）的場地不在 `TEAM_VENUE`。狀態不更新「最後場地」、旅行距離用最後已知的場地算，且以 `neutral_game` 旗標讓模型自己吸收。這種比賽一季不到十場（**估計**，實作時用 SQL 數 `neutral_site`）。
+- 中立場地比賽（巴黎、墨西哥城、盃賽決賽等）的場地不在 `TEAM_VENUE`。狀態不更新「最後場地」、旅行距離用最後已知的場地算，且以 `neutral_game` 旗標讓模型自己吸收。例行賽的 `neutral_site` 場數（主線 2026-10-26 以 MCP 量測，2015-16 到 2025-26）：2／3／3／3／3／0／0／1／3／6／6，每季不到十場；季前賽每季 6–26 場（2015-16 26、2016-17 17），所以 P4.0 排除季前賽後這個問題就消失。
 - `TEAM_VENUE` 數值**未驗證**：實作時逐隊核對，並加單元測試（距離對稱、LAL–BOS 約 4,180 km 誤差 2%、同城為 0）。座標與海拔屬公開常識但我沒有查證。
 - 時區不用「球隊所在地」硬編，要用日期算（夏令時間），沿用專案既有的 ET 轉換方式；實作時先看 `jobs/` 現在用什麼（zoneinfo 或手算）。
 
@@ -113,7 +113,7 @@
 
 **做法**：
 1. `emit(home, away, date, unavailable=None)`：`unavailable` 是呼叫者提供的 `{team_abbr: {player_id: weight}}`（weight=缺陣機率），**函式內部不得從 bundle 讀本場名單**。
-2. 歷史訓練：`unavailable` 取自 `player_game_status`，**只取 `did_not_play=True` 且原因屬傷病或休息類**（原因分布需先用 SQL 量，見 §9），權重 1；教練決定（Coach's Decision）不算，因為賽前不可知。標示為「oracle-OUT」。
+2. 歷史訓練：`unavailable` 取自 `player_game_status`，只取 `did_not_play=True`，權重 1，標示為「oracle-OUT」。原因分布（主線量測）：COACH'S DECISION 60,118（壓倒性多數）、REST 612、ILLNESS 405、NOT WITH TEAM 376、SUSPENDED BY LEAGUE 298，其餘是自由文字的傷病描述（RIGHT ANKLE SPRAIN 287、SPRAINED LEFT ANKLE 282…，同一種傷有多種寫法）。所以分類**不用固定清單，用排除式規則**：原因不是 COACH'S DECISION／NOT WITH TEAM／DID NOT DRESS／SUSPENDED／PERSONAL 的，一律算傷病或休息。COACH'S DECISION 不算缺陣（含傷癒復出的輪替管理，賽前不可知）。
 3. serving：`unavailable` 取自 `injury_reports`（`reported_at` 在預測時間之前的最新一筆）；`Out`、`Doubtful` → 1 與 0.75；`Questionable`、`Day-To-Day` → 0.5（初始值，待 2026-27 累積後，用 `injury_reports` 對 `player_game_status` 實際出賽率校準；**這些權重目前沒有資料依據**）。
 4. 特徵：`talent_loss_home/away`（缺陣球員在 `_full_strength` 中貢獻的份額總和）、`n_rotation_out_home/away`（輪替前 8 人中缺陣數）、`avail_strength_diff`。
 5. 不一致的量測：等 2026-27 累積 ≥ 300 場同時有 `injury_reports` 與 `player_game_status` 的比賽後，重播這些場次，比較「用當時報告」與「用實際缺陣」的特徵值差異與 MAE 差異（oracle gap）。**在 oracle gap 量出來之前，這組只作研究、不進正式模型。**
@@ -136,6 +136,8 @@
 3. **訓練起始季**：2015-16 到 2017-18 各約 12% 的隊場（322／336／344 對全賽別隊場 2,832／2,812／2,760，即 11.4／11.9／12.5%）是佔位 box，每隊 10 場窗口平均約有 1 場是空的，但各隊集中程度不同，要看分布。要比較「全 12 季」與「2018-19 起」。
 4. **泡泡與觀眾限制**：用 §4.1 的旗標，不剔除。
 5. **盃賽決賽**（3 場）：標成 `regular`，場地中立。用 `neutral_game` 吸收。
+
+**訓練起始季實驗（事前登記）**：比較組固定三個：(a) 全 12 季（2015-16 起）、(b) 2016-17 起、(c) 2018-19 起。三組都在**同一個評分段**評分：2019-20 起到 2024-25 的 walk-forward 預測（各組都至少有 800 場訓練列；較晚起始的組評分段不縮短）；指標與 §6.2 相同（配對 ΔMAE 對 (a)）。不看確認段，不事後新增比較組。
 
 實作原則：這些變更全部放在 config 旗標後面（例如 `EXCLUDE_PRESEASON`、`TRAIN_FROM_SEASON`，預設維持現狀），讓 `fs1` 的輸出**逐位元可重現**；是否採用，由 §6 的實驗結果決定後，再刻意翻旗標並說明。
 
@@ -171,7 +173,9 @@
 4. 沒達標就整組丟掉，不微調到達標（避免 p-hacking）；組內只調事前登記的超參數（收縮 K 的網格、視窗長度），且只在調參段。
 5. 確認段若方向相反（變差），不採用該組，並寫進結論。
 
-樣本數的概念：約 1.4 萬場時，配對 `|err|` 差的標準誤大約 0.01 分（**估計**，要實測 `|err|` 差的標準差），所以 0.02 分的改善在統計上可以偵測；但「統計上顯著」不等於「對下注有用」，後者只能由 P5 的 CLV／ROI 回答。
+樣本數檢查**在跑之前登記**：調參段約 1.2 萬場配對；先以基準預測算出 `|err|` 配對差的標準差，求 99% 區間半寬。若半寬大於 0.02（例如 ±0.03），0.02 的改善偵測不到，此時結論寫「無法偵測」而不是「無效」，且該組不採用也不宣告無用。「統計上顯著」不等於「對下注有用」，後者只能由 P5 的 CLV／ROI 回答。
+
+HGB 確認不是必要條件：ridge 達標、hgb 不變差即可保留。
 
 ### 6.3 CLAUDE.md 要求的改前改後
 
@@ -194,7 +198,7 @@
 | P4.0b | `feature_ablation` 骨架（配對、bootstrap、`info_over_market`），先只比較 `fs1` 與自己 | 自己對自己的差為 0；已知人工差異可被偵測 |
 | P4.1 | `TEAM_VENUE`、情境旗標、Elo 中立修正、旅行／時區／密度／海拔 | 距離與時區單元測試；標籤獨立性；golden |
 | P4.1b | 戰績狀態、戰意 | 手算小聯盟的資料；2019-20 停用 |
-| P4.2–P4.4 | 四因素拆分、出手桶、球員進階 | golden；佔位／`major` 場次不更新狀態 |
+| P4.2–P4.4 | 四因素拆分、出手桶、球員進階 | golden；佔位／`major` 場次不更新狀態；**拆分前提測試：`off_diff + def_diff` 與 fs1 的 `efg10_diff`／`tov10_diff`／`orb10_diff`／`ftr10_diff` 在浮點誤差內相等** |
 | P4.5 | `emit(..., unavailable=)`、缺陣特徵 | 遮罩測試；oracle gap 量測腳本（讀 `injury_reports`） |
 
 既有的 `test_features_point_in_time.py` 用 `make_bundles()` 假資料，欄位是寫死的：新欄位（`neutral_site`、日期、出手桶、`unavailable`）要補進假資料，golden 才會涵蓋新特徵。
@@ -221,7 +225,7 @@ SELECT dnp_reason, count(*) FROM public.player_game_status
 --    python -c "from jobs.quality.game_quality import game_quality ..."  （實作時補成輔助腳本）
 ```
 
-C. **需要你（主線）決定／回報**：(1) §6.2 保留規則的數字是否合理；(2) `evaluate` 在 12 季資料上的 gates 是否仍通過（若已不通過，現在線上模型的啟用狀態要不要先處理）；(3) 預測時間是否有可能改到裁判公布之後（若可行，§4.7 的裁判特徵值得做）。
+C. **需要你（主線）決定／回報**：(1) §6.2 保留規則的數字是否合理；(2) `evaluate` 在 12 季資料上的 gates 是否仍通過（若已不通過，現在線上模型的啟用狀態要不要先處理）；(3) 預測時間：**決定不改**（主線 2026-10-26）。使用者台北 21:00 看網站＝美東約 09:00，把預測挪到裁判公布後（約 ET 09:00）會讓預測剛好產生或更晚，風險高；收益只在總分與犯規，而總分方向模型本來就沒有訊號。裁判特徵維持不做。
 
 ## 10. 風險與未驗證
 
