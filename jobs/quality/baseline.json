@@ -3,463 +3,463 @@
  "entries": {
   "A4|2019-20/regular": {
    "n_bad": 1,
-   "why": "measured 2026-10-24"
+   "why": "measured 2026-10-24: ESPN lists GSW twice on 2020-03-01 (ESPN data error)"
   },
   "A7|2015-16/preseason": {
    "n_bad": 3,
-   "why": "measured 2026-10-24"
+   "why": "measured 2026-10-24: tipoff_utc is NULL, before 10:00 ET, or its ET date differs from game_date_et; mostly preseason"
   },
   "A7|2016-17/preseason": {
    "n_bad": 2,
-   "why": "measured 2026-10-24"
+   "why": "measured 2026-10-24: tipoff_utc is NULL, before 10:00 ET, or its ET date differs from game_date_et; mostly preseason"
   },
   "A7|2017-18/preseason": {
    "n_bad": 3,
-   "why": "measured 2026-10-24"
+   "why": "measured 2026-10-24: tipoff_utc is NULL, before 10:00 ET, or its ET date differs from game_date_et; mostly preseason"
   },
   "A7|2018-19/preseason": {
    "n_bad": 2,
-   "why": "measured 2026-10-24"
+   "why": "measured 2026-10-24: tipoff_utc is NULL, before 10:00 ET, or its ET date differs from game_date_et; mostly preseason"
   },
   "A7|2019-20/preseason": {
    "n_bad": 7,
-   "why": "measured 2026-10-24"
+   "why": "measured 2026-10-24: tipoff_utc is NULL, before 10:00 ET, or its ET date differs from game_date_et; mostly preseason"
   },
   "A7|2019-20/regular": {
    "n_bad": 4,
-   "why": "measured 2026-10-24"
+   "why": "measured 2026-10-24: tipoff_utc is NULL, before 10:00 ET, or its ET date differs from game_date_et; mostly preseason"
   },
   "A7|2022-23/preseason": {
    "n_bad": 1,
-   "why": "measured 2026-10-24"
+   "why": "measured 2026-10-24: tipoff_utc is NULL, before 10:00 ET, or its ET date differs from game_date_et; mostly preseason"
   },
   "A7|2025-26/preseason": {
    "n_bad": 2,
-   "why": "measured 2026-10-24"
+   "why": "measured 2026-10-24: tipoff_utc is NULL, before 10:00 ET, or its ET date differs from game_date_et; mostly preseason"
   },
   "A7|2026-27/preseason": {
    "n_bad": 2,
-   "why": "measured 2026-10-24"
+   "why": "measured 2026-10-24: tipoff_utc is NULL, before 10:00 ET, or its ET date differs from game_date_et; mostly preseason"
   },
   "B1|2015-16/regular": {
    "n_bad": 322,
-   "why": "measured 2026-10-24"
+   "why": "measured 2026-10-24: placeholder team box: ESPN returned the game with team stats NULL/0 (old seasons); 2024-25 and 2021-22 preseason are exhibition games"
   },
   "B1|2016-17/playoffs": {
    "n_bad": 10,
-   "why": "measured 2026-10-24"
+   "why": "measured 2026-10-24: placeholder team box: ESPN returned the game with team stats NULL/0 (old seasons); 2024-25 and 2021-22 preseason are exhibition games"
   },
   "B1|2016-17/regular": {
    "n_bad": 326,
-   "why": "measured 2026-10-24"
+   "why": "measured 2026-10-24: placeholder team box: ESPN returned the game with team stats NULL/0 (old seasons); 2024-25 and 2021-22 preseason are exhibition games"
   },
   "B1|2017-18/playoffs": {
    "n_bad": 18,
-   "why": "measured 2026-10-24"
+   "why": "measured 2026-10-24: placeholder team box: ESPN returned the game with team stats NULL/0 (old seasons); 2024-25 and 2021-22 preseason are exhibition games"
   },
   "B1|2017-18/regular": {
    "n_bad": 326,
-   "why": "measured 2026-10-24"
+   "why": "measured 2026-10-24: placeholder team box: ESPN returned the game with team stats NULL/0 (old seasons); 2024-25 and 2021-22 preseason are exhibition games"
   },
   "B1|2020-21/playin": {
    "n_bad": 12,
-   "why": "measured 2026-10-24"
+   "why": "measured 2026-10-24: placeholder team box: ESPN returned the game with team stats NULL/0 (old seasons); 2024-25 and 2021-22 preseason are exhibition games"
   },
   "B1|2021-22/preseason": {
    "n_bad": 14,
-   "why": "measured 2026-10-24"
+   "why": "measured 2026-10-24: placeholder team box: ESPN returned the game with team stats NULL/0 (old seasons); 2024-25 and 2021-22 preseason are exhibition games"
   },
   "B1|2024-25/preseason": {
    "n_bad": 10,
-   "why": "measured 2026-10-24"
+   "why": "measured 2026-10-24: placeholder team box: ESPN returned the game with team stats NULL/0 (old seasons); 2024-25 and 2021-22 preseason are exhibition games"
   },
   "B2|2015-16/regular": {
    "n_bad": 322,
-   "why": "measured 2026-10-24"
+   "why": "measured 2026-10-24: placeholder player box: ESPN returned the game with player stats NULL/0 (old seasons; 2021-22 preseason)"
   },
   "B2|2016-17/playoffs": {
    "n_bad": 10,
-   "why": "measured 2026-10-24"
+   "why": "measured 2026-10-24: placeholder player box: ESPN returned the game with player stats NULL/0 (old seasons; 2021-22 preseason)"
   },
   "B2|2016-17/regular": {
    "n_bad": 326,
-   "why": "measured 2026-10-24"
+   "why": "measured 2026-10-24: placeholder player box: ESPN returned the game with player stats NULL/0 (old seasons; 2021-22 preseason)"
   },
   "B2|2017-18/playoffs": {
    "n_bad": 18,
-   "why": "measured 2026-10-24"
+   "why": "measured 2026-10-24: placeholder player box: ESPN returned the game with player stats NULL/0 (old seasons; 2021-22 preseason)"
   },
   "B2|2017-18/regular": {
    "n_bad": 326,
-   "why": "measured 2026-10-24"
+   "why": "measured 2026-10-24: placeholder player box: ESPN returned the game with player stats NULL/0 (old seasons; 2021-22 preseason)"
   },
   "B2|2020-21/playin": {
    "n_bad": 12,
-   "why": "measured 2026-10-24"
+   "why": "measured 2026-10-24: placeholder player box: ESPN returned the game with player stats NULL/0 (old seasons; 2021-22 preseason)"
   },
   "B2|2021-22/preseason": {
    "n_bad": 14,
-   "why": "measured 2026-10-24"
+   "why": "measured 2026-10-24: placeholder player box: ESPN returned the game with player stats NULL/0 (old seasons; 2021-22 preseason)"
   },
   "B3|2015-16/regular": {
    "n_bad": 1,
-   "why": "measured 2026-10-24"
+   "why": "measured 2026-10-24: player points do not sum to team points; cause not investigated"
   },
   "B3|2018-19/regular": {
    "n_bad": 23,
-   "why": "measured 2026-10-24"
+   "why": "measured 2026-10-24: player points do not sum to team points; cause not investigated"
   },
   "B3|2019-20/regular": {
    "n_bad": 2,
-   "why": "measured 2026-10-24"
+   "why": "measured 2026-10-24: player points do not sum to team points; cause not investigated"
   },
   "B3|2020-21/regular": {
    "n_bad": 1,
-   "why": "measured 2026-10-24"
+   "why": "measured 2026-10-24: player points do not sum to team points; cause not investigated"
   },
   "B3|2025-26/preseason": {
    "n_bad": 2,
-   "why": "measured 2026-10-24"
+   "why": "measured 2026-10-24: player points do not sum to team points; cause not investigated"
   },
   "B3|2025-26/regular": {
    "n_bad": 12,
-   "why": "measured 2026-10-24"
+   "why": "measured 2026-10-24: player points do not sum to team points; cause not investigated"
   },
   "B4|2015-16/preseason": {
    "n_bad": 2,
-   "why": "measured 2026-10-24"
+   "why": "measured 2026-10-24: player minutes do not sum to 240+25k within 3; cause not investigated"
   },
   "B4|2016-17/regular": {
    "n_bad": 1,
-   "why": "measured 2026-10-24"
+   "why": "measured 2026-10-24: player minutes do not sum to 240+25k within 3; cause not investigated"
   },
   "B4|2017-18/preseason": {
    "n_bad": 1,
-   "why": "measured 2026-10-24"
+   "why": "measured 2026-10-24: player minutes do not sum to 240+25k within 3; cause not investigated"
   },
   "B4|2018-19/preseason": {
    "n_bad": 1,
-   "why": "measured 2026-10-24"
+   "why": "measured 2026-10-24: player minutes do not sum to 240+25k within 3; cause not investigated"
   },
   "B4|2018-19/regular": {
    "n_bad": 20,
-   "why": "measured 2026-10-24"
+   "why": "measured 2026-10-24: player minutes do not sum to 240+25k within 3; cause not investigated"
   },
   "B4|2019-20/regular": {
    "n_bad": 2,
-   "why": "measured 2026-10-24"
+   "why": "measured 2026-10-24: player minutes do not sum to 240+25k within 3; cause not investigated"
   },
   "B4|2020-21/playoffs": {
    "n_bad": 1,
-   "why": "measured 2026-10-24"
+   "why": "measured 2026-10-24: player minutes do not sum to 240+25k within 3; cause not investigated"
   },
   "B4|2020-21/regular": {
    "n_bad": 2,
-   "why": "measured 2026-10-24"
+   "why": "measured 2026-10-24: player minutes do not sum to 240+25k within 3; cause not investigated"
   },
   "B4|2021-22/playoffs": {
    "n_bad": 1,
-   "why": "measured 2026-10-24"
+   "why": "measured 2026-10-24: player minutes do not sum to 240+25k within 3; cause not investigated"
   },
   "B4|2021-22/preseason": {
    "n_bad": 2,
-   "why": "measured 2026-10-24"
+   "why": "measured 2026-10-24: player minutes do not sum to 240+25k within 3; cause not investigated"
   },
   "B4|2021-22/regular": {
    "n_bad": 1,
-   "why": "measured 2026-10-24"
+   "why": "measured 2026-10-24: player minutes do not sum to 240+25k within 3; cause not investigated"
   },
   "B4|2022-23/preseason": {
    "n_bad": 1,
-   "why": "measured 2026-10-24"
+   "why": "measured 2026-10-24: player minutes do not sum to 240+25k within 3; cause not investigated"
   },
   "B4|2023-24/preseason": {
    "n_bad": 2,
-   "why": "measured 2026-10-24"
+   "why": "measured 2026-10-24: player minutes do not sum to 240+25k within 3; cause not investigated"
   },
   "B4|2023-24/regular": {
    "n_bad": 3,
-   "why": "measured 2026-10-24"
+   "why": "measured 2026-10-24: player minutes do not sum to 240+25k within 3; cause not investigated"
   },
   "B4|2025-26/preseason": {
    "n_bad": 3,
-   "why": "measured 2026-10-24"
+   "why": "measured 2026-10-24: player minutes do not sum to 240+25k within 3; cause not investigated"
   },
   "B4|2025-26/regular": {
    "n_bad": 21,
-   "why": "measured 2026-10-24"
+   "why": "measured 2026-10-24: player minutes do not sum to 240+25k within 3; cause not investigated"
   },
   "B5|2018-19/playoffs": {
    "n_bad": 1,
-   "why": "measured 2026-10-24"
+   "why": "measured 2026-10-24: one player row with min_played > 60; not yet looked at"
   },
   "C1|2025-26/playoffs": {
    "n_bad": 8,
-   "why": "measured 2026-10-24"
+   "why": "measured 2026-10-24: 8 games of the 2025-26 playoffs have no player_game_status rows (ingest gap, not yet repaired; P3c)"
   },
   "C2|2015-16/regular": {
    "n_bad": 1,
-   "why": "measured 2026-10-24"
+   "why": "measured 2026-10-24: starters are not exactly 10 per game; 2025-26 playoff row is the same 8 games as C1"
   },
   "C2|2017-18/regular": {
    "n_bad": 1,
-   "why": "measured 2026-10-24"
+   "why": "measured 2026-10-24: starters are not exactly 10 per game; 2025-26 playoff row is the same 8 games as C1"
   },
   "C2|2018-19/regular": {
    "n_bad": 19,
-   "why": "measured 2026-10-24"
+   "why": "measured 2026-10-24: starters are not exactly 10 per game; 2025-26 playoff row is the same 8 games as C1"
   },
   "C2|2021-22/preseason": {
    "n_bad": 1,
-   "why": "measured 2026-10-24"
+   "why": "measured 2026-10-24: starters are not exactly 10 per game; 2025-26 playoff row is the same 8 games as C1"
   },
   "C2|2023-24/preseason": {
    "n_bad": 1,
-   "why": "measured 2026-10-24"
+   "why": "measured 2026-10-24: starters are not exactly 10 per game; 2025-26 playoff row is the same 8 games as C1"
   },
   "D1|2017-18/preseason": {
    "n_bad": 2,
-   "why": "measured 2026-10-24"
+   "why": "measured 2026-10-24: no shot-bucket rows; 2025-26 playoffs are the same 8 games as C1 (preseason: ESPN has no shot data)"
   },
   "D1|2018-19/preseason": {
    "n_bad": 2,
-   "why": "measured 2026-10-24"
+   "why": "measured 2026-10-24: no shot-bucket rows; 2025-26 playoffs are the same 8 games as C1 (preseason: ESPN has no shot data)"
   },
   "D1|2022-23/preseason": {
    "n_bad": 2,
-   "why": "measured 2026-10-24"
+   "why": "measured 2026-10-24: no shot-bucket rows; 2025-26 playoffs are the same 8 games as C1 (preseason: ESPN has no shot data)"
   },
   "D1|2025-26/playoffs": {
    "n_bad": 8,
-   "why": "measured 2026-10-24"
+   "why": "measured 2026-10-24: no shot-bucket rows; 2025-26 playoffs are the same 8 games as C1 (preseason: ESPN has no shot data)"
   },
   "D2|2015-16/preseason": {
    "exact_pct": 48.0,
    "n_bad": 21,
-   "why": "measured 2026-10-24"
+   "why": "measured 2026-10-24: shot buckets disagree with box FGA; 2015-16 ESPN shot data is only ~52% exact (known source limit), 2025-26 plays exceed box by 1-2 missed attempts (cause is a guess)"
   },
   "D2|2015-16/regular": {
    "exact_pct": 52.15,
    "n_bad": 541,
-   "why": "measured 2026-10-24"
+   "why": "measured 2026-10-24: shot buckets disagree with box FGA; 2015-16 ESPN shot data is only ~52% exact (known source limit), 2025-26 plays exceed box by 1-2 missed attempts (cause is a guess)"
   },
   "D2|2016-17/regular": {
    "exact_pct": 93.11,
    "n_bad": 0,
-   "why": "measured 2026-10-24"
+   "why": "measured 2026-10-24: shot buckets disagree with box FGA; 2015-16 ESPN shot data is only ~52% exact (known source limit), 2025-26 plays exceed box by 1-2 missed attempts (cause is a guess)"
   },
   "D2|2017-18/regular": {
    "exact_pct": 94.66,
    "n_bad": 4,
-   "why": "measured 2026-10-24"
+   "why": "measured 2026-10-24: shot buckets disagree with box FGA; 2015-16 ESPN shot data is only ~52% exact (known source limit), 2025-26 plays exceed box by 1-2 missed attempts (cause is a guess)"
   },
   "D2|2018-19/regular": {
    "exact_pct": 95.98,
    "n_bad": 6,
-   "why": "measured 2026-10-24"
+   "why": "measured 2026-10-24: shot buckets disagree with box FGA; 2015-16 ESPN shot data is only ~52% exact (known source limit), 2025-26 plays exceed box by 1-2 missed attempts (cause is a guess)"
   },
   "D2|2019-20/regular": {
    "exact_pct": 96.69,
    "n_bad": 0,
-   "why": "measured 2026-10-24"
+   "why": "measured 2026-10-24: shot buckets disagree with box FGA; 2015-16 ESPN shot data is only ~52% exact (known source limit), 2025-26 plays exceed box by 1-2 missed attempts (cause is a guess)"
   },
   "D2|2020-21/regular": {
    "exact_pct": 98.33,
    "n_bad": 0,
-   "why": "measured 2026-10-24"
+   "why": "measured 2026-10-24: shot buckets disagree with box FGA; 2015-16 ESPN shot data is only ~52% exact (known source limit), 2025-26 plays exceed box by 1-2 missed attempts (cause is a guess)"
   },
   "D2|2021-22/regular": {
    "exact_pct": 97.15,
    "n_bad": 0,
-   "why": "measured 2026-10-24"
+   "why": "measured 2026-10-24: shot buckets disagree with box FGA; 2015-16 ESPN shot data is only ~52% exact (known source limit), 2025-26 plays exceed box by 1-2 missed attempts (cause is a guess)"
   },
   "D2|2022-23/regular": {
    "exact_pct": 98.46,
    "n_bad": 4,
-   "why": "measured 2026-10-24"
+   "why": "measured 2026-10-24: shot buckets disagree with box FGA; 2015-16 ESPN shot data is only ~52% exact (known source limit), 2025-26 plays exceed box by 1-2 missed attempts (cause is a guess)"
   },
   "D2|2023-24/regular": {
    "exact_pct": 97.73,
    "n_bad": 0,
-   "why": "measured 2026-10-24"
+   "why": "measured 2026-10-24: shot buckets disagree with box FGA; 2015-16 ESPN shot data is only ~52% exact (known source limit), 2025-26 plays exceed box by 1-2 missed attempts (cause is a guess)"
   },
   "D2|2024-25/regular": {
    "exact_pct": 98.5,
    "n_bad": 2,
-   "why": "measured 2026-10-24"
+   "why": "measured 2026-10-24: shot buckets disagree with box FGA; 2015-16 ESPN shot data is only ~52% exact (known source limit), 2025-26 plays exceed box by 1-2 missed attempts (cause is a guess)"
   },
   "D2|2025-26/regular": {
    "exact_pct": 61.62,
    "n_bad": 22,
-   "why": "measured 2026-10-24"
+   "why": "measured 2026-10-24: shot buckets disagree with box FGA; 2015-16 ESPN shot data is only ~52% exact (known source limit), 2025-26 plays exceed box by 1-2 missed attempts (cause is a guess)"
   },
   "D5|2015-16/playoffs": {
    "n_bad": 2,
-   "why": "measured 2026-10-24"
+   "why": "measured 2026-10-24: 2-pt shot at >=24 ft or 3-pt shot under 14 ft in ESPN shot coordinates; preseason rates are higher (2021-22 376 of 11890)"
   },
   "D5|2015-16/preseason": {
    "n_bad": 7,
-   "why": "measured 2026-10-24"
+   "why": "measured 2026-10-24: 2-pt shot at >=24 ft or 3-pt shot under 14 ft in ESPN shot coordinates; preseason rates are higher (2021-22 376 of 11890)"
   },
   "D5|2015-16/regular": {
    "n_bad": 34,
-   "why": "measured 2026-10-24"
+   "why": "measured 2026-10-24: 2-pt shot at >=24 ft or 3-pt shot under 14 ft in ESPN shot coordinates; preseason rates are higher (2021-22 376 of 11890)"
   },
   "D5|2016-17/playoffs": {
    "n_bad": 4,
-   "why": "measured 2026-10-24"
+   "why": "measured 2026-10-24: 2-pt shot at >=24 ft or 3-pt shot under 14 ft in ESPN shot coordinates; preseason rates are higher (2021-22 376 of 11890)"
   },
   "D5|2016-17/preseason": {
    "n_bad": 2,
-   "why": "measured 2026-10-24"
+   "why": "measured 2026-10-24: 2-pt shot at >=24 ft or 3-pt shot under 14 ft in ESPN shot coordinates; preseason rates are higher (2021-22 376 of 11890)"
   },
   "D5|2016-17/regular": {
    "n_bad": 26,
-   "why": "measured 2026-10-24"
+   "why": "measured 2026-10-24: 2-pt shot at >=24 ft or 3-pt shot under 14 ft in ESPN shot coordinates; preseason rates are higher (2021-22 376 of 11890)"
   },
   "D5|2017-18/playoffs": {
    "n_bad": 7,
-   "why": "measured 2026-10-24"
+   "why": "measured 2026-10-24: 2-pt shot at >=24 ft or 3-pt shot under 14 ft in ESPN shot coordinates; preseason rates are higher (2021-22 376 of 11890)"
   },
   "D5|2017-18/preseason": {
    "n_bad": 106,
-   "why": "measured 2026-10-24"
+   "why": "measured 2026-10-24: 2-pt shot at >=24 ft or 3-pt shot under 14 ft in ESPN shot coordinates; preseason rates are higher (2021-22 376 of 11890)"
   },
   "D5|2017-18/regular": {
    "n_bad": 123,
-   "why": "measured 2026-10-24"
+   "why": "measured 2026-10-24: 2-pt shot at >=24 ft or 3-pt shot under 14 ft in ESPN shot coordinates; preseason rates are higher (2021-22 376 of 11890)"
   },
   "D5|2018-19/playoffs": {
    "n_bad": 3,
-   "why": "measured 2026-10-24"
+   "why": "measured 2026-10-24: 2-pt shot at >=24 ft or 3-pt shot under 14 ft in ESPN shot coordinates; preseason rates are higher (2021-22 376 of 11890)"
   },
   "D5|2018-19/preseason": {
    "n_bad": 3,
-   "why": "measured 2026-10-24"
+   "why": "measured 2026-10-24: 2-pt shot at >=24 ft or 3-pt shot under 14 ft in ESPN shot coordinates; preseason rates are higher (2021-22 376 of 11890)"
   },
   "D5|2018-19/regular": {
    "n_bad": 74,
-   "why": "measured 2026-10-24"
+   "why": "measured 2026-10-24: 2-pt shot at >=24 ft or 3-pt shot under 14 ft in ESPN shot coordinates; preseason rates are higher (2021-22 376 of 11890)"
   },
   "D5|2019-20/playoffs": {
    "n_bad": 5,
-   "why": "measured 2026-10-24"
+   "why": "measured 2026-10-24: 2-pt shot at >=24 ft or 3-pt shot under 14 ft in ESPN shot coordinates; preseason rates are higher (2021-22 376 of 11890)"
   },
   "D5|2019-20/preseason": {
    "n_bad": 1,
-   "why": "measured 2026-10-24"
+   "why": "measured 2026-10-24: 2-pt shot at >=24 ft or 3-pt shot under 14 ft in ESPN shot coordinates; preseason rates are higher (2021-22 376 of 11890)"
   },
   "D5|2019-20/regular": {
    "n_bad": 49,
-   "why": "measured 2026-10-24"
+   "why": "measured 2026-10-24: 2-pt shot at >=24 ft or 3-pt shot under 14 ft in ESPN shot coordinates; preseason rates are higher (2021-22 376 of 11890)"
   },
   "D5|2020-21/playin": {
    "n_bad": 1,
-   "why": "measured 2026-10-24"
+   "why": "measured 2026-10-24: 2-pt shot at >=24 ft or 3-pt shot under 14 ft in ESPN shot coordinates; preseason rates are higher (2021-22 376 of 11890)"
   },
   "D5|2020-21/playoffs": {
    "n_bad": 7,
-   "why": "measured 2026-10-24"
+   "why": "measured 2026-10-24: 2-pt shot at >=24 ft or 3-pt shot under 14 ft in ESPN shot coordinates; preseason rates are higher (2021-22 376 of 11890)"
   },
   "D5|2020-21/regular": {
    "n_bad": 52,
-   "why": "measured 2026-10-24"
+   "why": "measured 2026-10-24: 2-pt shot at >=24 ft or 3-pt shot under 14 ft in ESPN shot coordinates; preseason rates are higher (2021-22 376 of 11890)"
   },
   "D5|2021-22/preseason": {
    "n_bad": 376,
-   "why": "measured 2026-10-24"
+   "why": "measured 2026-10-24: 2-pt shot at >=24 ft or 3-pt shot under 14 ft in ESPN shot coordinates; preseason rates are higher (2021-22 376 of 11890)"
   },
   "D5|2021-22/regular": {
    "n_bad": 3,
-   "why": "measured 2026-10-24"
+   "why": "measured 2026-10-24: 2-pt shot at >=24 ft or 3-pt shot under 14 ft in ESPN shot coordinates; preseason rates are higher (2021-22 376 of 11890)"
   },
   "D5|2022-23/playin": {
    "n_bad": 1,
-   "why": "measured 2026-10-24"
+   "why": "measured 2026-10-24: 2-pt shot at >=24 ft or 3-pt shot under 14 ft in ESPN shot coordinates; preseason rates are higher (2021-22 376 of 11890)"
   },
   "D5|2022-23/playoffs": {
    "n_bad": 6,
-   "why": "measured 2026-10-24"
+   "why": "measured 2026-10-24: 2-pt shot at >=24 ft or 3-pt shot under 14 ft in ESPN shot coordinates; preseason rates are higher (2021-22 376 of 11890)"
   },
   "D5|2022-23/preseason": {
    "n_bad": 6,
-   "why": "measured 2026-10-24"
+   "why": "measured 2026-10-24: 2-pt shot at >=24 ft or 3-pt shot under 14 ft in ESPN shot coordinates; preseason rates are higher (2021-22 376 of 11890)"
   },
   "D5|2022-23/regular": {
    "n_bad": 53,
-   "why": "measured 2026-10-24"
+   "why": "measured 2026-10-24: 2-pt shot at >=24 ft or 3-pt shot under 14 ft in ESPN shot coordinates; preseason rates are higher (2021-22 376 of 11890)"
   },
   "D5|2023-24/playin": {
    "n_bad": 1,
-   "why": "measured 2026-10-24"
+   "why": "measured 2026-10-24: 2-pt shot at >=24 ft or 3-pt shot under 14 ft in ESPN shot coordinates; preseason rates are higher (2021-22 376 of 11890)"
   },
   "D5|2023-24/playoffs": {
    "n_bad": 1,
-   "why": "measured 2026-10-24"
+   "why": "measured 2026-10-24: 2-pt shot at >=24 ft or 3-pt shot under 14 ft in ESPN shot coordinates; preseason rates are higher (2021-22 376 of 11890)"
   },
   "D5|2023-24/regular": {
    "n_bad": 47,
-   "why": "measured 2026-10-24"
+   "why": "measured 2026-10-24: 2-pt shot at >=24 ft or 3-pt shot under 14 ft in ESPN shot coordinates; preseason rates are higher (2021-22 376 of 11890)"
   },
   "D5|2024-25/playoffs": {
    "n_bad": 5,
-   "why": "measured 2026-10-24"
+   "why": "measured 2026-10-24: 2-pt shot at >=24 ft or 3-pt shot under 14 ft in ESPN shot coordinates; preseason rates are higher (2021-22 376 of 11890)"
   },
   "D5|2024-25/preseason": {
    "n_bad": 1,
-   "why": "measured 2026-10-24"
+   "why": "measured 2026-10-24: 2-pt shot at >=24 ft or 3-pt shot under 14 ft in ESPN shot coordinates; preseason rates are higher (2021-22 376 of 11890)"
   },
   "D5|2024-25/regular": {
    "n_bad": 59,
-   "why": "measured 2026-10-24"
+   "why": "measured 2026-10-24: 2-pt shot at >=24 ft or 3-pt shot under 14 ft in ESPN shot coordinates; preseason rates are higher (2021-22 376 of 11890)"
   },
   "D5|2025-26/playoffs": {
    "n_bad": 3,
-   "why": "measured 2026-10-24"
+   "why": "measured 2026-10-24: 2-pt shot at >=24 ft or 3-pt shot under 14 ft in ESPN shot coordinates; preseason rates are higher (2021-22 376 of 11890)"
   },
   "D5|2025-26/preseason": {
    "n_bad": 3,
-   "why": "measured 2026-10-24"
+   "why": "measured 2026-10-24: 2-pt shot at >=24 ft or 3-pt shot under 14 ft in ESPN shot coordinates; preseason rates are higher (2021-22 376 of 11890)"
   },
   "D5|2025-26/regular": {
    "n_bad": 49,
-   "why": "measured 2026-10-24"
+   "why": "measured 2026-10-24: 2-pt shot at >=24 ft or 3-pt shot under 14 ft in ESPN shot coordinates; preseason rates are higher (2021-22 376 of 11890)"
   },
   "D5|2026-27/preseason": {
    "n_bad": 3,
-   "why": "measured 2026-10-24"
+   "why": "measured 2026-10-24: 2-pt shot at >=24 ft or 3-pt shot under 14 ft in ESPN shot coordinates; preseason rates are higher (2021-22 376 of 11890)"
   },
   "D5|2026-27/regular": {
    "n_bad": 4,
-   "why": "measured 2026-10-24"
+   "why": "measured 2026-10-24: 2-pt shot at >=24 ft or 3-pt shot under 14 ft in ESPN shot coordinates; preseason rates are higher (2021-22 376 of 11890)"
   },
   "E1|2018-19/regular": {
    "n_bad": 4,
-   "why": "measured 2026-10-24"
+   "why": "measured 2026-10-24: finished games with no ESPN line at all"
   },
   "E1|2021-22/regular": {
    "n_bad": 7,
-   "why": "measured 2026-10-24"
+   "why": "measured 2026-10-24: finished games with no ESPN line at all"
   },
   "E4|2015-16/regular": {
    "n_bad": 1,
-   "why": "measured 2026-10-24"
+   "why": "measured 2026-10-24: ESPN total line outside 170-280 (bad values such as 2001 and -1; 2021-22 has 26); P3c repair not done"
   },
   "E4|2017-18/playoffs": {
    "n_bad": 3,
-   "why": "measured 2026-10-24"
+   "why": "measured 2026-10-24: ESPN total line outside 170-280 (bad values such as 2001 and -1; 2021-22 has 26); P3c repair not done"
   },
   "E4|2017-18/regular": {
    "n_bad": 1,
-   "why": "measured 2026-10-24"
+   "why": "measured 2026-10-24: ESPN total line outside 170-280 (bad values such as 2001 and -1; 2021-22 has 26); P3c repair not done"
   },
   "E4|2021-22/playoffs": {
    "n_bad": 2,
-   "why": "measured 2026-10-24"
+   "why": "measured 2026-10-24: ESPN total line outside 170-280 (bad values such as 2001 and -1; 2021-22 has 26); P3c repair not done"
   },
   "E4|2021-22/regular": {
    "n_bad": 24,
-   "why": "measured 2026-10-24"
+   "why": "measured 2026-10-24: ESPN total line outside 170-280 (bad values such as 2001 and -1; 2021-22 has 26); P3c repair not done"
   }
  },
  "rates": {
