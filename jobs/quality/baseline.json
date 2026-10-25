@@ -43,35 +43,35 @@
   },
   "B1|2015-16/regular": {
    "n_bad": 322,
-   "why": "measured 2026-10-24: placeholder team box: ESPN returned the game with team stats NULL/0 (old seasons); 2024-25 and 2021-22 preseason are exhibition games"
+   "why": "measured 2026-10-24: team stats NULL/0 (placeholder box from ESPN in 2015-16 to 2017-18 and 2020-21 play-in); preseason games have empty team stats, cause not investigated"
   },
   "B1|2016-17/playoffs": {
    "n_bad": 10,
-   "why": "measured 2026-10-24: placeholder team box: ESPN returned the game with team stats NULL/0 (old seasons); 2024-25 and 2021-22 preseason are exhibition games"
+   "why": "measured 2026-10-24: team stats NULL/0 (placeholder box from ESPN in 2015-16 to 2017-18 and 2020-21 play-in); preseason games have empty team stats, cause not investigated"
   },
   "B1|2016-17/regular": {
    "n_bad": 326,
-   "why": "measured 2026-10-24: placeholder team box: ESPN returned the game with team stats NULL/0 (old seasons); 2024-25 and 2021-22 preseason are exhibition games"
+   "why": "measured 2026-10-24: team stats NULL/0 (placeholder box from ESPN in 2015-16 to 2017-18 and 2020-21 play-in); preseason games have empty team stats, cause not investigated"
   },
   "B1|2017-18/playoffs": {
    "n_bad": 18,
-   "why": "measured 2026-10-24: placeholder team box: ESPN returned the game with team stats NULL/0 (old seasons); 2024-25 and 2021-22 preseason are exhibition games"
+   "why": "measured 2026-10-24: team stats NULL/0 (placeholder box from ESPN in 2015-16 to 2017-18 and 2020-21 play-in); preseason games have empty team stats, cause not investigated"
   },
   "B1|2017-18/regular": {
    "n_bad": 326,
-   "why": "measured 2026-10-24: placeholder team box: ESPN returned the game with team stats NULL/0 (old seasons); 2024-25 and 2021-22 preseason are exhibition games"
+   "why": "measured 2026-10-24: team stats NULL/0 (placeholder box from ESPN in 2015-16 to 2017-18 and 2020-21 play-in); preseason games have empty team stats, cause not investigated"
   },
   "B1|2020-21/playin": {
    "n_bad": 12,
-   "why": "measured 2026-10-24: placeholder team box: ESPN returned the game with team stats NULL/0 (old seasons); 2024-25 and 2021-22 preseason are exhibition games"
+   "why": "measured 2026-10-24: team stats NULL/0 (placeholder box from ESPN in 2015-16 to 2017-18 and 2020-21 play-in); preseason games have empty team stats, cause not investigated"
   },
   "B1|2021-22/preseason": {
    "n_bad": 14,
-   "why": "measured 2026-10-24: placeholder team box: ESPN returned the game with team stats NULL/0 (old seasons); 2024-25 and 2021-22 preseason are exhibition games"
+   "why": "measured 2026-10-24: team stats NULL/0 (placeholder box from ESPN in 2015-16 to 2017-18 and 2020-21 play-in); preseason games have empty team stats, cause not investigated"
   },
   "B1|2024-25/preseason": {
    "n_bad": 10,
-   "why": "measured 2026-10-24: placeholder team box: ESPN returned the game with team stats NULL/0 (old seasons); 2024-25 and 2021-22 preseason are exhibition games"
+   "why": "measured 2026-10-24: team stats NULL/0 (placeholder box from ESPN in 2015-16 to 2017-18 and 2020-21 play-in); preseason games have empty team stats, cause not investigated"
   },
   "B2|2015-16/regular": {
    "n_bad": 322,
