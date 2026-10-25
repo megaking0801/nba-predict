@@ -199,39 +199,39 @@
   },
   "C2|2015-16/regular": {
    "n_bad": 1,
-   "why": "measured 2026-10-24: starters are not exactly 10 per game; cause not investigated (the 8 missing 2025-26 playoff games are C1 only, C2 joins them out)"
+   "why": "measured 2026-10-24: these games have a starter count other than 10; the 8 games of 2025-26 playoffs have no status rows and are counted only in C1"
   },
   "C2|2017-18/regular": {
    "n_bad": 1,
-   "why": "measured 2026-10-24: starters are not exactly 10 per game; cause not investigated (the 8 missing 2025-26 playoff games are C1 only, C2 joins them out)"
+   "why": "measured 2026-10-24: these games have a starter count other than 10; the 8 games of 2025-26 playoffs have no status rows and are counted only in C1"
   },
   "C2|2018-19/regular": {
    "n_bad": 19,
-   "why": "measured 2026-10-24: starters are not exactly 10 per game; cause not investigated (the 8 missing 2025-26 playoff games are C1 only, C2 joins them out)"
+   "why": "measured 2026-10-24: these games have a starter count other than 10; the 8 games of 2025-26 playoffs have no status rows and are counted only in C1"
   },
   "C2|2021-22/preseason": {
    "n_bad": 1,
-   "why": "measured 2026-10-24: starters are not exactly 10 per game; cause not investigated (the 8 missing 2025-26 playoff games are C1 only, C2 joins them out)"
+   "why": "measured 2026-10-24: these games have a starter count other than 10; the 8 games of 2025-26 playoffs have no status rows and are counted only in C1"
   },
   "C2|2023-24/preseason": {
    "n_bad": 1,
-   "why": "measured 2026-10-24: starters are not exactly 10 per game; cause not investigated (the 8 missing 2025-26 playoff games are C1 only, C2 joins them out)"
+   "why": "measured 2026-10-24: these games have a starter count other than 10; the 8 games of 2025-26 playoffs have no status rows and are counted only in C1"
   },
   "D1|2017-18/preseason": {
    "n_bad": 2,
-   "why": "measured 2026-10-24: no shot-bucket rows; 2025-26 playoffs are the same 8 games as C1 (preseason: ESPN has no shot data)"
+   "why": "measured 2026-10-24: games with no shot-bucket rows; 2025-26 playoffs are the same 8 games as C1; the 2 preseason games per season have no buckets, cause not investigated"
   },
   "D1|2018-19/preseason": {
    "n_bad": 2,
-   "why": "measured 2026-10-24: no shot-bucket rows; 2025-26 playoffs are the same 8 games as C1 (preseason: ESPN has no shot data)"
+   "why": "measured 2026-10-24: games with no shot-bucket rows; 2025-26 playoffs are the same 8 games as C1; the 2 preseason games per season have no buckets, cause not investigated"
   },
   "D1|2022-23/preseason": {
    "n_bad": 2,
-   "why": "measured 2026-10-24: no shot-bucket rows; 2025-26 playoffs are the same 8 games as C1 (preseason: ESPN has no shot data)"
+   "why": "measured 2026-10-24: games with no shot-bucket rows; 2025-26 playoffs are the same 8 games as C1; the 2 preseason games per season have no buckets, cause not investigated"
   },
   "D1|2025-26/playoffs": {
    "n_bad": 8,
-   "why": "measured 2026-10-24: no shot-bucket rows; 2025-26 playoffs are the same 8 games as C1 (preseason: ESPN has no shot data)"
+   "why": "measured 2026-10-24: games with no shot-bucket rows; 2025-26 playoffs are the same 8 games as C1; the 2 preseason games per season have no buckets, cause not investigated"
   },
   "D2|2015-16/preseason": {
    "exact_pct": 48.0,
