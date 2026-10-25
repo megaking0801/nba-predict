@@ -8,7 +8,7 @@ on:
           legacy: preload | cache | sync | settle | train_base | all —
           v2: v2_daily | v2_schema | v2_backfill | v2_ingest | v2_lines |
           v2_injuries | v2_predict | v2_settle | v2_train | v2_diagnose |
-          v2_evaluate | backup_legacy
+          v2_evaluate | v2_quality | backup_legacy
         required: true
         default: "v2_daily"
       season:
@@ -48,8 +48,12 @@ on:
         required: false
         default: "200"
   schedule:
-    # 10:30 UTC = 18:30 Asia/Taipei — v2 full daily run: the day's official prediction
-    - cron: "30 10 * * *"
+    # 07:00 UTC (15:00 Taipei) — v2 full daily run: the day's official prediction. GitHub starts
+    # scheduled runs 3-4 h late on this repo (the 10:30 UTC cron ran at 14:05 and 14:32 UTC on
+    # 10/24-25), so it is set early enough that a late start still lands before 21:00 Taipei.
+    # The latest NBA games end about 04:30-05:00 UTC (EDT) or 05:30-06:00 UTC (EST), so
+    # 07:00 UTC leaves an hour for ESPN to mark them final.
+    - cron: "0 7 * * *"
     # Close snapshots (lines + injuries for games tipping off within ~2.5 h; no prediction).
     # 22:30 / 00:30 / 02:00 UTC cover 7, 8 and 10 pm ET tipoffs in both EDT and EST.
     - cron: "30 22 * * *"
@@ -174,8 +178,20 @@ jobs:
         run: python -u -m jobs.ingest_espn --seasons "${{ inputs.seasons }}"
 
       - name: v2 daily pipeline
-        if: ${{ github.event.schedule == '30 10 * * *' || (github.event_name == 'workflow_dispatch' && (inputs.run == 'v2_daily' || inputs.run == 'all')) }}
+        if: ${{ github.event.schedule == '0 7 * * *' || (github.event_name == 'workflow_dispatch' && (inputs.run == 'v2_daily' || inputs.run == 'all')) }}
         run: python -u -m jobs.run_daily
+
+      # Separate step so a data-quality failure and an ingest failure are two distinct red
+      # steps. !cancelled() (not always()) so it still runs after run_daily fails but stops
+      # when the run is cancelled. Preseason is skipped: the model never uses it and its
+      # one-off gaps would otherwise turn CI red for a week at the start of every season.
+      - name: v2 quality (read-only data checks)
+        if: ${{ !cancelled() && github.event.schedule == '0 7 * * *' }}
+        run: python -u -m jobs.quality --since 7d --fail-on warn --ignore-types preseason
+
+      - name: v2 quality (manual, full run)
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.run == 'v2_quality' }}
+        run: python -u -m jobs.quality --all --fail-on warn
 
       - name: v2 ingest only (ESPN games + box scores)
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.run == 'v2_ingest' }}

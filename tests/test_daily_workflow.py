@@ -27,7 +27,7 @@ def _block(start_regex: str) -> str:
 
 def test_crons():
     text = _text()
-    for cron in ("30 10 * * *", "30 22 * * *", "30 0 * * *", "0 2 * * *", "0 12 * * 1"):
+    for cron in ("0 7 * * *", "30 22 * * *", "30 0 * * *", "0 2 * * *", "0 12 * * 1"):
         assert f'cron: "{cron}"' in text
     assert '"0 22 * * *"' not in text
 
@@ -42,7 +42,7 @@ def test_legacy_preload_not_scheduled():
 def test_daily_pipeline_still_scheduled_at_1030():
     cond = next(ln for ln in _block(r"- name: v2 daily pipeline").splitlines()
                 if ln.strip().startswith("if:"))
-    assert "'30 10 * * *'" in cond
+    assert "'0 7 * * *'" in cond
 
 
 def test_close_step_runs_close_mode_without_predict():
@@ -92,3 +92,47 @@ def test_manual_backfill_uses_espn_seasons():
     assert "jobs.backfill" not in step
     seasons = _block(r"^      seasons:")
     assert "(ESPN)" in seasons and 'default: "2026-27"' in seasons
+
+
+# ---------- P3b: read-only data-quality steps ----------
+
+def _cond(step: str) -> str:
+    return next(ln for ln in step.splitlines() if ln.strip().startswith("if:"))
+
+
+def test_quality_step_runs_after_daily_pipeline_even_on_failure():
+    text = _text()
+    pipeline = text.index("- name: v2 daily pipeline")
+    quality = text.index("- name: v2 quality (read-only data checks)")
+    assert quality > pipeline
+    cond = _cond(_block(r"- name: v2 quality \(read-only data checks\)"))
+    assert "!cancelled()" in cond and "always()" not in cond
+    assert "github.event.schedule == '0 7 * * *'" in cond
+
+
+def test_quality_step_command_and_fail_on():
+    step = _block(r"- name: v2 quality \(read-only data checks\)")
+    assert "python -u -m jobs.quality --since 7d --fail-on warn --ignore-types preseason" in step
+    assert "--write-baseline" not in step and "--with-espn" not in step
+
+
+def test_quality_not_on_close_or_train_schedules():
+    for name in (r"- name: v2 quality \(read-only data checks\)", r"- name: v2 quality \(manual, full run\)"):
+        cond = _cond(_block(name))
+        for cron in ("'30 22 * * *'", "'30 0 * * *'", "'0 2 * * *'", "'0 12 * * 1'"):
+            assert cron not in cond
+
+
+def test_quality_manual_dispatch():
+    text = _text()
+    desc = text[text.index("description: >-"):text.index('required: true')]
+    assert "v2_quality" in desc
+    step = _block(r"- name: v2 quality \(manual, full run\)")
+    assert "inputs.run == 'v2_quality'" in step
+    assert "python -u -m jobs.quality --all --fail-on warn" in step
+    assert "--write-baseline" not in step
+
+
+def test_quality_is_not_part_of_run_daily():
+    src = (Path(__file__).resolve().parents[1] / "jobs" / "run_daily.py").read_text(encoding="utf-8")
+    assert "quality" not in src

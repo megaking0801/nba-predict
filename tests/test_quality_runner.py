@@ -318,3 +318,33 @@ def test_a1_queries_the_db_before_the_network_and_dedups_events():
     assert order[0] == "db"
     assert got["2025-26/regular"].n_total == 1 and got["2025-26/regular"].n_bad == 0   # counted once
     assert "ANY(%s)" in db.calls[0][0]
+
+
+# ---------- --ignore-types (daily CI skips preseason) ----------
+
+def test_run_drops_findings_of_ignored_season_types(monkeypatch):
+    findings = [_f("D1", "2027-28/preseason", 2, 20, severity="error"),
+                _f("D1", "2027-28/regular", 1, 20, severity="error"),
+                _f("A7", "all/none", 0, 0)]
+    monkeypatch.setattr(runner, "REGISTRY", [("X", lambda run_sql, scope: findings)])
+    got = runner.run(None, Scope(None, date(2026, 10, 24)), {"as_of_date": None, "entries": {}, "rates": {}},
+                     ignore_types=("preseason",))
+    assert [(f.scope, f.status) for f in got] == [("2027-28/regular", "new"), ("all/none", "ok")]
+
+
+def test_main_ignore_types_keeps_preseason_from_failing_ci(monkeypatch, tmp_path):
+    run_fn, _ = fake_run({})
+    _patch_db(monkeypatch, run_fn)
+    pre = _f("D1", "2027-28/preseason", 2, 20, severity="error")
+    monkeypatch.setattr(runner, "REGISTRY", [("D1", lambda r, s: [pre])])
+    base = tmp_path / "none.json"
+    assert runner.main(["--all", "--baseline", str(base)]) == 1
+    assert runner.main(["--all", "--baseline", str(base), "--ignore-types", "preseason"]) == 0
+
+
+def test_write_baseline_refuses_ignore_types(monkeypatch, tmp_path, capsys):
+    run_fn, _ = fake_run({})
+    _patch_db(monkeypatch, run_fn)
+    assert runner.main(["--all", "--ignore-types", "preseason",
+                        "--write-baseline", str(tmp_path / "b.json")]) == 2
+    assert "full run" in capsys.readouterr().out
