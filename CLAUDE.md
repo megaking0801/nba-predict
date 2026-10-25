@@ -61,7 +61,6 @@ python -m webui.build_site --out site  # 從 DB 產生靜態網站到 site/（�
 
 ## 工作流程
 - 動到特徵、模型、schema、gates、picks 之前先進 plan mode。只改一兩行的小修不用。
-  已有經主線與支線互相審過的設計與實作計畫，且使用者已授權細節由兩個 session 決定時，照計畫實作不必再進 plan mode；計畫以外的特徵、模型、schema、gates、picks 變動仍要先進 plan mode。純只讀的新模組（不碰 schema、特徵、模型）不需要。寫正式 DB、push／合併 main、啟用或觸發 workflow 仍須使用者當下同意。
 - 修根因，不要壓掉錯誤訊息。
 - 對話被壓縮時保留：已修改的檔案清單、測試指令、尚未解決的問題。
 - 回覆用繁體中文；程式碼、識別字、commit 訊息用英文。
