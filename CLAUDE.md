@@ -94,7 +94,7 @@ python -m webui.build_site --out site  # 從 DB 產生靜態網站到 site/（�
 - 不要改動已被追蹤的 `tests/__pycache__/*.pyc`（待清理）。
 
 ## 已知待釐清（不要擅自改）
-- `daily_nba` 因 60 天無活動被停用（`disabled_inactivity`），程式已改走 ESPN，但**尚未啟用**；啟用前靜態站內容停在最後一次資料，頁面 36 小時後顯示「資料可能已過期」。新表（`injury_reports`、`roster_snapshots`）與 2026-27 的比賽都還沒寫進正式 DB。
+- `daily_nba` 已於 2026-10-24 恢復 active（push 到 `main` 時自動恢復）；新表與 2026-27 的比賽已寫進正式 DB。P2 逐季回補做到一半暫停，進度與恢復步驟見 `docs/handoff/2026-10-23-roadmap.md`「P2 回補進度」。
 - `daily_nba.yml` 的 `keepalive` job 每週用 API 重新啟用 workflow，但「重新啟用能重置 60 天計時」**官方文件沒有說明（未驗證）**；合併後約 50 天人工跑 `gh workflow list` 確認仍為 active。網站的過期提示是停擺的警報。
 - `snapshot_lines.py` 的 Odds API 只抓 `spreads`，大小分盤口目前只靠 ESPN。
 - Legacy 流程仍在（P1 起 `preload` 不再排程，只剩手動 `workflow_dispatch`）：`public.games`、`cache_nba`、`sync_daily`、`settle_daily`、`train_base_model`、`train_calibrator`、

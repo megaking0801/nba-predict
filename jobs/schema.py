@@ -6,10 +6,15 @@ separate concerns; Taipei time exists only in the app display layer.
 """
 from __future__ import annotations
 
+import time
+
+import psycopg2.errors
+
 from jobs.db_utils import db_connect
 from jobs.teams import seed_rows
 
 SCHEMA_VERSION = "4"
+SCHEMA_RETRIES = 4   # attempts when a concurrent reader (site build) deadlocks the view rebuild
 
 DDL = """
 CREATE TABLE IF NOT EXISTS public.schema_meta (
@@ -313,7 +318,7 @@ ON CONFLICT (team_abbr) DO UPDATE SET
 """
 
 
-def ensure_schema(conn) -> None:
+def _ensure_schema_once(conn) -> None:
     with conn.cursor() as cur:
         cur.execute(DDL)
         cur.execute(MIGRATIONS)
@@ -329,6 +334,21 @@ def ensure_schema(conn) -> None:
             (SCHEMA_VERSION,),
         )
     conn.commit()
+
+
+def ensure_schema(conn) -> None:
+    """Idempotent; retried on deadlock because CREATE OR REPLACE VIEW takes an
+    exclusive lock that can collide with the static-site build reading the views."""
+    for attempt in range(1, SCHEMA_RETRIES + 1):
+        try:
+            _ensure_schema_once(conn)
+            return
+        except psycopg2.errors.DeadlockDetected:
+            conn.rollback()
+            if attempt == SCHEMA_RETRIES:
+                raise
+            print(f"[WARN] ensure_schema deadlock (attempt {attempt}); retrying", flush=True)
+            time.sleep(2 * attempt)
 
 
 def main() -> None:
