@@ -326,3 +326,44 @@ def test_cli_context_experiment_dispatches(monkeypatch, tmp_path):
     out = tmp_path / "c.json"
     assert fa.main(["--experiment", "context", "--out", str(out)]) == 0
     assert json.loads(out.read_text(encoding="utf-8"))["steps"] == []
+
+
+# ---------- P4.2 independent candidates ----------
+
+def test_four_factor_steps_are_the_preregistered_set():
+    steps = fa.FOUR_FACTOR_STEPS
+    assert [s["name"] for s in steps] == ["G1_split_k5", "G2_split_k10", "G3_split_k20", "G4_three_rate"]
+    assert [s["overrides"].get("SHRINK_K_DEF") for s in steps[:3]] == [5, 10, 20]
+    assert steps[0]["remove"] == ["efg10_diff", "tov10_diff", "orb10_diff", "ftr10_diff"]
+    assert len(steps[0]["add"]) == 8 and steps[3]["remove"] == []
+
+
+def test_non_cumulative_steps_are_each_judged_against_fs1(monkeypatch):
+    calls = _stub_feature_world(monkeypatch, better_after="efg_off_diff")
+    seg = {"first_season": "2019-20", "last_season": "2020-21", "season_types": ("regular",)}
+    ids = _preds(n=3000)["game_id"]
+    lines = pd.DataFrame({"game_id": ids, "home_spread": np.random.default_rng(3).normal(-2, 5, len(ids)),
+                          "home_price": 1.91, "away_price": 1.91})
+    res = fa.run_feature_steps([], lines, fa.FOUR_FACTOR_STEPS, seg, reps=60, seed=1, cumulative=False)
+    assert res["kept"] == ["G1_split_k5", "G2_split_k10", "G3_split_k20"]
+    walks = [c[1] for c in calls if c[0] == "walk"]
+    last = walks[-1]                                   # G4 must not inherit the G1-G3 split columns
+    assert "three_rate_off_diff" in last and "efg_off_diff" not in last and "efg10_diff" in last
+    assert "efg10_diff" not in walks[1]                # the split replaced the old four columns
+    assert "final_features" not in res
+
+
+def test_cli_four_factor_dispatches(monkeypatch, tmp_path):
+    class Conn:
+        def close(self):
+            pass
+
+    monkeypatch.setattr(fa, "connect_readonly", lambda: Conn())
+    monkeypatch.setattr(fa, "load_bundles", lambda c: [])
+    monkeypatch.setattr(fa, "load_closing_lines", lambda c: pd.DataFrame())
+    monkeypatch.setattr(fa, "_prepare_session", lambda c: None)
+    seen = {}
+    monkeypatch.setattr(fa, "run_feature_steps",
+                        lambda b, l, steps, seg, **kw: seen.update(steps=steps, cum=kw.get("cumulative")) or {"kept": []})
+    assert fa.main(["--experiment", "four_factor", "--out", str(tmp_path / "f.json")]) == 0
+    assert seen["steps"] is fa.FOUR_FACTOR_STEPS and seen["cum"] is False

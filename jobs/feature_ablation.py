@@ -56,6 +56,17 @@ CONTEXT_STEPS = [
     {"name": "F4_altitude", "add": FEATURE_GROUPS["altitude"], "overrides": {}},
 ]
 
+# P4.2: four-factor split. Four independent candidates, each against fs1 (not cumulative):
+# the split with the defence prior at the same strength as offence (K=5), two heavier priors, and
+# the three-point attempt rate alone.
+_OLD_FOUR = [f"{f}10_diff" for f in ("efg", "tov", "orb", "ftr")]
+FOUR_FACTOR_STEPS = [
+    {"name": "G1_split_k5", "add": FEATURE_GROUPS["ff"], "remove": _OLD_FOUR, "overrides": {"SHRINK_K_DEF": 5}},
+    {"name": "G2_split_k10", "add": FEATURE_GROUPS["ff"], "remove": _OLD_FOUR, "overrides": {"SHRINK_K_DEF": 10}},
+    {"name": "G3_split_k20", "add": FEATURE_GROUPS["ff"], "remove": _OLD_FOUR, "overrides": {"SHRINK_K_DEF": 20}},
+    {"name": "G4_three_rate", "add": FEATURE_GROUPS["three_rate"], "remove": [], "overrides": {}},
+]
+
 
 # ----- pure statistics -----
 
@@ -254,8 +265,10 @@ def run_data_scope(bundles: list, lines: pd.DataFrame, reps: int = 2000, seed: i
 # ----- cumulative feature steps -----
 
 def run_feature_steps(bundles: list, lines: pd.DataFrame, steps: list, seg: dict, reps: int = 2000,
-                      seed: int = 0, kinds: Tuple[str, ...] = ("ridge",)) -> dict:
-    """Judge each step against fs1 + the steps kept so far; only kept steps accumulate."""
+                      seed: int = 0, kinds: Tuple[str, ...] = ("ridge",), cumulative: bool = True) -> dict:
+    """Judge each step against fs1 + the steps kept so far; only kept steps accumulate.
+    cumulative=False: every step is judged against fs1 alone (independent candidates); the names of
+    the ones that pass are listed in ``kept``."""
     tables: dict = {}
 
     def table_for(overrides: dict):
@@ -275,7 +288,8 @@ def run_feature_steps(bundles: list, lines: pd.DataFrame, steps: list, seg: dict
                                   "report_cover": cover_metrics(report, lines) if len(lines) else None},
            "steps": []}
     for step in steps:
-        cand_features = features + [c for c in step["add"] if c not in features]
+        remove = set(step.get("remove", ()))
+        cand_features = [c for c in features if c not in remove] + [c for c in step["add"] if c not in features]
         cand_overrides = {**overrides, **step["overrides"]}
         cfg, df = table_for(cand_overrides)
         res, preds = {}, {}
@@ -287,9 +301,12 @@ def run_feature_steps(bundles: list, lines: pd.DataFrame, steps: list, seg: dict
         res["name"], res["added"], res["overrides"] = step["name"], step["add"], step["overrides"]
         res["judgement"] = _judge(res)
         out["steps"].append(res)
-        if res["judgement"]["keep"]:
+        if res["judgement"]["keep"] and cumulative:
             features, overrides, current = cand_features, cand_overrides, preds
-    out["final_features"], out["final_overrides"] = features, overrides
+    if cumulative:
+        out["final_features"], out["final_overrides"] = features, overrides
+    else:
+        out["kept"] = [s["name"] for s in out["steps"] if s["judgement"]["keep"]]
     return out
 
 
@@ -308,7 +325,7 @@ def _prepare_session(conn) -> None:
 def main(argv: Optional[List[str]] = None) -> int:
     ap = argparse.ArgumentParser(prog="python -m jobs.feature_ablation",
                                  description="Paired walk-forward comparison (read-only)")
-    ap.add_argument("--experiment", required=True, choices=("data_scope", "context"))
+    ap.add_argument("--experiment", required=True, choices=("data_scope", "context", "four_factor"))
     ap.add_argument("--out", help="write the result JSON here")
     ap.add_argument("--with-hgb", action="store_true", help="also run hgb as a no-worse check")
     ap.add_argument("--reps", type=int, default=2000)
@@ -332,6 +349,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     if args.experiment == "context":
         result = run_feature_steps(bundles, lines, CONTEXT_STEPS, dict(FEATURE_SEGMENT),
                                    reps=args.reps, seed=args.seed, kinds=kinds)
+    elif args.experiment == "four_factor":
+        result = run_feature_steps(bundles, lines, FOUR_FACTOR_STEPS, dict(FEATURE_SEGMENT),
+                                   reps=args.reps, seed=args.seed, kinds=kinds, cumulative=False)
     else:
         result = run_data_scope(bundles, lines, reps=args.reps, seed=args.seed, kinds=kinds)
     text = json.dumps(result, indent=1, default=str, ensure_ascii=False)
