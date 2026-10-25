@@ -24,7 +24,8 @@ import numpy as np
 import pandas as pd
 
 from jobs.config import CONFIG
-from jobs.feature_ablation import (_prepare_session, block_bootstrap_ci, paired_delta, per_season_delta)
+from jobs.feature_ablation import (MIN_GAIN, SEASON_SHARE, _prepare_session, block_bootstrap_ci, compare,
+                                   paired_delta, per_season_delta)
 from jobs.features import FEATURE_NAMES, build_feature_table, load_bundles
 from jobs.evaluate import walk_forward
 from jobs.model import MODEL_NAME
@@ -35,6 +36,17 @@ Run = Callable[[str, tuple], pd.DataFrame]
 LIVE_START = "2026-10-24"          # first day of real-timestamp line snapshots (P1)
 SEASON_TYPES = ("regular", "playoffs", "playin")
 Z99, Z80 = 2.58, 0.84              # 99% two-sided and 80% power
+
+# P5.1 second layer (see the design, sections 2.3, 3, 4, 5). Everything below is fixed in advance.
+TUNE_SEGMENT = {"first_season": "2015-16", "last_season": "2021-22"}
+VALID_SEGMENT = {"first_season": "2022-23", "last_season": "2024-25"}
+ALPHAS = tuple(CONFIG.RIDGE_ALPHA_GRID) + (300.0, 1000.0)      # 7 ridge penalties
+LAMBDAS = (0.5, 1.0)                                           # shrink of the learned residual
+PRIOR_ALPHA = 100.0
+PRIOR_FEATURES = ["m", "absm", "elo_diff", "net_rtg30_diff", "rest_diff", "home_b2b", "away_b2b"]
+FULL_FEATURES = list(FEATURE_NAMES) + ["m", "absm"]
+VALID_LEVEL = 0.995                # two looks at the validation segment (ridge chosen on tune)
+Z_VALID = 2.807                    # two-sided z for VALID_LEVEL
 
 _LINES = """/* ml:LINES */
 SELECT g.game_id, g.season, g.season_type, g.game_date_et AS date, g.margin,
@@ -125,6 +137,128 @@ def clv_summary(pred: pd.DataFrame, detect: float = 0.2) -> dict:
     return out
 
 
+# ----- P5.1: second layer on the residual margin - line -----
+
+def residual_table(features: pd.DataFrame, lines: pd.DataFrame) -> pd.DataFrame:
+    """Feature rows joined to the closing line: m = -spread (the market's expected margin) and
+    resid = margin - m, the thing the second layer learns."""
+    t = features.merge(lines[["game_id", "home_spread"]].drop_duplicates("game_id"), on="game_id")
+    t["m"] = -t["home_spread"].astype(float)
+    t["absm"] = t["m"].abs()
+    t["resid"] = t["margin"].astype(float) - t["m"]
+    return t.sort_values(["date", "game_id"]).reset_index(drop=True)
+
+
+def residual_predictions(table: pd.DataFrame, features: list, alpha: float, lam: float = 1.0,
+                         shuffle_seed: Optional[int] = None, shift: bool = False) -> pd.DataFrame:
+    """Walk-forward ridge on the residual; the prediction is m + lam * r_hat, scored against the true
+    margin. shuffle_seed: negative control, permute the training target within each season.
+    shift: negative control, feed each game the NEXT game's features."""
+    t = table.copy()
+    if shift:
+        t[features] = t[features].shift(-1)
+        t = t.iloc[:-1]
+    if shuffle_seed is not None:
+        rng = np.random.default_rng(shuffle_seed)
+        t["resid"] = t.groupby("season")["resid"].transform(lambda s: pd.Series(rng.permutation(s.to_numpy()), index=s.index))
+    preds = walk_forward(t, "ridge", cfg=CONFIG, ridge_alpha=alpha, features=features, target="resid")
+    if preds.empty:
+        return preds
+    keep = t[["game_id", "margin", "m"]]
+    out = preds[["game_id", "date", "season", "mu", "sigma"]].rename(columns={"mu": "r_hat"}).merge(keep, on="game_id")
+    out["mu"] = out["m"] + lam * out["r_hat"]
+    return out[["game_id", "date", "season", "margin", "mu", "sigma", "r_hat", "m"]]
+
+
+def decide_market(summary: dict) -> dict:
+    """Keep rule for the second layer (design section 4). A missing piece counts as failing."""
+    failed = []
+    if not summary.get("mean", 1.0) <= -MIN_GAIN:
+        failed.append("gain")
+    if not summary.get("hi", 1.0) < 0:
+        failed.append("interval")
+    info = summary.get("info_over_market_candidate") or {}
+    beta, se = info.get("beta"), info.get("se")
+    if beta is None or se is None or not (beta - Z_VALID * se) > 0:
+        failed.append("beta")
+    cover = summary.get("cover_brier_delta")
+    if cover is None or not cover <= 0:
+        failed.append("cover_brier")
+    if not summary.get("share_negative", 0.0) >= SEASON_SHARE - 1e-9:
+        failed.append("seasons")
+    nb, nc = summary.get("n_base_in_segment"), summary.get("n_cand_in_segment")
+    if nb is not None and nc is not None and nc < nb:
+        failed.append("coverage")
+    return {"keep": not failed, "failed": failed}
+
+
+def judge_vs_line(cand: pd.DataFrame, lines: pd.DataFrame, meta: pd.DataFrame, segment: dict,
+                  reps: int = 1000, seed: int = 0, level: float = 0.99) -> dict:
+    """Candidate vs the line on the same games of one segment."""
+    if cand.empty:
+        return {"n": 0, "keep": False, "failed": ["no_predictions"]}
+    base = line_frame(lines)
+    base["sigma"] = 1.0
+    base = base[pd.to_datetime(base["date"]) >= pd.to_datetime(cand["date"]).min()]      # rows the walk-forward could predict
+    price_lines = lines[["game_id", "home_spread", "home_price", "away_price"]]     # cover_metrics merges on game_id only
+    out = compare(base, cand[["game_id", "date", "season", "margin", "mu", "sigma"]], price_lines, meta,
+                  season_types=SEASON_TYPES, first_season=segment["first_season"],
+                  last_season=segment["last_season"], reps=reps, seed=seed, level=level)
+    if out.get("n"):
+        out["market_judgement"] = decide_market(out)
+    return out
+
+
+def run_residual(bundles: list, lines: pd.DataFrame, reps: int = 1000, seed: int = 0,
+                 n_controls: int = 0, force_full: bool = False) -> dict:
+    """Prior check, tuning on the tune segment, one look at the validation segment, optional controls."""
+    features_df = build_feature_table(bundles, CONFIG)
+    table = residual_table(features_df, lines)
+    meta = table[["game_id", "season", "season_type"]]
+    out = {"n_rows": int(len(table)), "tune_segment": TUNE_SEGMENT, "validation_segment": VALID_SEGMENT}
+
+    prior = residual_predictions(table, PRIOR_FEATURES, PRIOR_ALPHA)
+    pj = judge_vs_line(prior, lines, meta, TUNE_SEGMENT, reps=reps, seed=seed)
+    beta = ((pj.get("info_over_market_candidate") or {}).get("beta"))
+    out["prior_check"] = {"features": PRIOR_FEATURES, "alpha": PRIOR_ALPHA, "tune": pj}
+    if (beta is None or beta <= 0) and not force_full:
+        out["stopped"] = "prior check: the simplest second layer has no positive beta on the tune segment; nothing was expanded"
+        return out
+
+    grid, by_alpha = [], {}
+    for alpha in ALPHAS:
+        preds = residual_predictions(table, FULL_FEATURES, alpha)
+        by_alpha[alpha] = preds
+        for lam in LAMBDAS:
+            cand = preds.assign(mu=preds["m"] + lam * preds["r_hat"])
+            j = judge_vs_line(cand, lines, meta, TUNE_SEGMENT, reps=200, seed=seed)
+            grid.append({"alpha": alpha, "lam": lam, "mean": j.get("mean"), "n": j.get("n")})
+    valid_grid = [g for g in grid if g["mean"] is not None]
+    out["tune_grid"] = grid
+    if not valid_grid:
+        out["stopped"] = "no tune-grid result"
+        return out
+    best = min(valid_grid, key=lambda g: g["mean"])
+    out["chosen"] = best
+    preds = by_alpha[best["alpha"]]
+    cand = preds.assign(mu=preds["m"] + best["lam"] * preds["r_hat"])
+    out["validation"] = judge_vs_line(cand, lines, meta, VALID_SEGMENT, reps=reps, seed=seed, level=VALID_LEVEL)
+
+    if n_controls and out["validation"].get("n"):
+        shuffled = []
+        for i in range(n_controls):
+            sp = residual_predictions(table, FULL_FEATURES, best["alpha"], best["lam"], shuffle_seed=1000 + i)
+            shuffled.append(judge_vs_line(sp, lines, meta, VALID_SEGMENT, reps=100, seed=seed).get("mean"))
+        shifted = judge_vs_line(residual_predictions(table, FULL_FEATURES, best["alpha"], best["lam"], shift=True),
+                                lines, meta, VALID_SEGMENT, reps=100, seed=seed).get("mean")
+        true_mean = out["validation"]["mean"]
+        shuffled = [x for x in shuffled if x is not None]
+        out["controls"] = {"shuffle_means": shuffled, "shift_mean": shifted,
+                           "true_beats_every_shuffle": bool(shuffled) and true_mean < min(shuffled),
+                           "shift_does_not_help": shifted is None or shifted >= true_mean}
+    return out
+
+
 # ----- reports -----
 
 def baseline_report(run: Run, bundles: list, reps: int = 2000, seed: int = 0) -> dict:
@@ -155,10 +289,12 @@ def _scrub(text: str) -> str:
 
 def main(argv: Optional[List[str]] = None) -> int:
     ap = argparse.ArgumentParser(prog="python -m jobs.market_layer", description="P5.0 market baselines (read-only)")
-    ap.add_argument("--report", required=True, choices=("baseline", "clv"))
+    ap.add_argument("--report", required=True, choices=("baseline", "clv", "residual"))
     ap.add_argument("--out", help="write the result JSON here")
     ap.add_argument("--reps", type=int, default=2000)
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--controls", type=int, default=0, help="residual: number of shuffle controls")
+    ap.add_argument("--force-full", action="store_true", help="residual: run past a failed prior check")
     args = ap.parse_args(argv)
     try:
         conn = connect_readonly()
@@ -170,6 +306,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         run = make_run(conn)
         if args.report == "baseline":
             result = baseline_report(run, load_bundles(conn), reps=args.reps, seed=args.seed)
+        elif args.report == "residual":
+            result = run_residual(load_bundles(conn), run(_LINES, (list(SEASON_TYPES),)), reps=args.reps,
+                                  seed=args.seed, n_controls=args.controls, force_full=args.force_full)
         else:
             result = clv_report(run)
     except Exception as exc:

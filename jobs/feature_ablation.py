@@ -162,7 +162,7 @@ def _segment_ids(meta: pd.DataFrame, seasons: pd.Series, season_types, first_sea
 
 def compare(base: pd.DataFrame, cand: pd.DataFrame, lines: pd.DataFrame, meta: pd.DataFrame,
             season_types=None, first_season: Optional[str] = None, last_season: Optional[str] = None,
-            reps: int = 1000, seed: int = 0) -> dict:
+            reps: int = 1000, seed: int = 0, level: float = CI_LEVEL) -> dict:
     """Candidate vs base on the same games inside the scoring segment."""
     meta = meta.copy()
     if "season" not in meta:
@@ -178,7 +178,7 @@ def compare(base: pd.DataFrame, cand: pd.DataFrame, lines: pd.DataFrame, meta: p
     if d.empty:
         return {"n": 0, "keep": False, "failed": ["no_common_games"], "n_base_in_segment": int(len(b)),
                 "n_cand_in_segment": int(len(c))}
-    mean, lo, hi = block_bootstrap_ci(d, reps=reps, seed=seed)
+    mean, lo, hi = block_bootstrap_ci(d, reps=reps, seed=seed, level=level)
     seasons, share = per_season_delta(d)
     common = d["game_id"]
     cover_delta = None

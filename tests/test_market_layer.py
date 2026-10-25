@@ -162,3 +162,126 @@ def test_cli_report_failure_is_scrubbed(monkeypatch, capsys):
     assert ml.main(["--report", "clv"]) == 2
     out = capsys.readouterr().out
     assert "pw" not in out and "RuntimeError" in out
+
+
+# ---------- P5.1 second layer ----------
+
+def _season_of(d):
+    y = d.year if d.month >= 8 else d.year - 1
+    return f"{y}-{str(y + 1)[2:]}"
+
+
+def _residual_world(n=4200, signal=0.0, seed=0):
+    """Synthetic games across ~11 seasons; the market residual is `signal * f1` plus noise."""
+    rng = np.random.default_rng(seed)
+    start = dt.date(2015, 10, 25)
+    dates = [start + dt.timedelta(days=int(i * 3900 / n)) for i in range(n)]
+    f1, f2 = rng.normal(0, 1, n), rng.normal(0, 1, n)
+    spread = np.round(rng.normal(-2, 6, n) * 2) / 2
+    m = -spread
+    resid = signal * f1 + rng.normal(0, 12, n)
+    margin = m + resid
+    games = pd.DataFrame({"game_id": [f"g{i}" for i in range(n)], "date": dates,
+                          "season": [_season_of(d) for d in dates], "season_type": "regular",
+                          "eligible": True, "margin": margin, "f1": f1, "f2": f2})
+    lines = pd.DataFrame({"game_id": games["game_id"], "season": games["season"], "season_type": "regular",
+                          "date": dates, "margin": margin, "home_spread": spread,
+                          "home_price": 1.91, "away_price": 1.91})
+    return games, lines
+
+
+def test_residual_table_defines_m_and_the_target():
+    games, lines = _residual_world(60)
+    t = ml.residual_table(games, lines)
+    assert (t["m"] == -t["home_spread"]).all() and (t["absm"] == t["m"].abs()).all()
+    assert np.allclose(t["resid"], t["margin"] - t["m"])
+
+
+def test_prediction_is_the_line_plus_the_scaled_residual():
+    games, lines = _residual_world(1500, signal=3.0)
+    t = ml.residual_table(games, lines)
+    full = ml.residual_predictions(t, ["f1", "f2", "m", "absm"], alpha=10.0, lam=1.0)
+    half = ml.residual_predictions(t, ["f1", "f2", "m", "absm"], alpha=10.0, lam=0.5)
+    assert np.allclose(full["mu"], full["m"] + full["r_hat"])
+    assert np.allclose(half["mu"], half["m"] + 0.5 * half["r_hat"])
+    assert len(full) < len(t)                                   # the first 800 rows are warm-up
+
+
+def test_a_real_residual_signal_is_found_and_kept():
+    games, lines = _residual_world(signal=4.0)
+    t = ml.residual_table(games, lines)
+    meta = t[["game_id", "season", "season_type"]]
+    cand = ml.residual_predictions(t, ["f1", "f2", "m", "absm"], alpha=10.0)
+    j = ml.judge_vs_line(cand, lines, meta, ml.VALID_SEGMENT, reps=100, seed=1, level=ml.VALID_LEVEL)
+    assert j["mean"] < -0.1 and j["info_over_market_candidate"]["beta"] > 0.7
+    assert j["market_judgement"]["keep"] is True, j["market_judgement"]
+
+
+def test_no_signal_is_not_kept_and_beta_is_near_zero():
+    games, lines = _residual_world(signal=0.0, seed=2)
+    t = ml.residual_table(games, lines)
+    meta = t[["game_id", "season", "season_type"]]
+    cand = ml.residual_predictions(t, ["f1", "f2", "m", "absm"], alpha=100.0)
+    j = ml.judge_vs_line(cand, lines, meta, ml.VALID_SEGMENT, reps=100, seed=1, level=ml.VALID_LEVEL)
+    assert j["market_judgement"]["keep"] is False
+    assert abs(j["info_over_market_candidate"]["beta"]) < 4 * j["info_over_market_candidate"]["se"]
+
+
+def test_decide_market_lists_every_failed_rule():
+    good = {"mean": -0.05, "hi": -0.01, "share_negative": 0.9, "cover_brier_delta": -0.001,
+            "info_over_market_candidate": {"beta": 0.8, "se": 0.1}, "n_base_in_segment": 10, "n_cand_in_segment": 10}
+    assert ml.decide_market(good)["keep"] is True
+    bad = dict(good, mean=-0.01, hi=0.01, share_negative=0.4, cover_brier_delta=0.001,
+               info_over_market_candidate={"beta": 0.1, "se": 0.1}, n_cand_in_segment=9)
+    assert set(ml.decide_market(bad)["failed"]) == {"gain", "interval", "beta", "cover_brier", "seasons", "coverage"}
+    assert "beta" in ml.decide_market(dict(good, info_over_market_candidate={"beta": None, "se": None}))["failed"]
+
+
+def test_shuffle_control_breaks_a_real_signal():
+    games, lines = _residual_world(signal=4.0, seed=3)
+    t = ml.residual_table(games, lines)
+    meta = t[["game_id", "season", "season_type"]]
+    real = ml.judge_vs_line(ml.residual_predictions(t, ["f1", "m", "absm"], 10.0), lines, meta, ml.VALID_SEGMENT, reps=50)
+    shuf = ml.judge_vs_line(ml.residual_predictions(t, ["f1", "m", "absm"], 10.0, shuffle_seed=7), lines, meta,
+                            ml.VALID_SEGMENT, reps=50)
+    assert real["mean"] < shuf["mean"] and shuf["mean"] > -0.05
+
+
+def test_shift_control_removes_the_signal():
+    games, lines = _residual_world(signal=4.0, seed=4)
+    t = ml.residual_table(games, lines)
+    meta = t[["game_id", "season", "season_type"]]
+    real = ml.judge_vs_line(ml.residual_predictions(t, ["f1", "m", "absm"], 10.0), lines, meta, ml.VALID_SEGMENT, reps=50)
+    shifted = ml.judge_vs_line(ml.residual_predictions(t, ["f1", "m", "absm"], 10.0, shift=True), lines, meta,
+                               ml.VALID_SEGMENT, reps=50)
+    assert shifted["mean"] > real["mean"] + 0.1
+
+
+def test_run_residual_stops_after_a_failed_prior_check(monkeypatch):
+    games, lines = _residual_world(signal=0.0, seed=5)
+    monkeypatch.setattr(ml, "build_feature_table", lambda bundles, cfg: games)
+    monkeypatch.setattr(ml, "PRIOR_FEATURES", ["f1", "m"])
+    monkeypatch.setattr(ml, "FULL_FEATURES", ["f1", "f2", "m", "absm"])
+    out = ml.run_residual([], lines, reps=50, seed=1, force_full=False)
+    if "stopped" in out:
+        assert "tune_grid" not in out
+    else:                                                          # a lucky positive beta: it must then run in full
+        assert len(out["tune_grid"]) == len(ml.ALPHAS) * len(ml.LAMBDAS)
+
+
+def test_run_residual_full_path_on_a_real_signal(monkeypatch):
+    games, lines = _residual_world(signal=4.0, seed=6)
+    monkeypatch.setattr(ml, "build_feature_table", lambda bundles, cfg: games)
+    monkeypatch.setattr(ml, "PRIOR_FEATURES", ["f1", "m"])
+    monkeypatch.setattr(ml, "FULL_FEATURES", ["f1", "f2", "m", "absm"])
+    out = ml.run_residual([], lines, reps=60, seed=1, n_controls=2)
+    assert "stopped" not in out and len(out["tune_grid"]) == 14
+    assert out["chosen"]["alpha"] in ml.ALPHAS and out["chosen"]["lam"] in ml.LAMBDAS
+    assert out["validation"]["market_judgement"]["keep"] is True
+    assert out["controls"]["true_beats_every_shuffle"] is True and out["controls"]["shift_does_not_help"] is True
+    json.dumps(out, default=str)
+
+
+def test_grid_sizes_match_the_registration():
+    assert len(ml.ALPHAS) == 7 and ml.LAMBDAS == (0.5, 1.0) and ml.VALID_LEVEL == 0.995
+    assert ml.TUNE_SEGMENT["last_season"] == "2021-22" and ml.VALID_SEGMENT["first_season"] == "2022-23"
