@@ -27,7 +27,7 @@ def _block(start_regex: str) -> str:
 
 def test_crons():
     text = _text()
-    for cron in ("30 6 * * *", "30 22 * * *", "30 0 * * *", "0 2 * * *", "0 12 * * 1"):
+    for cron in ("0 7 * * *", "30 22 * * *", "30 0 * * *", "0 2 * * *", "0 12 * * 1"):
         assert f'cron: "{cron}"' in text
     assert '"0 22 * * *"' not in text
 
@@ -42,7 +42,7 @@ def test_legacy_preload_not_scheduled():
 def test_daily_pipeline_still_scheduled_at_1030():
     cond = next(ln for ln in _block(r"- name: v2 daily pipeline").splitlines()
                 if ln.strip().startswith("if:"))
-    assert "'30 6 * * *'" in cond
+    assert "'0 7 * * *'" in cond
 
 
 def test_close_step_runs_close_mode_without_predict():
@@ -107,7 +107,7 @@ def test_quality_step_runs_after_daily_pipeline_even_on_failure():
     assert quality > pipeline
     cond = _cond(_block(r"- name: v2 quality \(read-only data checks\)"))
     assert "!cancelled()" in cond and "always()" not in cond
-    assert "github.event.schedule == '30 6 * * *'" in cond
+    assert "github.event.schedule == '0 7 * * *'" in cond
 
 
 def test_quality_step_command_and_fail_on():
