@@ -1,6 +1,6 @@
 # P4 改前基線：`python -m jobs.evaluate`（12 季，唯讀）
 
-來源：主線 2026-10-26 訊息轉述使用者執行結果（原始輸出未存檔；部分數字另見 `p4-ablation-*.json` 的 `baseline_selfcheck`）。
+來源：使用者 2026-10-26 用 `python run_with_db.py jobs.evaluate`（`!` 模式）執行的終端輸出，由主線轉述，未存原始檔；P5.0 的 `market_layer --report baseline` 會重現其中的數字，屆時以工具輸出取代。部分數字另見 `p4-ablation-*.json` 的 `baseline_selfcheck`。
 資料：feature table 15,036 場，eligible 13,915，有盤口的 final 14,607；report 段 n=12,736（tune 段 n=274，即最早一季的前 274 場）。
 
 margin（report MAE／bias／winner-acc／ATS 命中／ROI@min_edge 0.04）：
