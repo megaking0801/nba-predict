@@ -1,0 +1,1237 @@
+{
+ "seasons": {
+  "2015-16": {
+   "counts": {
+    "playoffs|final|nba": 86,
+    "preseason|final|nba": 100,
+    "preseason|final|skipped": 9,
+    "regular|final|nba": 1230,
+    "regular|final|skipped": 1,
+    "regular|postponed|nba": 2
+   },
+   "failed_dates": 0
+  },
+  "2016-17": {
+   "counts": {
+    "playoffs|final|nba": 79,
+    "preseason|final|nba": 97,
+    "preseason|final|skipped": 5,
+    "regular|final|nba": 1230,
+    "regular|final|skipped": 1,
+    "regular|postponed|nba": 3
+   },
+   "failed_dates": 0
+  },
+  "2017-18": {
+   "counts": {
+    "playoffs|final|nba": 82,
+    "preseason|final|nba": 68,
+    "preseason|final|skipped": 8,
+    "regular|final|nba": 1230,
+    "regular|final|skipped": 2,
+    "regular|postponed|nba": 1
+   },
+   "failed_dates": 0
+  },
+  "2018-19": {
+   "counts": {
+    "playoffs|final|nba": 82,
+    "preseason|final|nba": 59,
+    "preseason|final|skipped": 9,
+    "regular|final|nba": 1230,
+    "regular|final|skipped": 2
+   },
+   "failed_dates": 0
+  },
+  "2019-20": {
+   "counts": {
+    "playin|final|nba": 1,
+    "playoffs|final|nba": 83,
+    "playoffs|postponed|nba": 9,
+    "preseason|final|nba": 65,
+    "preseason|final|skipped": 13,
+    "regular|final|nba": 1059,
+    "regular|final|skipped": 2,
+    "regular|postponed|nba": 3
+   },
+   "failed_dates": 0
+  },
+  "2020-21": {
+   "counts": {
+    "playin|final|nba": 6,
+    "playoffs|final|nba": 85,
+    "preseason|final|nba": 49,
+    "regular|final|nba": 1080,
+    "regular|final|skipped": 1,
+    "regular|postponed|nba": 32
+   },
+   "failed_dates": 0
+  },
+  "2021-22": {
+   "counts": {
+    "playin|final|nba": 6,
+    "playoffs|final|nba": 87,
+    "preseason|final|nba": 66,
+    "regular|final|nba": 1230,
+    "regular|final|skipped": 1,
+    "regular|postponed|nba": 11
+   },
+   "failed_dates": 0
+  },
+  "2022-23": {
+   "counts": {
+    "playin|final|nba": 6,
+    "playoffs|final|nba": 84,
+    "preseason|final|nba": 64,
+    "preseason|final|skipped": 4,
+    "regular|final|nba": 1230,
+    "regular|final|skipped": 1,
+    "regular|postponed|nba": 1
+   },
+   "failed_dates": 0
+  },
+  "2023-24": {
+   "counts": {
+    "playin|final|nba": 6,
+    "playoffs|final|nba": 82,
+    "preseason|final|nba": 64,
+    "preseason|final|skipped": 9,
+    "regular|final|nba": 1231,
+    "regular|final|skipped": 1,
+    "regular|postponed|nba": 2
+   },
+   "failed_dates": 0
+  },
+  "2024-25": {
+   "counts": {
+    "parse_error": 1,
+    "playin|final|nba": 6,
+    "playoffs|final|nba": 84,
+    "preseason|canceled|nba": 1,
+    "preseason|final|nba": 69,
+    "preseason|final|skipped": 3,
+    "regular|final|nba": 1231,
+    "regular|final|skipped": 3,
+    "regular|postponed|nba": 5
+   },
+   "failed_dates": 0
+  },
+  "2025-26": {
+   "counts": {
+    "parse_error": 1,
+    "playin|final|nba": 6,
+    "playoffs|final|nba": 85,
+    "preseason|final|nba": 65,
+    "preseason|final|skipped": 5,
+    "regular|final|nba": 1231,
+    "regular|final|skipped": 4,
+    "regular|postponed|nba": 4
+   },
+   "failed_dates": 0
+  },
+  "2026-27": {
+   "counts": {
+    "preseason|final|nba": 66,
+    "preseason|final|skipped": 1,
+    "regular|final|nba": 36,
+    "regular|scheduled|nba": 1164,
+    "regular|scheduled|skipped": 6
+   },
+   "failed_dates": 0
+  }
+ },
+ "skipped": [
+  {
+   "season": "2015-16",
+   "date": "20151005",
+   "id": "400830232",
+   "type": "preseason",
+   "status": "STATUS_FINAL",
+   "abbrs": [
+    "BKN",
+    "FUL"
+   ],
+   "name": "Fenerbahce Ulker Fenerbahce Ulker at Brooklyn Nets"
+  },
+  {
+   "season": "2015-16",
+   "date": "20151006",
+   "id": "400832210",
+   "type": "preseason",
+   "status": "STATUS_FINAL",
+   "abbrs": [
+    "OLI",
+    "BOS"
+   ],
+   "name": "Boston Celtics at Milan Olimpia"
+  },
+  {
+   "season": "2015-16",
+   "date": "20151007",
+   "id": "400833756",
+   "type": "preseason",
+   "status": "STATUS_FINAL",
+   "abbrs": [
+    "NY",
+    "BAURU"
+   ],
+   "name": "Bauru Paschoalotto Bauru at New York Knicks"
+  },
+  {
+   "season": "2015-16",
+   "date": "20151008",
+   "id": "400832031",
+   "type": "preseason",
+   "status": "STATUS_FINAL",
+   "abbrs": [
+    "MDD",
+    "BOS"
+   ],
+   "name": "Boston Celtics at Real Madrid"
+  },
+  {
+   "season": "2015-16",
+   "date": "20151008",
+   "id": "400830100",
+   "type": "preseason",
+   "status": "STATUS_FINAL",
+   "abbrs": [
+    "MEM",
+    "MCH"
+   ],
+   "name": "Maccabi Haifa Maccabi Haifa at Memphis Grizzlies"
+  },
+  {
+   "season": "2015-16",
+   "date": "20151009",
+   "id": "400830114",
+   "type": "preseason",
+   "status": "STATUS_FINAL",
+   "abbrs": [
+    "OKC",
+    "FUL"
+   ],
+   "name": "Fenerbahce Ulker Fenerbahce Ulker at Oklahoma City Thunder"
+  },
+  {
+   "season": "2015-16",
+   "date": "20151011",
+   "id": "400833758",
+   "type": "preseason",
+   "status": "STATUS_FINAL",
+   "abbrs": [
+    "WSH",
+    "BAURU"
+   ],
+   "name": "Bauru Paschoalotto Bauru at Washington Wizards"
+  },
+  {
+   "season": "2015-16",
+   "date": "20151011",
+   "id": "400830089",
+   "type": "preseason",
+   "status": "STATUS_FINAL",
+   "abbrs": [
+    "LAL",
+    "MCH"
+   ],
+   "name": "Maccabi Haifa Maccabi Haifa at Los Angeles Lakers"
+  },
+  {
+   "season": "2015-16",
+   "date": "20151017",
+   "id": "400830126",
+   "type": "preseason",
+   "status": "STATUS_FINAL",
+   "abbrs": [
+    "FLMG",
+    "ORL"
+   ],
+   "name": "Orlando Magic at Flamengo Flamengo"
+  },
+  {
+   "season": "2015-16",
+   "date": "20160214",
+   "id": "400829482",
+   "type": "regular",
+   "status": "STATUS_FINAL",
+   "abbrs": [
+    "EAST",
+    "WEST"
+   ],
+   "name": "Western Conf All-Stars at Eastern Conf All-Stars"
+  },
+  {
+   "season": "2016-17",
+   "date": "20161002",
+   "id": "400899175",
+   "type": "preseason",
+   "status": "STATUS_FINAL",
+   "abbrs": [
+    "HOU",
+    "SHA"
+   ],
+   "name": "Shanghai Sharks at Houston Rockets"
+  },
+  {
+   "season": "2016-17",
+   "date": "20161003",
+   "id": "400897113",
+   "type": "preseason",
+   "status": "STATUS_FINAL",
+   "abbrs": [
+    "MDD",
+    "OKC"
+   ],
+   "name": "Oklahoma City Thunder at Madrid Real Madrid"
+  },
+  {
+   "season": "2016-17",
+   "date": "20161005",
+   "id": "400897115",
+   "type": "preseason",
+   "status": "STATUS_FINAL",
+   "abbrs": [
+    "BAR",
+    "OKC"
+   ],
+   "name": "Oklahoma City Thunder at Barcelona FC Barcelona"
+  },
+  {
+   "season": "2016-17",
+   "date": "20161010",
+   "id": "400897110",
+   "type": "preseason",
+   "status": "STATUS_FINAL",
+   "abbrs": [
+    "SAC",
+    "MCH"
+   ],
+   "name": "Maccabi Haifa Maccabi Haifa at Sacramento Kings"
+  },
+  {
+   "season": "2016-17",
+   "date": "20161014",
+   "id": "400897117",
+   "type": "preseason",
+   "status": "STATUS_FINAL",
+   "abbrs": [
+    "TOR",
+    "SAN LORENZ"
+   ],
+   "name": "Buenos Aires San Lorenz at Toronto Raptors"
+  },
+  {
+   "season": "2016-17",
+   "date": "20170219",
+   "id": "400935635",
+   "type": "regular",
+   "status": "STATUS_FINAL",
+   "abbrs": [
+    "WEST",
+    "EAST"
+   ],
+   "name": "Eastern Conf All-Stars at Western Conf All-Stars"
+  },
+  {
+   "season": "2017-18",
+   "date": "20171002",
+   "id": "400980091",
+   "type": "preseason",
+   "status": "STATUS_FINAL",
+   "abbrs": [
+    "WSH",
+    "GUA"
+   ],
+   "name": "Guangzhou Loong-Lions at Washington Wizards"
+  },
+  {
+   "season": "2017-18",
+   "date": "20171002",
+   "id": "400978803",
+   "type": "preseason",
+   "status": "STATUS_FINAL",
+   "abbrs": [
+    "UTAH",
+    "SYD"
+   ],
+   "name": "Sydney Kings at Utah Jazz"
+  },
+  {
+   "season": "2017-18",
+   "date": "20171004",
+   "id": "400978804",
+   "type": "preseason",
+   "status": "STATUS_FINAL",
+   "abbrs": [
+    "UTAH",
+    "MCH"
+   ],
+   "name": "Haifa Maccabi at Utah Jazz"
+  },
+  {
+   "season": "2017-18",
+   "date": "20171005",
+   "id": "400980088",
+   "type": "preseason",
+   "status": "STATUS_FINAL",
+   "abbrs": [
+    "HOU",
+    "SHA"
+   ],
+   "name": "Shanghai Sharks at Houston Rockets"
+  },
+  {
+   "season": "2017-18",
+   "date": "20171008",
+   "id": "400978812",
+   "type": "preseason",
+   "status": "STATUS_FINAL",
+   "abbrs": [
+    "OKC",
+    "MEL"
+   ],
+   "name": "Melbourne Melbourne United at Oklahoma City Thunder"
+  },
+  {
+   "season": "2017-18",
+   "date": "20171010",
+   "id": "400978822",
+   "type": "preseason",
+   "status": "STATUS_FINAL",
+   "abbrs": [
+    "IND",
+    "MCH"
+   ],
+   "name": "Haifa Maccabi at Indiana Pacers"
+  },
+  {
+   "season": "2017-18",
+   "date": "20171013",
+   "id": "400978802",
+   "type": "preseason",
+   "status": "STATUS_FINAL",
+   "abbrs": [
+    "POR",
+    "MCH"
+   ],
+   "name": "Haifa Maccabi at Portland Trail Blazers"
+  },
+  {
+   "season": "2017-18",
+   "date": "20171013",
+   "id": "400978813",
+   "type": "preseason",
+   "status": "STATUS_FINAL",
+   "abbrs": [
+    "PHX",
+    "BRI"
+   ],
+   "name": "Brisbane Bullets at Phoenix Suns"
+  },
+  {
+   "season": "2017-18",
+   "date": "20180216",
+   "id": "401018033",
+   "type": "regular",
+   "status": "STATUS_FINAL",
+   "abbrs": [
+    "USA",
+    "WORLD"
+   ],
+   "name": "World World at USA USA"
+  },
+  {
+   "season": "2017-18",
+   "date": "20180218",
+   "id": "401001760",
+   "type": "regular",
+   "status": "STATUS_FINAL",
+   "abbrs": [
+    "STE",
+    "LEB"
+   ],
+   "name": "Team LeBron Team LeBron at Team Stephen Team Stephen"
+  },
+  {
+   "season": "2018-19",
+   "date": "20181003",
+   "id": "401077256",
+   "type": "preseason",
+   "status": "STATUS_FINAL",
+   "abbrs": [
+    "PHX",
+    "NZL"
+   ],
+   "name": "New Zealand Breakers at Phoenix Suns"
+  },
+  {
+   "season": "2018-19",
+   "date": "20181005",
+   "id": "401077261",
+   "type": "preseason",
+   "status": "STATUS_FINAL",
+   "abbrs": [
+    "ORL",
+    "FLMG"
+   ],
+   "name": "Flamengo Flamengo at Orlando Magic"
+  },
+  {
+   "season": "2018-19",
+   "date": "20181005",
+   "id": "401077262",
+   "type": "preseason",
+   "status": "STATUS_FINAL",
+   "abbrs": [
+    "TOR",
+    "MEL"
+   ],
+   "name": "Melbourne Melbourne United at Toronto Raptors"
+  },
+  {
+   "season": "2018-19",
+   "date": "20181005",
+   "id": "401077268",
+   "type": "preseason",
+   "status": "STATUS_FINAL",
+   "abbrs": [
+    "DEN",
+    "PERTH"
+   ],
+   "name": "Perth Perth at Denver Nuggets"
+  },
+  {
+   "season": "2018-19",
+   "date": "20181005",
+   "id": "401077269",
+   "type": "preseason",
+   "status": "STATUS_FINAL",
+   "abbrs": [
+    "UTAH",
+    "ADL"
+   ],
+   "name": "ADELAIDE 36ers at Utah Jazz"
+  },
+  {
+   "season": "2018-19",
+   "date": "20181008",
+   "id": "401077285",
+   "type": "preseason",
+   "status": "STATUS_FINAL",
+   "abbrs": [
+    "SAC",
+    "MCH"
+   ],
+   "name": "Haifa Maccabi Haifa at Sacramento Kings"
+  },
+  {
+   "season": "2018-19",
+   "date": "20181009",
+   "id": "401077287",
+   "type": "preseason",
+   "status": "STATUS_FINAL",
+   "abbrs": [
+    "HOU",
+    "SHA"
+   ],
+   "name": "Shanghai Sharks at Houston Rockets"
+  },
+  {
+   "season": "2018-19",
+   "date": "20181011",
+   "id": "401077299",
+   "type": "preseason",
+   "status": "STATUS_FINAL",
+   "abbrs": [
+    "LAC",
+    "MCH"
+   ],
+   "name": "Haifa Maccabi Haifa at LA Clippers"
+  },
+  {
+   "season": "2018-19",
+   "date": "20181012",
+   "id": "401077302",
+   "type": "preseason",
+   "status": "STATUS_FINAL",
+   "abbrs": [
+    "WSH",
+    "GUA"
+   ],
+   "name": "Guangzhou Loong-Lions at Washington Wizards"
+  },
+  {
+   "season": "2018-19",
+   "date": "20190215",
+   "id": "401098038",
+   "type": "regular",
+   "status": "STATUS_FINAL",
+   "abbrs": [
+    "USA",
+    "WORLD"
+   ],
+   "name": "World World at USA USA"
+  },
+  {
+   "season": "2018-19",
+   "date": "20190217",
+   "id": "401098037",
+   "type": "regular",
+   "status": "STATUS_FINAL",
+   "abbrs": [
+    "GIA",
+    "LEB"
+   ],
+   "name": "Team LeBron Team LeBron at Team Giannis Team Giannis"
+  },
+  {
+   "season": "2019-20",
+   "date": "20191004",
+   "id": "401163116",
+   "type": "preseason",
+   "status": "STATUS_FINAL",
+   "abbrs": [
+    "BKN",
+    "FBC"
+   ],
+   "name": "Franca Franca at Brooklyn Nets"
+  },
+  {
+   "season": "2019-20",
+   "date": "20191005",
+   "id": "401163120",
+   "type": "preseason",
+   "status": "STATUS_FINAL",
+   "abbrs": [
+    "UTAH",
+    "ADL"
+   ],
+   "name": "ADELAIDE 36ers at Utah Jazz"
+  },
+  {
+   "season": "2019-20",
+   "date": "20191006",
+   "id": "401163121",
+   "type": "preseason",
+   "status": "STATUS_FINAL",
+   "abbrs": [
+    "MEM",
+    "MCH"
+   ],
+   "name": "Haifa Maccabi Haifa at Memphis Grizzlies"
+  },
+  {
+   "season": "2019-20",
+   "date": "20191006",
+   "id": "401163123",
+   "type": "preseason",
+   "status": "STATUS_FINAL",
+   "abbrs": [
+    "LAC",
+    "SHA"
+   ],
+   "name": "Shanghai Sharks at LA Clippers"
+  },
+  {
+   "season": "2019-20",
+   "date": "20191007",
+   "id": "401163124",
+   "type": "preseason",
+   "status": "STATUS_FINAL",
+   "abbrs": [
+    "CLE",
+    "SAN"
+   ],
+   "name": "San Lorenzo San Lorenzo at Cleveland Cavaliers"
+  },
+  {
+   "season": "2019-20",
+   "date": "20191008",
+   "id": "401163130",
+   "type": "preseason",
+   "status": "STATUS_FINAL",
+   "abbrs": [
+    "PHI",
+    "GUA"
+   ],
+   "name": "Guangzhou Loong-Lions at Philadelphia 76ers"
+  },
+  {
+   "season": "2019-20",
+   "date": "20191008",
+   "id": "401163132",
+   "type": "preseason",
+   "status": "STATUS_FINAL",
+   "abbrs": [
+    "MEM",
+    "NZL"
+   ],
+   "name": "New Zealand Breakers at Memphis Grizzlies"
+  },
+  {
+   "season": "2019-20",
+   "date": "20191009",
+   "id": "401163137",
+   "type": "preseason",
+   "status": "STATUS_FINAL",
+   "abbrs": [
+    "WSH",
+    "GUA"
+   ],
+   "name": "Guangzhou Loong-Lions at Washington Wizards"
+  },
+  {
+   "season": "2019-20",
+   "date": "20191010",
+   "id": "401163144",
+   "type": "preseason",
+   "status": "STATUS_FINAL",
+   "abbrs": [
+    "OKC",
+    "NZL"
+   ],
+   "name": "New Zealand Breakers at Oklahoma City Thunder"
+  },
+  {
+   "season": "2019-20",
+   "date": "20191010",
+   "id": "401163145",
+   "type": "preseason",
+   "status": "STATUS_FINAL",
+   "abbrs": [
+    "POR",
+    "MCH"
+   ],
+   "name": "Haifa Maccabi Haifa at Portland Trail Blazers"
+  },
+  {
+   "season": "2019-20",
+   "date": "20191013",
+   "id": "401163159",
+   "type": "preseason",
+   "status": "STATUS_FINAL",
+   "abbrs": [
+    "LAC",
+    "MEL"
+   ],
+   "name": "Melbourne Melbourne United at LA Clippers"
+  },
+  {
+   "season": "2019-20",
+   "date": "20191013",
+   "id": "401163164",
+   "type": "preseason",
+   "status": "STATUS_FINAL",
+   "abbrs": [
+    "MIN",
+    "MCH"
+   ],
+   "name": "Haifa Maccabi Haifa at Minnesota Timberwolves"
+  },
+  {
+   "season": "2019-20",
+   "date": "20191016",
+   "id": "401163179",
+   "type": "preseason",
+   "status": "STATUS_FINAL",
+   "abbrs": [
+    "SAC",
+    "MEL"
+   ],
+   "name": "Melbourne Melbourne United at Sacramento Kings"
+  },
+  {
+   "season": "2019-20",
+   "date": "20200214",
+   "id": "401197814",
+   "type": "regular",
+   "status": "STATUS_FINAL",
+   "abbrs": [
+    "USA",
+    "WORLD"
+   ],
+   "name": "World World at USA USA"
+  },
+  {
+   "season": "2019-20",
+   "date": "20200216",
+   "id": "401197813",
+   "type": "regular",
+   "status": "STATUS_FINAL",
+   "abbrs": [
+    "GIA",
+    "LEB"
+   ],
+   "name": "Team LeBron Team LeBron at Team Giannis Team Giannis"
+  },
+  {
+   "season": "2020-21",
+   "date": "20210307",
+   "id": "401306581",
+   "type": "regular",
+   "status": "STATUS_FINAL",
+   "abbrs": [
+    "DUR",
+    "LEB"
+   ],
+   "name": "Team LeBron Team LeBron at Team Durant Team Durant"
+  },
+  {
+   "season": "2021-22",
+   "date": "20220220",
+   "id": "401410564",
+   "type": "regular",
+   "status": "STATUS_FINAL",
+   "abbrs": [
+    "LEB",
+    "DUR"
+   ],
+   "name": "Team Durant Team Durant at Team LeBron Team LeBron"
+  },
+  {
+   "season": "2022-23",
+   "date": "20221002",
+   "id": "401474848",
+   "type": "preseason",
+   "status": "STATUS_FINAL",
+   "abbrs": [
+    "PHX",
+    "ADL"
+   ],
+   "name": "ADELAIDE 36ers at Phoenix Suns"
+  },
+  {
+   "season": "2022-23",
+   "date": "20221006",
+   "id": "401474865",
+   "type": "preseason",
+   "status": "STATUS_FINAL",
+   "abbrs": [
+    "OKC",
+    "ADL"
+   ],
+   "name": "ADELAIDE 36ers at Oklahoma City Thunder"
+  },
+  {
+   "season": "2022-23",
+   "date": "20221006",
+   "id": "401474867",
+   "type": "preseason",
+   "status": "STATUS_FINAL",
+   "abbrs": [
+    "POR",
+    "MRC"
+   ],
+   "name": "RA'ANANA Ra'Anana at Portland Trail Blazers"
+  },
+  {
+   "season": "2022-23",
+   "date": "20221009",
+   "id": "401474878",
+   "type": "preseason",
+   "status": "STATUS_FINAL",
+   "abbrs": [
+    "OKC",
+    "MRC"
+   ],
+   "name": "RA'ANANA Ra'Anana at Oklahoma City Thunder"
+  },
+  {
+   "season": "2022-23",
+   "date": "20230219",
+   "id": "401524696",
+   "type": "regular",
+   "status": "STATUS_FINAL",
+   "abbrs": [
+    "LEB",
+    "GIA"
+   ],
+   "name": "Team Giannis Team Giannis at Team LeBron Team LeBron"
+  },
+  {
+   "season": "2023-24",
+   "date": "20231010",
+   "id": "401608099",
+   "type": "preseason",
+   "status": "STATUS_FINAL",
+   "abbrs": [
+    "REAL",
+    "DAL"
+   ],
+   "name": "Dallas Mavericks at null Real Madrid"
+  },
+  {
+   "season": "2023-24",
+   "date": "20231010",
+   "id": "401591882",
+   "type": "preseason",
+   "status": "STATUS_FINAL",
+   "abbrs": [
+    "WSH",
+    "CNS"
+   ],
+   "name": "Cairns Taipans at Washington Wizards"
+  },
+  {
+   "season": "2023-24",
+   "date": "20231010",
+   "id": "401591890",
+   "type": "preseason",
+   "status": "STATUS_FINAL",
+   "abbrs": [
+    "POR",
+    "NZL"
+   ],
+   "name": "New Zealand Breakers at Portland Trail Blazers"
+  },
+  {
+   "season": "2023-24",
+   "date": "20231012",
+   "id": "401591897",
+   "type": "preseason",
+   "status": "STATUS_FINAL",
+   "abbrs": [
+    "BKN",
+    "MRC"
+   ],
+   "name": "RA'ANANA Ra'Anana at Brooklyn Nets"
+  },
+  {
+   "season": "2023-24",
+   "date": "20231015",
+   "id": "401591908",
+   "type": "preseason",
+   "status": "STATUS_FINAL",
+   "abbrs": [
+    "TOR",
+    "CNS"
+   ],
+   "name": "Cairns Taipans at Toronto Raptors"
+  },
+  {
+   "season": "2023-24",
+   "date": "20231016",
+   "id": "401591912",
+   "type": "preseason",
+   "status": "STATUS_FINAL",
+   "abbrs": [
+    "CLE",
+    "MRC"
+   ],
+   "name": "RA'ANANA Ra'Anana at Cleveland Cavaliers"
+  },
+  {
+   "season": "2023-24",
+   "date": "20231016",
+   "id": "401591916",
+   "type": "preseason",
+   "status": "STATUS_FINAL",
+   "abbrs": [
+    "UTAH",
+    "NZL"
+   ],
+   "name": "New Zealand Breakers at Utah Jazz"
+  },
+  {
+   "season": "2023-24",
+   "date": "20231017",
+   "id": "401591921",
+   "type": "preseason",
+   "status": "STATUS_FINAL",
+   "abbrs": [
+    "MIN",
+    "MRC"
+   ],
+   "name": "RA'ANANA Ra'Anana at Minnesota Timberwolves"
+  },
+  {
+   "season": "2023-24",
+   "date": "20231020",
+   "id": "401591935",
+   "type": "preseason",
+   "status": "STATUS_FINAL",
+   "abbrs": [
+    "ORL",
+    "FLMG"
+   ],
+   "name": "Flamengo Flamengo at Orlando Magic"
+  },
+  {
+   "season": "2023-24",
+   "date": "20240218",
+   "id": "401623259",
+   "type": "regular",
+   "status": "STATUS_FINAL",
+   "abbrs": [
+    "EAST",
+    "WEST"
+   ],
+   "name": "Western Conf All-Stars at Eastern Conf All-Stars"
+  },
+  {
+   "season": "2024-25",
+   "date": "20241004",
+   "id": "401716948",
+   "type": "preseason",
+   "status": "STATUS_FINAL",
+   "abbrs": [
+    "UTAH",
+    "NZL"
+   ],
+   "name": "New Zealand Breakers at Utah Jazz"
+  },
+  {
+   "season": "2024-25",
+   "date": "20241007",
+   "id": "401717054",
+   "type": "preseason",
+   "status": "STATUS_FINAL",
+   "abbrs": [
+    "PHI",
+    "NZL"
+   ],
+   "name": "New Zealand Breakers at Philadelphia 76ers"
+  },
+  {
+   "season": "2024-25",
+   "date": "20241010",
+   "id": "401716981",
+   "type": "preseason",
+   "status": "STATUS_FINAL",
+   "abbrs": [
+    "OKC",
+    "NZL"
+   ],
+   "name": "New Zealand Breakers at Oklahoma City Thunder"
+  },
+  {
+   "season": "2024-25",
+   "date": "20250216",
+   "id": "401752955",
+   "type": "regular",
+   "status": "STATUS_FINAL",
+   "abbrs": [
+    "CHK",
+    "KEN"
+   ],
+   "name": "Team Kenny Team Kenny at Team Chuck Team Chuck"
+  },
+  {
+   "season": "2024-25",
+   "date": "20250216",
+   "id": "401752956",
+   "type": "regular",
+   "status": "STATUS_FINAL",
+   "abbrs": [
+    "SHQ",
+    "CAN"
+   ],
+   "name": "Team Candace Team Candace at Team Shaq Team Shaq"
+  },
+  {
+   "season": "2024-25",
+   "date": "20250216",
+   "id": "401752957",
+   "type": "regular",
+   "status": "STATUS_FINAL",
+   "abbrs": [
+    "CHK",
+    "SHQ"
+   ],
+   "name": "Team Shaq Team Shaq at Team Chuck Team Chuck"
+  },
+  {
+   "season": "2025-26",
+   "date": "20251002",
+   "id": "401812481",
+   "type": "preseason",
+   "status": "STATUS_FINAL",
+   "abbrs": [
+    "NO",
+    "MEL"
+   ],
+   "name": "Melbourne Melbourne United at New Orleans Pelicans"
+  },
+  {
+   "season": "2025-26",
+   "date": "20251004",
+   "id": "401812484",
+   "type": "preseason",
+   "status": "STATUS_FINAL",
+   "abbrs": [
+    "BKN",
+    "HAPOEL"
+   ],
+   "name": "null Hapoel Jerusalem at Brooklyn Nets"
+  },
+  {
+   "season": "2025-26",
+   "date": "20251006",
+   "id": "401812681",
+   "type": "preseason",
+   "status": "STATUS_FINAL",
+   "abbrs": [
+    "SA",
+    "GUA"
+   ],
+   "name": "Guangzhou Loong-Lions at San Antonio Spurs"
+  },
+  {
+   "season": "2025-26",
+   "date": "20251009",
+   "id": "401812695",
+   "type": "preseason",
+   "status": "STATUS_FINAL",
+   "abbrs": [
+    "LAC",
+    "GUA"
+   ],
+   "name": "Guangzhou Loong-Lions at LA Clippers"
+  },
+  {
+   "season": "2025-26",
+   "date": "20251013",
+   "id": "401812714",
+   "type": "preseason",
+   "status": "STATUS_FINAL",
+   "abbrs": [
+    "MIN",
+    "GUA"
+   ],
+   "name": "Guangzhou Loong-Lions at Minnesota Timberwolves"
+  },
+  {
+   "season": "2025-26",
+   "date": "20260215",
+   "id": "401838140",
+   "type": "regular",
+   "status": "STATUS_FINAL",
+   "abbrs": [
+    "STARS",
+    "WORLD"
+   ],
+   "name": "World World at Team Stars Team Stars"
+  },
+  {
+   "season": "2025-26",
+   "date": "20260215",
+   "id": "401838141",
+   "type": "regular",
+   "status": "STATUS_FINAL",
+   "abbrs": [
+    "STRIPES",
+    "STARS"
+   ],
+   "name": "Team Stars Team Stars at Team Stripes Team Stripes"
+  },
+  {
+   "season": "2025-26",
+   "date": "20260215",
+   "id": "401838142",
+   "type": "regular",
+   "status": "STATUS_FINAL",
+   "abbrs": [
+    "STRIPES",
+    "WORLD"
+   ],
+   "name": "World World at Team Stripes Team Stripes"
+  },
+  {
+   "season": "2025-26",
+   "date": "20260215",
+   "id": "401838143",
+   "type": "regular",
+   "status": "STATUS_FINAL",
+   "abbrs": [
+    "STRIPES",
+    "STARS"
+   ],
+   "name": "Team Stars Team Stars at Team Stripes Team Stripes"
+  },
+  {
+   "season": "2026-27",
+   "date": "20261012",
+   "id": "401914130",
+   "type": "preseason",
+   "status": "STATUS_FINAL",
+   "abbrs": [
+    "POR",
+    "LON"
+   ],
+   "name": "London Lions at Portland Trail Blazers"
+  },
+  {
+   "season": "2026-27",
+   "date": "20261204",
+   "id": "401909450",
+   "type": "regular",
+   "status": "STATUS_SCHEDULED",
+   "abbrs": [
+    "TBD",
+    "TBD"
+   ],
+   "name": "TBD at TBD"
+  },
+  {
+   "season": "2026-27",
+   "date": "20261204",
+   "id": "401909451",
+   "type": "regular",
+   "status": "STATUS_SCHEDULED",
+   "abbrs": [
+    "TBD",
+    "TBD"
+   ],
+   "name": "TBD at TBD"
+  },
+  {
+   "season": "2026-27",
+   "date": "20261205",
+   "id": "401909452",
+   "type": "regular",
+   "status": "STATUS_SCHEDULED",
+   "abbrs": [
+    "TBD",
+    "TBD"
+   ],
+   "name": "TBD at TBD"
+  },
+  {
+   "season": "2026-27",
+   "date": "20261205",
+   "id": "401909453",
+   "type": "regular",
+   "status": "STATUS_SCHEDULED",
+   "abbrs": [
+    "TBD",
+    "TBD"
+   ],
+   "name": "TBD at TBD"
+  },
+  {
+   "season": "2026-27",
+   "date": "20261208",
+   "id": "401909454",
+   "type": "regular",
+   "status": "STATUS_SCHEDULED",
+   "abbrs": [
+    "TBD",
+    "TBD"
+   ],
+   "name": "TBD at TBD"
+  },
+  {
+   "season": "2026-27",
+   "date": "20261211",
+   "id": "401909456",
+   "type": "regular",
+   "status": "STATUS_SCHEDULED",
+   "abbrs": [
+    "TBD",
+    "TBD"
+   ],
+   "name": "TBD at TBD"
+  }
+ ]
+}
