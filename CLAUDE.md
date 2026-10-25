@@ -32,7 +32,7 @@ python -m jobs.quality --all           # 資料品質檢查（只讀連線，需
   `neutral_site` 來自 scoreboard，**抓不到 2020 泡泡賽**（實測為 False），P4 要用日期區間標記泡泡。
   `ingest_espn` 的 `daily()`／`backfill()` 會先 `ensure_schema`，因為 `run_daily` 在 ESPN 抓取前不會呼叫它。
   view：`v_latest_lines`、`v_closing_lines`、`v_app_board`。
-- 排程：10:30 UTC（台北 18:30）`run_daily` 全流程，是當天的正式預測；22:30、00:30、02:00 UTC 跑 `run_daily --close`（只抓開賽前 150 分鐘內比賽的盤口與傷兵，**不預測**）；週一 12:00 UTC 重新訓練與 keepalive。10:30 UTC 的 `run_daily` 之後另有獨立的 step `v2 quality (read-only data checks)`（`jobs.quality --since 7d --fail-on warn --ignore-types preseason`，`!cancelled()`）：有新問題會讓 CI 變紅，與資料抓取的紅燈分開；要消掉已確認的新問題，修資料或重跑 `--all --write-baseline`（`as_of_date` 往後移）。手動 `v2_quality` 跑完整檢查。
+- 排程：06:30 UTC（台北 14:30）`run_daily` 全流程，是當天的正式預測（GitHub 排程實測會晚 3～4 小時才開跑，所以提早設，實際落在台北約 18:00～18:30，趕在使用者晚上 9 點看網站之前）；22:30、00:30、02:00 UTC 跑 `run_daily --close`（只抓開賽前 150 分鐘內比賽的盤口與傷兵，**不預測**）；週一 12:00 UTC 重新訓練與 keepalive。10:30 UTC 的 `run_daily` 之後另有獨立的 step `v2 quality (read-only data checks)`（`jobs.quality --since 7d --fail-on warn --ignore-types preseason`，`!cancelled()`）：有新問題會讓 CI 變紅，與資料抓取的紅燈分開；要消掉已確認的新問題，修資料或重跑 `--all --write-baseline`（`as_of_date` 往後移）。手動 `v2_quality` 跑完整檢查。
 - 傷兵與名單歷史：`injury_reports`（每次抓取 append，含 ESPN 的 `reported_at`）、`roster_snapshots`（每隊每個 ET 日一份）；舊表 `injury_snapshots` 照寫，`predict_daily` 讀它。
 - workflow 設 `PAPER_MODE=1`：模型證明贏得了市場（P5）之前，預測一律記為 paper。
 - `track_record()` 每場只算一次（`DISTINCT ON`，優先取開賽前最後一筆；是偏好不是過濾，回填的歷史預測才不會歸零）。

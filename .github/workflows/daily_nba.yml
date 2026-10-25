@@ -48,8 +48,11 @@ on:
         required: false
         default: "200"
   schedule:
-    # 10:30 UTC = 18:30 Asia/Taipei — v2 full daily run: the day's official prediction
-    - cron: "30 10 * * *"
+    # 06:30 UTC (14:30 Taipei) — v2 full daily run: the day's official prediction. GitHub starts
+    # scheduled runs 3-4 h late on this repo (the 10:30 UTC cron ran at 14:05 and 14:32 UTC on
+    # 10/24-25), so it is set early enough that the late start still lands before 21:00 Taipei.
+    # Yesterday's last games (about 04:30 UTC) are final by then.
+    - cron: "30 6 * * *"
     # Close snapshots (lines + injuries for games tipping off within ~2.5 h; no prediction).
     # 22:30 / 00:30 / 02:00 UTC cover 7, 8 and 10 pm ET tipoffs in both EDT and EST.
     - cron: "30 22 * * *"
@@ -174,7 +177,7 @@ jobs:
         run: python -u -m jobs.ingest_espn --seasons "${{ inputs.seasons }}"
 
       - name: v2 daily pipeline
-        if: ${{ github.event.schedule == '30 10 * * *' || (github.event_name == 'workflow_dispatch' && (inputs.run == 'v2_daily' || inputs.run == 'all')) }}
+        if: ${{ github.event.schedule == '30 6 * * *' || (github.event_name == 'workflow_dispatch' && (inputs.run == 'v2_daily' || inputs.run == 'all')) }}
         run: python -u -m jobs.run_daily
 
       # Separate step so a data-quality failure and an ingest failure are two distinct red
@@ -182,7 +185,7 @@ jobs:
       # when the run is cancelled. Preseason is skipped: the model never uses it and its
       # one-off gaps would otherwise turn CI red for a week at the start of every season.
       - name: v2 quality (read-only data checks)
-        if: ${{ !cancelled() && github.event.schedule == '30 10 * * *' }}
+        if: ${{ !cancelled() && github.event.schedule == '30 6 * * *' }}
         run: python -u -m jobs.quality --since 7d --fail-on warn --ignore-types preseason
 
       - name: v2 quality (manual, full run)
