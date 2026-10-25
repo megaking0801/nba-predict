@@ -244,7 +244,8 @@ def run_residual(bundles: list, lines: pd.DataFrame, reps: int = 1000, seed: int
     cand = preds.assign(mu=preds["m"] + best["lam"] * preds["r_hat"])
     out["validation"] = judge_vs_line(cand, lines, meta, VALID_SEGMENT, reps=reps, seed=seed, level=VALID_LEVEL)
 
-    if n_controls and out["validation"].get("n"):
+    # Controls are only worth their cost when the validation segment says keep.
+    if n_controls and (out["validation"].get("market_judgement") or {}).get("keep"):
         shuffled = []
         for i in range(n_controls):
             sp = residual_predictions(table, FULL_FEATURES, best["alpha"], best["lam"], shuffle_seed=1000 + i)

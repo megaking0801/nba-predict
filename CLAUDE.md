@@ -14,7 +14,7 @@ python -m jobs.evaluate              # walk-forward 評估 + ATS 回測（只讀
 python -m jobs.diagnose              # DB 狀態體檢（只讀，需要 DB 連線）
 python -m webui.build_site --out site  # 從 DB 產生靜態網站到 site/（只讀連線，需要 DB 連線；site/ 不提交）
 python -m jobs.feature_ablation --experiment data_scope|context|four_factor  # 特徵／資料範圍的配對 walk-forward 比較（只讀連線，需要 DB 連線）
-python -m jobs.market_layer --report baseline|clv  # P5.0：盤口本身的基準與預測當下線對收盤線的差（只讀連線，需要 DB 連線）
+python -m jobs.market_layer --report baseline|clv|residual  # P5.0：盤口本身的基準與預測當下線對收盤線的差（只讀連線，需要 DB 連線）
 python -m jobs.quality --all           # 資料品質檢查（只讀連線，需要 DB 連線）；--since 7d 只看基準線之後的新資料；--verify-flags 驗證旗標 SQL
 ```
 會寫入 DB 的 job（`schema`、`ingest_*`、`backfill`、`settle`、`snapshot_*`、`predict_daily`、`predict_history`、`train`、`calibrate`、`run_daily`）
