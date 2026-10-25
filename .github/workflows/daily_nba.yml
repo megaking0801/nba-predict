@@ -8,7 +8,7 @@ on:
           legacy: preload | cache | sync | settle | train_base | all —
           v2: v2_daily | v2_schema | v2_backfill | v2_ingest | v2_lines |
           v2_injuries | v2_predict | v2_settle | v2_train | v2_diagnose |
-          v2_evaluate | backup_legacy
+          v2_evaluate | v2_quality | backup_legacy
         required: true
         default: "v2_daily"
       season:
@@ -176,6 +176,18 @@ jobs:
       - name: v2 daily pipeline
         if: ${{ github.event.schedule == '30 10 * * *' || (github.event_name == 'workflow_dispatch' && (inputs.run == 'v2_daily' || inputs.run == 'all')) }}
         run: python -u -m jobs.run_daily
+
+      # Separate step so a data-quality failure and an ingest failure are two distinct red
+      # steps. !cancelled() (not always()) so it still runs after run_daily fails but stops
+      # when the run is cancelled. Preseason is skipped: the model never uses it and its
+      # one-off gaps would otherwise turn CI red for a week at the start of every season.
+      - name: v2 quality (read-only data checks)
+        if: ${{ !cancelled() && github.event.schedule == '30 10 * * *' }}
+        run: python -u -m jobs.quality --since 7d --fail-on warn --ignore-types preseason
+
+      - name: v2 quality (manual, full run)
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.run == 'v2_quality' }}
+        run: python -u -m jobs.quality --all --fail-on warn
 
       - name: v2 ingest only (ESPN games + box scores)
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.run == 'v2_ingest' }}
