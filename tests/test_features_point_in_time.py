@@ -19,7 +19,7 @@ def _player_rows(rng, team_abbr, base_quality):
         minutes = max(6.0, rng.gauss(26, 6)) if i < 8 else 4.0
         pts = max(0, rng.gauss(12 + base_quality, 5))
         rows.append({
-            "player_id": hash(team_abbr) % 10_000 + i,
+            "player_id": TEAMS4.index(team_abbr) * 100 + i,   # stable across processes (str hash is not)
             "team_abbr": team_abbr,
             "player_name": f"{team_abbr} Player{i}",
             "min_played": minutes,

@@ -107,14 +107,14 @@ def test_undetectable_when_halfwidth_exceeds_minimum_gain():
 
 # ---------- info over market ----------
 
-def test_info_over_market_is_zero_when_model_equals_the_line():
+def test_info_over_market_is_undefined_when_model_equals_the_line():
     rng = np.random.default_rng(5)
     n = 4000
     spread = rng.normal(-2, 6, n)
     margin = -spread + rng.normal(0, 12, n)
     df = pd.DataFrame({"margin": margin, "mu": -spread, "home_spread": spread})
     r = fa.info_over_market(df)
-    assert r["n"] == n and abs(r["beta"]) < 1e-9
+    assert r["n"] == n and r["beta"] is None          # model == line: no variation, nothing to estimate
 
 
 def test_info_over_market_recovers_real_signal():
@@ -211,3 +211,47 @@ def test_module_never_writes():
     src = Path(fa.__file__).read_text(encoding="utf-8")
     for word in ("commit()", "executemany", "ensure_schema", "INSERT ", "UPDATE ", "DELETE ", "DROP ", "ALTER "):
         assert word not in src
+
+
+def test_info_over_market_is_near_zero_for_unrelated_noise():
+    rng = np.random.default_rng(7)
+    n = 20000
+    spread = rng.normal(-2, 6, n)
+    margin = -spread + rng.normal(0, 12, n)
+    df = pd.DataFrame({"margin": margin, "mu": -spread + rng.normal(0, 3, n), "home_spread": spread})
+    r = fa.info_over_market(df)
+    assert abs(r["beta"]) < 4 * r["se"]
+
+
+def test_coverage_loss_fails_the_keep_rule():
+    s = _summary()
+    s["n_base_in_segment"], s["n_cand_in_segment"] = 1000, 950
+    assert fa.decide(s)["failed"] == ["coverage"]
+    s["n_cand_in_segment"] = 1000
+    assert fa.decide(s)["keep"] is True
+
+
+def test_compare_reports_segment_sizes_and_survives_empty_predictions():
+    base = _preds(n=300)
+    cand = base.iloc[:250].copy()
+    meta = base[["game_id"]].assign(season_type="regular")
+    out = fa.compare(base, cand, lines=pd.DataFrame(), meta=meta, season_types=("regular",), reps=50, seed=1)
+    assert (out["n_base_in_segment"], out["n_cand_in_segment"], out["n"]) == (300, 250, 250)
+    assert "coverage" in out["failed"] and out["keep"] is False
+    empty = fa.compare(base, pd.DataFrame(), lines=pd.DataFrame(), meta=meta, season_types=("regular",))
+    assert empty["keep"] is False and empty["failed"] == ["no_predictions"]
+
+
+def test_e3_needs_one_kept_variant_from_each_family(monkeypatch):
+    base_preds = _preds(n=800)
+
+    def fake_table(bundles, cfg):
+        return pd.DataFrame({"game_id": base_preds["game_id"], "season": base_preds["season"],
+                             "season_type": "regular", "date": base_preds["date"]})
+
+    monkeypatch.setattr(fa, "build_feature_table", fake_table)
+    monkeypatch.setattr(fa, "walk_forward", lambda df, kind, cfg=None, **kw: base_preds.copy())
+    monkeypatch.setattr(fa, "SEGMENT", {"first_season": "2019-20", "last_season": "2020-21",
+                                        "season_types": ("regular",)})
+    res = fa.run_data_scope([], pd.DataFrame(), reps=30, seed=1)
+    assert "skipped" in res["E3_combined"]

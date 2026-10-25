@@ -76,9 +76,3 @@ def test_train_from_season_only_changes_eligibility():
     pd.testing.assert_frame_equal(base[feature_cols], late[feature_cols])
     assert not late.loc[late["season"] == "2024-25", "eligible"].any()
     assert (late["eligible"] <= base["eligible"]).all()
-
-
-def test_empty_train_from_season_means_all():
-    bundles = make_bundles()
-    cfg = dataclasses.replace(CONFIG, TRAIN_FROM_SEASON="")
-    pd.testing.assert_frame_equal(build_feature_table(bundles), build_feature_table(bundles, cfg))

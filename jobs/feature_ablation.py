@@ -2,8 +2,10 @@
 
     python -m jobs.feature_ablation --experiment data_scope [--out PATH] [--with-hgb]
 
-Every variant is scored on the SAME games (the intersection of its predictions and the fixed
-scoring segment), so differences are paired per game. The keep rule and the experiments are
+Each variant is compared with the base on the games BOTH predicted inside the fixed scoring
+segment, so differences are paired per game. A variant that predicts fewer segment games than
+the base (e.g. warm-up rules change eligibility) fails the 'coverage' rule instead of being
+scored on a silently smaller sample. The keep rule and the experiments are
 fixed here in advance (see docs/superpowers/specs/2026-10-26-p4-features-v1-design.md, section 6):
 the confirmation segment (2025-26 onward) is never looked at by these experiments.
 """
@@ -93,6 +95,9 @@ def decide(summary: dict) -> dict:
     cover = summary.get("cover_brier_delta")
     if cover is None or not cover <= 0:
         failed.append("cover_brier")
+    n_base, n_cand = summary.get("n_base_in_segment"), summary.get("n_cand_in_segment")
+    if n_base is not None and n_cand is not None and n_cand < n_base:
+        failed.append("coverage")
     return {"keep": not failed, "failed": failed}
 
 
@@ -110,7 +115,7 @@ def info_over_market(df: pd.DataFrame) -> dict:
     xc, yc = x - x.mean(), y - y.mean()
     denom = float((xc ** 2).sum())
     if n < 3 or denom < 1e-12:
-        return {"n": n, "beta": 0.0, "se": None}
+        return {"n": n, "beta": None, "se": None}     # no variation in x: nothing to estimate
     beta = float((xc * yc).sum() / denom)
     resid = yc - beta * xc
     se = float(np.sqrt((resid ** 2).sum() / (n - 2) / denom))
@@ -140,8 +145,16 @@ def compare(base: pd.DataFrame, cand: pd.DataFrame, lines: pd.DataFrame, meta: p
     if "season" not in meta:
         meta = meta.merge(base[["game_id", "season"]].drop_duplicates("game_id"), on="game_id", how="left")
     ids = _segment_ids(meta, None, season_types, first_season, last_season)
+    if "game_id" not in base or "game_id" not in cand:
+        return {"n": 0, "keep": False, "failed": ["no_predictions"], "n_base_in_segment": 0, "n_cand_in_segment": 0}
     b, c = base[base["game_id"].isin(ids)], cand[cand["game_id"].isin(ids)]
+    if b.empty or c.empty or "game_id" not in c:
+        return {"n": 0, "keep": False, "failed": ["no_predictions"], "n_base_in_segment": int(len(b)),
+                "n_cand_in_segment": int(len(c))}
     d = paired_delta(b, c)
+    if d.empty:
+        return {"n": 0, "keep": False, "failed": ["no_common_games"], "n_base_in_segment": int(len(b)),
+                "n_cand_in_segment": int(len(c))}
     mean, lo, hi = block_bootstrap_ci(d, reps=reps, seed=seed)
     seasons, share = per_season_delta(d)
     common = d["game_id"]
@@ -151,7 +164,7 @@ def compare(base: pd.DataFrame, cand: pd.DataFrame, lines: pd.DataFrame, meta: p
         cc = cover_metrics(c[c["game_id"].isin(common)], lines)
         if cb and cc:
             cover_delta = float(cc["brier"] - cb["brier"])
-    out = {"n": int(len(d)), "mean": mean, "lo": lo, "hi": hi, "share_negative": share,
+    out = {"n": int(len(d)), "n_base_in_segment": int(len(b)), "n_cand_in_segment": int(len(c)), "mean": mean, "lo": lo, "hi": hi, "share_negative": share,
            "per_season": seasons, "cover_brier_delta": cover_delta}
     out.update(decide(out))
     out.update(detectability((hi - lo) / 2.0))
@@ -180,7 +193,7 @@ def _judge(results_by_kind: dict) -> dict:
     return {"keep": keep}
 
 
-def run_data_scope(bundles: list, lines: pd.DataFrame, reps: int = 1000, seed: int = 0,
+def run_data_scope(bundles: list, lines: pd.DataFrame, reps: int = 2000, seed: int = 0,
                    kinds: Tuple[str, ...] = ("ridge",)) -> dict:
     seg = dict(SEGMENT)
     base_cfg = CONFIG
@@ -210,14 +223,19 @@ def run_data_scope(bundles: list, lines: pd.DataFrame, reps: int = 1000, seed: i
 
     out["experiments"] = {e["name"]: run_variant(e["overrides"]) for e in DATA_SCOPE_EXPERIMENTS}
     kept = {n: r for n, r in out["experiments"].items() if r["judgement"]["keep"]}
-    merged: dict = {}
+    # E3 only exists to test a COMBINATION: it needs one kept variant from each family.
+    # (If two E2 variants are kept, the pick uses the scoring data itself, so it is slightly
+    # optimistic; the result says so.)
     e1 = kept.get("E1_exclude_preseason")
-    if e1:
-        merged.update(e1["overrides"])
     e2 = [r for n, r in kept.items() if n.startswith("E2")]
-    if e2:
-        merged.update(min(e2, key=lambda r: r["ridge"]["mean"])["overrides"])
-    out["E3_combined"] = run_variant(merged) if merged else {"skipped": "no variant met the keep rule"}
+    if e1 and e2:
+        pick = min(e2, key=lambda r: r["ridge"]["mean"])
+        merged = {**e1["overrides"], **pick["overrides"]}
+        out["E3_combined"] = run_variant(merged)
+        if len(e2) > 1:
+            out["E3_combined"]["note"] = "E2 variant picked on the scoring data: slightly optimistic"
+    else:
+        out["E3_combined"] = {"skipped": "needs a kept E1 and a kept E2; single winners are already judged on their own"}
     return out
 
 
@@ -239,7 +257,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("--experiment", required=True, choices=("data_scope",))
     ap.add_argument("--out", help="write the result JSON here")
     ap.add_argument("--with-hgb", action="store_true", help="also run hgb as a no-worse check")
-    ap.add_argument("--reps", type=int, default=1000)
+    ap.add_argument("--reps", type=int, default=2000)
     ap.add_argument("--seed", type=int, default=0)
     args = ap.parse_args(argv)
     try:
