@@ -51,8 +51,6 @@ FEATURE_GROUPS = {
     "altitude": ["altitude_edge"],
 }
 
-OFFSEASON_GAP_DAYS = 60     # a longer gap since a team's last game means the last venue no longer counts
-
 _SUFFIXES = {"jr", "sr", "ii", "iii", "iv", "v"}
 
 
@@ -205,7 +203,7 @@ class FeatureBuilder:
 
     def _venue_state(self, ts: TeamState, date: dt.date) -> Tuple[Optional[str], int]:
         """(last known arena, road streak), forgotten after an off-season gap."""
-        if ts.dates and (date - ts.dates[-1]).days > OFFSEASON_GAP_DAYS:
+        if ts.dates and (date - ts.dates[-1]).days > self.cfg.VENUE_FORGET_DAYS:
             return None, 0
         return ts.venue, ts.away_streak
 
@@ -219,9 +217,10 @@ class FeatureBuilder:
         if neutral:     # the arena is unknown, so no distance/clock/altitude is claimed
             h_km = a_km = tz_away = alt = 0.0
         else:
-            h_km = context.distance_km(h_venue, home_abbr) if h_venue else 0.0
-            a_km = context.distance_km(a_venue, home_abbr) if a_venue else 0.0
-            tz_away = context.tz_shift_hours(a_venue, home_abbr, date) if a_venue else 0.0
+            arena = context.arena_key(home_abbr, date)
+            h_km = context.distance_km(h_venue, arena) if h_venue else 0.0
+            a_km = context.distance_km(a_venue, arena) if a_venue else 0.0
+            tz_away = context.tz_shift_hours(a_venue, arena, date) if a_venue else 0.0
             alt = max(0.0, context.elevation_m(home_abbr) - context.elevation_m(away_abbr)) / 1000.0
         last7 = lambda ts: sum(1 for d in ts.dates if 0 < (date - d).days <= 7)
         return {
@@ -408,7 +407,7 @@ class FeatureBuilder:
         ctx = ctx_from_bundle(bundle)
         neutral = ctx["neutral_site"] or context.is_bubble(date)
         if not neutral:
-            h.venue = a.venue = home_abbr
+            h.venue = a.venue = context.arena_key(home_abbr, date)
             h.away_streak = 0
             a_prev = self._venue_state(a, date)[1]      # forgets a streak across the off-season
             a.away_streak = a_prev + 1

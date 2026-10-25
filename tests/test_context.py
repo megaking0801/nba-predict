@@ -11,7 +11,16 @@ from jobs.teams import CANONICAL_ABBRS
 
 
 def test_every_team_has_a_venue_and_nothing_else():
-    assert set(context.TEAM_VENUE) == set(CANONICAL_ABBRS)
+    assert set(context.TEAM_VENUE) - {"TPA"} == set(CANONICAL_ABBRS)
+
+
+def test_raptors_hosted_in_tampa_during_2020_21():
+    assert context.arena_key("TOR", date(2021, 1, 15)) == "TPA"
+    assert context.arena_key("TOR", date(2022, 1, 15)) == "TOR"
+    assert context.arena_key("TOR", date(2020, 12, 1)) == "TOR"
+    assert context.arena_key("MIA", date(2021, 1, 15)) == "MIA"
+    assert 1500 < context.distance_km("TPA", "TOR") < 1900
+    assert 300 < context.distance_km("MIA", "TPA") < 360
 
 
 def test_venue_values_are_plausible():

@@ -2,8 +2,9 @@
 
 All values are public facts typed in by hand; tests/test_context.py checks them against known
 city-pair distances. Arena coordinates are good to roughly a kilometre, which is all the
-features need. Intuit Dome (LAC since 2024-25) is about 8 km from the old shared arena, so
-LAC keeps one location for every season.
+features need. Intuit Dome (LAC since 2024-25) is about 13 km from the old shared arena, so
+LAC keeps one location for every season; other pre-2019 arena moves (DET, GSW, SAC) are 8-40 km
+and ignored.
 """
 from __future__ import annotations
 
@@ -44,12 +45,27 @@ TEAM_VENUE: Dict[str, Tuple[float, float, str, float]] = {
     "TOR": (43.644, -79.379, "America/Toronto", 76),
     "UTA": (40.768, -111.901, "America/Denver", 1288),
     "WAS": (38.898, -77.021, "America/New_York", 5),
+    # Not a team: the Raptors' temporary home (Amalie Arena, Tampa) during the 2020-21 border closure.
+    "TPA": (27.943, -82.452, "America/New_York", 15),
 }
+
+# (home abbr, first day, last day) -> arena key used instead of the team's own. The Raptors played
+# every 2020-21 home game in Tampa; the window is the whole 2020-21 season (the date of their
+# return to Toronto during that season is unverified, so late-season games may be off).
+VENUE_OVERRIDES = [("TOR", date(2020, 12, 22), date(2021, 7, 31), "TPA")]
 
 BUBBLE_START, BUBBLE_END = date(2020, 7, 30), date(2020, 10, 12)
 CROWD_RESTRICTED = (date(2020, 12, 22), date(2021, 5, 31))   # date approximation, no attendance data
 
 _EARTH_RADIUS_KM = 6371.0088
+
+
+def arena_key(home_abbr: str, d: date) -> str:
+    """The TEAM_VENUE key of the arena where ``home_abbr`` hosts on ``d``."""
+    for abbr, first, last, key in VENUE_OVERRIDES:
+        if abbr == home_abbr and first <= d <= last:
+            return key
+    return home_abbr
 
 
 def is_bubble(d: date) -> bool:

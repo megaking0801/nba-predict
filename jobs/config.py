@@ -30,6 +30,7 @@ class Config:
     ELO_CARRYOVER: float = 0.75       # preseason regression; rest to mean 1505
     ELO_MEAN: float = 1505.0
     ENABLE_ALTITUDE_FLAG: bool = False   # unused: altitude_edge is always emitted and chosen by feature list
+    VENUE_FORGET_DAYS: int = 60          # a gap this long since a team's last game: its last arena no longer counts
     ELO_NEUTRAL_HCA0: bool = False       # True: neutral-site/bubble games update Elo without home advantage
 
     # --- training-row eligibility ---

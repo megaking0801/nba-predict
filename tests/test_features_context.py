@@ -100,7 +100,7 @@ def test_travel_distance_timezone_and_road_trip():
     rows = _run(games)
     # game 2 (LAL at BOS): LAL last played at home (LAL arena) -> flies LAL->BOS; BOS was at home?
     # BOS has no previous game, so its travel is 0.
-    assert rows[1]["travel_km_diff"] < -4000 / 1000 + 0.2           # home (BOS) 0 minus away ~4170 km
+    assert -4.3 < rows[1]["travel_km_diff"] < -4.0                  # home (BOS) 0 minus away ~4170 km
     assert rows[1]["tz_shift_away"] == 3
     assert rows[1]["road_trip_len_away"] == 1 and rows[1]["road_trip_len_home"] == 0
     # game 3 (LAL at MIA): LAL was at BOS.
@@ -116,13 +116,13 @@ def test_returning_home_counts_as_travel_for_the_home_team():
              _b("BOS", "MIA", D(2025, 1, 5))]
     rows = _run(games)
     # BOS was last at LAL (away), now hosts MIA: BOS travels ~4170 km back, MIA (no history) 0
-    assert rows[2]["travel_km_diff"] > 4.0 and rows[2]["road_trip_len_home"] == 1
+    assert 4.0 < rows[2]["travel_km_diff"] < 4.3 and rows[2]["road_trip_len_home"] == 1
 
 
 def test_short_rest_variant_only_counts_back_to_back_travel():
     games = [_b("BOS", "LAL", D(2025, 1, 1)), _b("MIA", "LAL", D(2025, 1, 5))]
     rows = _run(games)
-    assert rows[1]["travel_km_diff"] < -1.9 and rows[1]["travel_km_diff_short_rest"] == 0   # 3 rest days
+    assert -2.2 < rows[1]["travel_km_diff"] < -1.9 and rows[1]["travel_km_diff_short_rest"] == 0   # 3 rest days
     games = [_b("BOS", "LAL", D(2025, 1, 1)), _b("MIA", "LAL", D(2025, 1, 2))]
     rows = _run(games)
     assert rows[1]["travel_km_diff_short_rest"] == pytest.approx(rows[1]["travel_km_diff"])
@@ -154,15 +154,65 @@ def test_new_season_forgets_the_last_venue():
     assert rows[1]["travel_km_diff"] == 0 and rows[1]["road_trip_len_away"] == 1
 
 
-def test_own_game_never_changes_its_own_context_features():
-    games = [_b("BOS", "LAL", D(2025, 1, 1)), _b("MIA", "LAL", D(2025, 1, 3))]
-    a, b = copy.deepcopy(games), copy.deepcopy(games)
-    b[1]["margin"] = -30
-    ra, rb = _run(a), _run(b)
-    assert ra[1] == rb[1]
+def test_own_game_never_changes_its_own_features():
+    """Changing the game's own score AND box must not move any of its features."""
+    bundles = make_bundles(n_games=20)
+    a, b = copy.deepcopy(bundles), copy.deepcopy(bundles)
+    g = b[10]
+    g["margin"] = -35
+    for team in g["team_stats"].values():
+        team["pts"] = 150
+        team["fga"] = 40
+    for p in g["player_stats"]:
+        p["pts"] = 80
+        p["min_played"] = 48
+    ta, tb = build_feature_table(a), build_feature_table(b)
+    cols = [c for c in ta.columns if c not in ("margin", "total")]
+    assert ta.loc[10, cols].equals(tb.loc[10, cols])
+    assert not ta.loc[11:, cols].equals(tb.loc[11:, cols])        # but later games do see it
 
 
-def test_table_has_context_columns_and_fs1_columns_unchanged():
+def test_raptors_2020_21_home_games_are_in_tampa():
+    games = [_b("MIA", "BOS", D(2021, 1, 10), season="2020-21"), _b("TOR", "MIA", D(2021, 1, 12), season="2020-21")]
+    row = _run(games)[1]
+    assert 0.25 < -row["travel_km_diff"] < 0.4        # MIA -> Tampa, about 330 km (not 1,990 km to Toronto)
+
+
+def _schedule_with_everything():
+    """Two seasons, a neutral game, playoffs, Denver/Utah home games, a long road trip."""
+    teams = ["BOS", "LAL", "DEN", "MIA", "UTA", "TOR"]
+    games, day = [], D(2024, 10, 25)
+    for i in range(36):
+        home, away = teams[i % 6], teams[(i * 5 + 1) % 6]
+        if home == away:
+            away = teams[(i + 1) % 6]
+        stype = "playoffs" if i >= 30 else "regular"
+        games.append(_b(home, away, day, margin=(i % 7) - 3, season_type=stype, neutral=(i == 8) or None,
+                        gid=f"g{i}"))
+        day += dt.timedelta(days=1 + (i % 3 == 0))
+    for i in range(12):
+        home, away = teams[(i + 2) % 6], teams[(i * 5) % 6]
+        if home == away:
+            away = teams[(i + 3) % 6]
+        games.append(_b(home, away, D(2025, 10, 28) + dt.timedelta(days=i), season="2025-26", gid=f"h{i}"))
+    return games
+
+
+def test_context_columns_pass_the_point_in_time_golden():
+    games = _schedule_with_everything()
+    table = build_feature_table(games)
+    cols = [c for grp in FEATURE_GROUPS.values() for c in grp]
+    for i in (0, 5, 9, 20, 31, 36, len(games) - 1):
+        builder = FeatureBuilder()
+        for g in games[:i]:
+            builder.update(g)
+        row = _emit(builder, games[i])
+        for c in cols:
+            assert row[c] == table.iloc[i][c], (i, c)
+    assert table["neutral_game"].sum() >= 1 and table["is_playoffs"].sum() >= 1 and table["altitude_edge"].gt(0).any()
+
+
+def test_table_has_every_context_column():
     t = build_feature_table(make_bundles())
     for cols in FEATURE_GROUPS.values():
         assert set(cols) <= set(t.columns)
