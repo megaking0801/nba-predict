@@ -64,7 +64,7 @@ python -m jobs.quality --all           # 資料品質檢查（只讀連線，需
 - 新依賴必須能在 Streamlit Cloud 建置（`lxml` 曾因此被移除，見 commit 64231f3）。`requirements.txt` 版本維持固定。
 
 ## 工作流程
-- 動到特徵、模型、schema、gates、picks 之前先進 plan mode。只改一兩行的小修不用。
+- 不使用 plan mode（使用者 2026-10-26 明確指示：不要讓支線為了核准計畫停下來等他）。動到特徵、模型、schema、gates、picks 之前，改為：先寫設計與實作計畫，經主線與支線互相審過再實作。寫正式 DB、push／合併 main、啟用或觸發 workflow 仍須使用者當下同意。
 - 修根因，不要壓掉錯誤訊息。
 - 對話被壓縮時保留：已修改的檔案清單、測試指令、尚未解決的問題。
 - 回覆用繁體中文；程式碼、識別字、commit 訊息用英文。
