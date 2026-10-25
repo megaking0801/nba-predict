@@ -1,0 +1,280 @@
+{
+ "segment": {
+  "first_season": "2015-16",
+  "last_season": "2024-25",
+  "season_types": [
+   "regular",
+   "playoffs",
+   "playin"
+  ]
+ },
+ "start_features": [
+  "elo_diff",
+  "net_rtg10_diff",
+  "net_rtg30_diff",
+  "venue_net10_diff",
+  "efg10_diff",
+  "tov10_diff",
+  "orb10_diff",
+  "ftr10_diff",
+  "pace10_avg",
+  "rest_diff",
+  "home_b2b",
+  "away_b2b",
+  "three_in_four_diff",
+  "realized_talent_diff",
+  "talent_gap_home",
+  "talent_gap_away",
+  "games_played_min"
+ ],
+ "baseline_selfcheck": {
+  "report_margin": {
+   "n": 12736,
+   "mae": 10.642229932112338,
+   "rmse": 13.59839600321493,
+   "bias": -0.31437251017652257,
+   "resid_sigma": 13.595295375692864
+  },
+  "report_cover": {
+   "n": 12502,
+   "brier": 0.26006605366396995,
+   "logloss": 0.7148787195077377,
+   "brier_p50": 0.25,
+   "brier_market": 0.24995106743995824,
+   "cal_slope": -0.02721623609301665,
+   "cal_intercept": -0.006120803414648785
+  }
+ },
+ "steps": [
+  {
+   "ridge": {
+    "n": 11657,
+    "n_base_in_segment": 11657,
+    "n_cand_in_segment": 11657,
+    "mean": 0.0003463592096598092,
+    "lo": -0.021732364406113442,
+    "hi": 0.027909334195323102,
+    "share_negative": 0.6,
+    "per_season": {
+     "2015-16": 0.04171582041253741,
+     "2016-17": 0.033915311811955284,
+     "2017-18": -0.041255473567081855,
+     "2018-19": -0.006745414403696003,
+     "2019-20": -0.004176399189669849,
+     "2020-21": -0.009946626973590913,
+     "2021-22": 0.04254069300774178,
+     "2022-23": -0.016311579969350273,
+     "2023-24": 0.002225572686266937,
+     "2024-25": -0.00832728211296736
+    },
+    "cover_brier_delta": -0.00011000418132134371,
+    "keep": false,
+    "failed": [
+     "gain",
+     "interval",
+     "seasons"
+    ],
+    "halfwidth": 0.024820849300718272,
+    "detectable": false,
+    "info_over_market_candidate": {
+     "n": 11646,
+     "beta": 0.0717076443235677,
+     "se": 0.036277149823420306
+    },
+    "info_over_market_base": {
+     "n": 11646,
+     "beta": 0.05030951177795335,
+     "se": 0.037033564748024855
+    }
+   },
+   "name": "F1_ctx",
+   "added": [
+    "neutral_game",
+    "crowd_restricted",
+    "is_playoffs",
+    "is_playin"
+   ],
+   "overrides": {},
+   "judgement": {
+    "keep": false
+   }
+  },
+  {
+   "ridge": {
+    "n": 11657,
+    "n_base_in_segment": 11657,
+    "n_cand_in_segment": 11657,
+    "mean": -0.0003939679027863438,
+    "lo": -0.0016589344863833478,
+    "hi": 0.0007704944650957307,
+    "share_negative": 0.5,
+    "per_season": {
+     "2015-16": 0.000725293354578119,
+     "2016-17": -7.223029343492876e-05,
+     "2017-18": 0.0012297329946958405,
+     "2018-19": 0.0019163512905519529,
+     "2019-20": -0.0039018895077814245,
+     "2020-21": -0.0007560943161037887,
+     "2021-22": 6.430982944868146e-05,
+     "2022-23": 0.0012177841003806946,
+     "2023-24": -0.002510906294463191,
+     "2024-25": -0.001458881302622395
+    },
+    "cover_brier_delta": -1.384702314333186e-05,
+    "keep": false,
+    "failed": [
+     "gain",
+     "interval",
+     "seasons"
+    ],
+    "halfwidth": 0.0012147144757395393,
+    "detectable": true,
+    "info_over_market_candidate": {
+     "n": 11646,
+     "beta": 0.05000269318369097,
+     "se": 0.03706646163298356
+    },
+    "info_over_market_base": {
+     "n": 11646,
+     "beta": 0.05030951177795335,
+     "se": 0.037033564748024855
+    }
+   },
+   "name": "F2_elo_neutral",
+   "added": [],
+   "overrides": {
+    "ELO_NEUTRAL_HCA0": true
+   },
+   "judgement": {
+    "keep": false
+   }
+  },
+  {
+   "ridge": {
+    "n": 11657,
+    "n_base_in_segment": 11657,
+    "n_cand_in_segment": 11657,
+    "mean": 0.013300078503290834,
+    "lo": -0.00020876155513176672,
+    "hi": 0.026868653786907046,
+    "share_negative": 0.1,
+    "per_season": {
+     "2015-16": 0.06723500749726294,
+     "2016-17": 0.04982974086463345,
+     "2017-18": 0.001959528270079808,
+     "2018-19": -0.0005152145594406387,
+     "2019-20": 0.013765581945578234,
+     "2020-21": 0.035552746124769434,
+     "2021-22": 0.0028080626854498957,
+     "2022-23": 0.0029984141093387256,
+     "2023-24": 0.0036878373100230825,
+     "2024-25": 0.0009043208940211054
+    },
+    "cover_brier_delta": 0.00028435404636384387,
+    "keep": false,
+    "failed": [
+     "gain",
+     "interval",
+     "seasons",
+     "cover_brier"
+    ],
+    "halfwidth": 0.013538707671019405,
+    "detectable": true,
+    "info_over_market_candidate": {
+     "n": 11646,
+     "beta": 0.047487898270081555,
+     "se": 0.036585707183786564
+    },
+    "info_over_market_base": {
+     "n": 11646,
+     "beta": 0.05030951177795335,
+     "se": 0.037033564748024855
+    }
+   },
+   "name": "F3_travel",
+   "added": [
+    "travel_km_diff",
+    "tz_shift_away",
+    "travel_km_diff_short_rest",
+    "road_trip_len_away",
+    "road_trip_len_home",
+    "games_last7_diff"
+   ],
+   "overrides": {},
+   "judgement": {
+    "keep": false
+   }
+  },
+  {
+   "ridge": {
+    "n": 11657,
+    "n_base_in_segment": 11657,
+    "n_cand_in_segment": 11657,
+    "mean": -0.0012150416006001094,
+    "lo": -0.007076449176153492,
+    "hi": 0.004910536387790091,
+    "share_negative": 0.5,
+    "per_season": {
+     "2015-16": 0.024099917262437365,
+     "2016-17": 0.0029299665719452754,
+     "2017-18": 0.0020937278106485844,
+     "2018-19": -0.005339888806587042,
+     "2019-20": -0.007011561577624747,
+     "2020-21": -0.004480947936497176,
+     "2021-22": 0.001642856235798128,
+     "2022-23": -0.01089312594077016,
+     "2023-24": -0.0034692914096297843,
+     "2024-25": 0.006967090758807689
+    },
+    "cover_brier_delta": 3.1577998221843373e-07,
+    "keep": false,
+    "failed": [
+     "gain",
+     "interval",
+     "seasons",
+     "cover_brier"
+    ],
+    "halfwidth": 0.005993492781971792,
+    "detectable": true,
+    "info_over_market_candidate": {
+     "n": 11646,
+     "beta": 0.05149375135391644,
+     "se": 0.03704292583765897
+    },
+    "info_over_market_base": {
+     "n": 11646,
+     "beta": 0.05030951177795335,
+     "se": 0.037033564748024855
+    }
+   },
+   "name": "F4_altitude",
+   "added": [
+    "altitude_edge"
+   ],
+   "overrides": {},
+   "judgement": {
+    "keep": false
+   }
+  }
+ ],
+ "final_features": [
+  "elo_diff",
+  "net_rtg10_diff",
+  "net_rtg30_diff",
+  "venue_net10_diff",
+  "efg10_diff",
+  "tov10_diff",
+  "orb10_diff",
+  "ftr10_diff",
+  "pace10_avg",
+  "rest_diff",
+  "home_b2b",
+  "away_b2b",
+  "three_in_four_diff",
+  "realized_talent_diff",
+  "talent_gap_home",
+  "talent_gap_away",
+  "games_played_min"
+ ],
+ "final_overrides": {}
+}
