@@ -1,0 +1,74 @@
+{
+ "n_rows": 14168,
+ "tune_segment": {
+  "first_season": "2015-16",
+  "last_season": "2021-22"
+ },
+ "validation_segment": {
+  "first_season": "2022-23",
+  "last_season": "2024-25"
+ },
+ "prior_check": {
+  "features": [
+   "m",
+   "absm",
+   "elo_diff",
+   "net_rtg30_diff",
+   "rest_diff",
+   "home_b2b",
+   "away_b2b"
+  ],
+  "alpha": 100.0,
+  "tune": {
+   "n": 7733,
+   "n_base_in_segment": 7833,
+   "n_cand_in_segment": 7733,
+   "mean": 0.0220810430332134,
+   "lo": 0.007938215392158113,
+   "hi": 0.03733188703230842,
+   "share_negative": 0.0,
+   "per_season": {
+    "2015-16": 0.020861759863138925,
+    "2016-17": 0.02147934672212937,
+    "2017-18": 0.029170775467316615,
+    "2018-19": 0.02492011971009838,
+    "2019-20": 0.015942434266339806,
+    "2020-21": 0.030549772385635353,
+    "2021-22": 0.010984233769271276
+   },
+   "cover_brier_delta": 0.0006382156369564296,
+   "keep": false,
+   "failed": [
+    "gain",
+    "interval",
+    "seasons",
+    "cover_brier",
+    "coverage"
+   ],
+   "halfwidth": 0.014696835820075154,
+   "detectable": true,
+   "info_over_market_candidate": {
+    "n": 7733,
+    "beta": -0.17862634057647153,
+    "se": 0.31577295258674304
+   },
+   "info_over_market_base": {
+    "n": 7733,
+    "beta": null,
+    "se": null
+   },
+   "market_judgement": {
+    "keep": false,
+    "failed": [
+     "gain",
+     "interval",
+     "beta",
+     "cover_brier",
+     "seasons",
+     "coverage"
+    ]
+   }
+  }
+ },
+ "stopped": "prior check: the simplest second layer has no positive beta on the tune segment; nothing was expanded"
+}
