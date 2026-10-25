@@ -565,43 +565,47 @@ def _bet_moneyline(g) -> str:
     )
 
 
+# Measured 2026-10-26 (docs/handoff/2026-10-23-roadmap.md, P5): over the 11 complete seasons the model's
+# margin error was 0.36 points worse than the closing line, and its cover probability carried no information
+# (calibration slope about -0.03, ATS hit rate about 50%). So this card gives no cover probability and no pick.
+SPREAD_CAVEAT = ('⚠ 本站不提供過盤機率或下注推薦：11 個完整球季的時間外驗證中，模型的分差誤差比盤口大約 0.36 分，'
+                 '沒有任何一季比盤口準，過盤機率也沒有可用的資訊。')
+
+
 def _bet_spread(g) -> str:
-    hs, pc = g["home_spread"], g["p_home_cover"]
-    if hs is None or pd.isna(hs) or pc is None or pd.isna(pc):
+    hs = g["home_spread"]
+    if hs is None or pd.isna(hs):
         return ('<div class="nb-bet"><h4>受讓分 <span>Spread</span></h4>'
                 '<div class="empty">這場沒有盤口資料。</div></div>')
-    hs, pc = float(hs), float(pc)
+    hs = float(hs)
     home, away = g["home_abbr"], g["away_abbr"]
-    home_cov = pc >= 0.5
-    home_pct = round(pc * 100)
-    away_pct = 100 - home_pct
-    fav_pct = home_pct if home_cov else away_pct
-    l_fav = "" if home_cov else " fav"
-    r_fav = " fav" if home_cov else ""
-    bar = (f'<div class="nb-track">{_fill_html(home_cov, fav_pct, True)}'
-           f'<div class="nb-lbl l{l_fav}">{esc(away)} <span class="nb-pct led">{away_pct}%</span></div>'
-           f'<div class="nb-lbl r{r_fav}"><span class="nb-pct led">{home_pct}%</span> {esc(home)}</div></div>')
-    cov_abbr = home if home_cov else away
-    cov_side = "主" if home_cov else "客"
     line = f'客 {esc(away)} {(-hs):+.1f}　／　主 {esc(home)} {hs:+.1f}'
     src = (g["line_source"] or "").upper() or "—"
+    pm = g.get("pred_margin")
+    est = ""
+    if pm is not None and not pd.isna(pm):
+        pm = float(pm)
+        gap = pm + hs                       # model's home margin minus the line's implied home margin
+        if abs(gap) < 0.5:
+            gap_txt = "與盤口幾乎一致"
+        elif gap > 0:
+            gap_txt = f"比盤口多給主隊 {gap:.1f} 分"
+        else:
+            gap_txt = f"比盤口多給客隊 {-gap:.1f} 分"
+        est = (f'<div class="line">模型估計分差 <b>主 {pm:+.1f}</b>　·　{gap_txt}</div>')
     res = ""
     if g["status"] == "final" and pd.notna(g["cover_result"]):
         cr = int(g["cover_result"])
         if cr == 2:
             res = '<div class="res"><span class="score">和盤 push</span><span>退回</span></div>'
         else:
-            home_covered = cr == 1
-            cov_actual = home if home_covered else away
-            correct = home_covered == home_cov
-            badge = ('<span class="nb-hit">✅ 命中</span>' if correct
-                     else '<span class="nb-miss">❌ 未中</span>')
-            res = f'<div class="res"><span class="score">{fmt_team(cov_actual)} 破盤</span>{badge}</div>'
+            cov_actual = home if cr == 1 else away
+            res = f'<div class="res"><span class="score">{fmt_team(cov_actual)} 破盤</span></div>'
     return (
         '<div class="nb-bet"><h4>受讓分 <span>Spread</span></h4>'
         f'<div class="line">{line}　·　<b>{esc(src)}</b> 盤口</div>'
-        f'{bar}'
-        f'<div class="verdict">🔮 看好 <b>{fmt_team(cov_abbr)}</b>（{cov_side}）破受讓盤</div>'
+        f'{est}'
+        f'<div class="nb-caveat">{SPREAD_CAVEAT}</div>'
         f'{res}</div>'
     )
 

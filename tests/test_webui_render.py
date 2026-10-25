@@ -297,3 +297,51 @@ def test_static_page_next_tip_marker():
 def test_static_page_without_data_time_has_no_notyet_div():
     tip = dt.datetime(2026, 10, 24, 23, 0, tzinfo=UTC)
     assert 'id="notyet"' not in render.static_page("T", "", NOW, next_tip=tip)
+
+
+# ---------- P6.1: the spread card no longer shows a cover probability or a pick ----------
+
+def _spread_game(**kw):
+    return _game(home_spread=-4.5, p_home_cover=0.58, pred_margin=6.0, line_source="espn", **kw)
+
+
+def test_spread_card_has_no_cover_probability_or_pick():
+    html = render._bet_spread(_spread_game())
+    for banned in ("看好", "破受讓盤", "nb-track", "nb-pct", "58%", "42%"):
+        assert banned not in html, banned
+
+
+def test_spread_card_shows_the_line_and_the_model_gap():
+    html = render._bet_spread(_spread_game())
+    assert "盤口" in html and "-4.5" in html or "+4.5" in html
+    assert "模型估計分差" in html and "+6.0" in html
+    assert "比盤口多給主隊 1.5 分" in html            # 6.0 - 4.5
+
+
+def test_spread_card_gap_direction_and_tie():
+    away = render._bet_spread(_game(home_spread=-4.5, pred_margin=2.0, line_source="espn"))
+    assert "比盤口多給客隊 2.5 分" in away
+    tie = render._bet_spread(_game(home_spread=-4.5, pred_margin=4.5, line_source="espn"))
+    assert "與盤口幾乎一致" in tie
+
+
+def test_spread_card_states_the_validation_result_instead_of_a_pick():
+    html = render._bet_spread(_spread_game())
+    assert "不提供過盤機率" in html and "0.36" in html
+
+
+def test_spread_card_without_a_prediction_shows_the_line_only():
+    html = render._bet_spread(_game(home_spread=-4.5, line_source="espn", pred_margin=None))
+    assert "-4.5" in html or "+4.5" in html
+    assert "模型估計分差" not in html
+
+
+def test_spread_card_result_has_no_hit_or_miss_badge():
+    covered = render._bet_spread(_spread_game(status="final", cover_result=1))
+    missed = render._bet_spread(_spread_game(status="final", cover_result=0))
+    push = render._bet_spread(_spread_game(status="final", cover_result=2))
+    for html in (covered, missed, push):
+        assert "命中" not in html and "未中" not in html and "nb-hit" not in html and "nb-miss" not in html
+    assert "LAL" in covered and "破盤" in covered
+    assert "GSW" in missed and "破盤" in missed
+    assert "push" in push
