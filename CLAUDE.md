@@ -13,6 +13,7 @@ python -m jobs.config                # 印出全部參數與 CONFIG_HASH
 python -m jobs.evaluate              # walk-forward 評估 + ATS 回測（只讀，但需要 DB 連線）
 python -m jobs.diagnose              # DB 狀態體檢（只讀，需要 DB 連線）
 python -m webui.build_site --out site  # 從 DB 產生靜態網站到 site/（只讀連線，需要 DB 連線；site/ 不提交）
+python -m jobs.quality --all           # 資料品質檢查（只讀連線，需要 DB 連線）；--since 7d 只看基準線之後的新資料；--verify-flags 驗證旗標 SQL
 ```
 會寫入 DB 的 job（`schema`、`ingest_*`、`backfill`、`settle`、`snapshot_*`、`predict_daily`、`predict_history`、`train`、`calibrate`、`run_daily`）
 平常由 GitHub Actions `daily_nba.yml` 排程執行，不在本機跑。
@@ -23,6 +24,8 @@ python -m webui.build_site --out site  # 從 DB 產生靜態網站到 site/（�
   靜態站由 `.github/workflows/site.yml` 部署到 GitHub Pages（`daily_nba` 完成後、手動、或 `webui/**` 等路徑變動時觸發）。
 - `jobs/`：v2 流程，資料只走 ESPN。`ingest_espn.py`（比賽、box score、盤口；scoreboard 抓失敗過半會 raise）、`snapshot_injuries.py`（傷兵）、`snapshot_rosters.py`（名單；隊伍 id 每次從 ESPN `/teams` 取）
   → `features.py`（`FeatureBuilder`）→ `train.py` / `calibrate.py` / `evaluate.py` → `predict_daily.py`（用 `picks.py` 決定出手）→ `settle.py`。
+- `jobs/quality/`：只讀的資料品質檢查（A 場次、B box score、C 先發與裁判、D 出手桶、E 盤口）、每場品質旗標 `game_quality()`、已知問題基準線 `baseline.json`。
+  設計見 `docs/superpowers/specs/2026-10-25-p3-data-quality-design.md`。P4／P5 篩選資料用 `game_quality()` 的 `usable_*` 旗標。
 - 所有參數集中在 `jobs/config.py`；每個模型版本與預測都記錄 `CONFIG_HASH`。
 - DDL 在 `jobs/schema.py`。表：`games_v2`（含 `neutral_site`）、`team_game_stats`、`player_game_stats`（只含有上場的球員，沒有 DNP 列）、`market_lines`（含 `price_point`／`total_price_point`，標示讓分與總分各取自 close／current／open）、`injury_snapshots`、`predictions`、`model_registry_v2`。
   P2 新表：`player_game_status`（box score 列出的每位球員：先發、DNP 與原因、驅逐）、`game_officials`、`team_shot_buckets`（每隊每場的投籃距離桶，罰球不計；P4 自行重新分組）。
@@ -50,6 +53,7 @@ python -m webui.build_site --out site  # 從 DB 產生靜態網站到 site/（�
 - 時間：DB 存 UTC；比賽日用 ET；台北時間只出現在 App 顯示層。
 - schema 變更只做可重複執行、只新增的 migration（`ADD COLUMN IF NOT EXISTS`）。`v_app_board` 的新欄位只能加在最後，`CREATE OR REPLACE VIEW` 不能重排欄位。
 - `market_lines`、`predictions` 設計上是 append-only。除了 `predict_history.py` 與 `ingest_espn --odds --force-rebuild` 這兩個既有的重建流程，不要刪改歷史列。`--odds` 預設拒絕執行，加 `--force-rebuild` 也只刪回填列（`captured_at` 等於開賽時間），不會動即時盤口快照；一般補盤口用 `backfill_odds_missing`（只補缺的，不刪）。
+- `jobs/quality` 全模組只准 SELECT、不寫 DB、不呼叫 `ensure_schema`（有測試掃描）；基準線（`jobs/quality/baseline.json`）只能由對正式 DB 實際執行檢查產生，修改必須在 commit 訊息說明原因，不為了讓檢查變綠而放寬門檻。
 - `webui/queries.py` 只准 SELECT；`webui/render.py` 不 import streamlit，DB 來的文字一律經 `esc()`。`build_site` 連線必須 `readonly`。
 - Streamlit 頁面輸出由 `tests/test_streamlit_golden.py` 的整頁 golden 鎖住；改渲染時 golden 不可因搬動而變，要改就是刻意的行為變更並說明。
 - 新的資料來源用 ESPN。stats.nba.com 會擋 GitHub runner 與非美國 IP。

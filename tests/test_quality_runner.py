@@ -230,3 +230,10 @@ def test_a1_is_skipped_without_the_flag(monkeypatch):
     assert not called
     runner.main(["--all", "--with-espn"])
     assert called
+
+
+def test_write_baseline_refuses_a_window(monkeypatch, tmp_path, capsys):
+    called = []
+    monkeypatch.setattr(runner, "connect_readonly", lambda: called.append(1))
+    assert runner.main(["--since", "7d", "--write-baseline", str(tmp_path / "b.json")]) == 2
+    assert not called and "full run" in capsys.readouterr().out

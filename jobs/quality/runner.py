@@ -194,6 +194,9 @@ def _execute(args) -> int:
 
 def main(argv: Optional[List[str]] = None) -> int:
     args = _build_parser().parse_args(argv)
+    if args.write_baseline and args.since:
+        print("--write-baseline needs a full run (no --since): a window would record partial counts.")
+        return 2
     try:
         return _execute(args)
     except Exception as exc:  # message may carry a connection string: print the class only
