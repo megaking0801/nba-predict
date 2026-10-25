@@ -1,0 +1,278 @@
+{
+ "segment": {
+  "first_season": "2015-16",
+  "last_season": "2024-25",
+  "season_types": [
+   "regular",
+   "playoffs",
+   "playin"
+  ]
+ },
+ "start_features": [
+  "elo_diff",
+  "net_rtg10_diff",
+  "net_rtg30_diff",
+  "venue_net10_diff",
+  "efg10_diff",
+  "tov10_diff",
+  "orb10_diff",
+  "ftr10_diff",
+  "pace10_avg",
+  "rest_diff",
+  "home_b2b",
+  "away_b2b",
+  "three_in_four_diff",
+  "realized_talent_diff",
+  "talent_gap_home",
+  "talent_gap_away",
+  "games_played_min"
+ ],
+ "baseline_selfcheck": {
+  "report_margin": {
+   "n": 12736,
+   "mae": 10.642229932112338,
+   "rmse": 13.59839600321493,
+   "bias": -0.31437251017652257,
+   "resid_sigma": 13.595295375692864
+  },
+  "report_cover": {
+   "n": 12502,
+   "brier": 0.26006605366396995,
+   "logloss": 0.7148787195077377,
+   "brier_p50": 0.25,
+   "brier_market": 0.24995106743995824,
+   "cal_slope": -0.02721623609301665,
+   "cal_intercept": -0.006120803414648785
+  }
+ },
+ "steps": [
+  {
+   "ridge": {
+    "n": 11657,
+    "n_base_in_segment": 11657,
+    "n_cand_in_segment": 11657,
+    "mean": -0.0004261387673140754,
+    "lo": -0.008162402771248174,
+    "hi": 0.008204690740974454,
+    "share_negative": 0.5,
+    "per_season": {
+     "2015-16": 0.009757826455288075,
+     "2016-17": 0.01630124376269182,
+     "2017-18": -0.0022207191416744004,
+     "2018-19": -0.0018012624638112107,
+     "2019-20": 0.002049801414477047,
+     "2020-21": 0.012950121217338746,
+     "2021-22": -0.005624590689608627,
+     "2022-23": 0.00661721059649992,
+     "2023-24": -0.010864305055302585,
+     "2024-25": -0.02132895589485368
+    },
+    "cover_brier_delta": -2.1536488150564193e-05,
+    "keep": false,
+    "failed": [
+     "gain",
+     "interval",
+     "seasons"
+    ],
+    "halfwidth": 0.008183546756111314,
+    "detectable": true,
+    "info_over_market_candidate": {
+     "n": 11646,
+     "beta": 0.051827640827752465,
+     "se": 0.036908011082861784
+    },
+    "info_over_market_base": {
+     "n": 11646,
+     "beta": 0.05030951177795335,
+     "se": 0.037033564748024855
+    }
+   },
+   "name": "G1_split_k5",
+   "added": [
+    "efg_off_diff",
+    "efg_def_diff",
+    "tov_off_diff",
+    "tov_def_diff",
+    "orb_off_diff",
+    "orb_def_diff",
+    "ftr_off_diff",
+    "ftr_def_diff"
+   ],
+   "overrides": {
+    "SHRINK_K_DEF": 5
+   },
+   "judgement": {
+    "keep": false
+   }
+  },
+  {
+   "ridge": {
+    "n": 11657,
+    "n_base_in_segment": 11657,
+    "n_cand_in_segment": 11657,
+    "mean": -0.000498940760883705,
+    "lo": -0.008497081514914597,
+    "hi": 0.007897533887337464,
+    "share_negative": 0.5,
+    "per_season": {
+     "2015-16": 0.01034269437383855,
+     "2016-17": 0.016031764298267373,
+     "2017-18": -0.0017110555843264182,
+     "2018-19": -0.0019190111007684966,
+     "2019-20": 0.0027664529852212843,
+     "2020-21": 0.011440145399468943,
+     "2021-22": -0.005053412638423228,
+     "2022-23": 0.0051568981985336436,
+     "2023-24": -0.010265973924265892,
+     "2024-25": -0.021236210479328176
+    },
+    "cover_brier_delta": -3.20099091791759e-05,
+    "keep": false,
+    "failed": [
+     "gain",
+     "interval",
+     "seasons"
+    ],
+    "halfwidth": 0.00819730770112603,
+    "detectable": true,
+    "info_over_market_candidate": {
+     "n": 11646,
+     "beta": 0.051837267676349164,
+     "se": 0.036912979068689865
+    },
+    "info_over_market_base": {
+     "n": 11646,
+     "beta": 0.05030951177795335,
+     "se": 0.037033564748024855
+    }
+   },
+   "name": "G2_split_k10",
+   "added": [
+    "efg_off_diff",
+    "efg_def_diff",
+    "tov_off_diff",
+    "tov_def_diff",
+    "orb_off_diff",
+    "orb_def_diff",
+    "ftr_off_diff",
+    "ftr_def_diff"
+   ],
+   "overrides": {
+    "SHRINK_K_DEF": 10
+   },
+   "judgement": {
+    "keep": false
+   }
+  },
+  {
+   "ridge": {
+    "n": 11657,
+    "n_base_in_segment": 11657,
+    "n_cand_in_segment": 11657,
+    "mean": -0.0005412869210812001,
+    "lo": -0.008470960883068307,
+    "hi": 0.007735574179447785,
+    "share_negative": 0.5,
+    "per_season": {
+     "2015-16": 0.010844842917238319,
+     "2016-17": 0.015822914686399413,
+     "2017-18": -0.0010481921441447743,
+     "2018-19": -0.0022195016398980695,
+     "2019-20": 0.0032074101585942553,
+     "2020-21": 0.010446585697075265,
+     "2021-22": -0.004616927299512379,
+     "2022-23": 0.004072821158789875,
+     "2023-24": -0.009774821339206784,
+     "2024-25": -0.02123224188849108
+    },
+    "cover_brier_delta": -3.964318510912834e-05,
+    "keep": false,
+    "failed": [
+     "gain",
+     "interval",
+     "seasons"
+    ],
+    "halfwidth": 0.008103267531258045,
+    "detectable": true,
+    "info_over_market_candidate": {
+     "n": 11646,
+     "beta": 0.051912780430024556,
+     "se": 0.036915747218648765
+    },
+    "info_over_market_base": {
+     "n": 11646,
+     "beta": 0.05030951177795335,
+     "se": 0.037033564748024855
+    }
+   },
+   "name": "G3_split_k20",
+   "added": [
+    "efg_off_diff",
+    "efg_def_diff",
+    "tov_off_diff",
+    "tov_def_diff",
+    "orb_off_diff",
+    "orb_def_diff",
+    "ftr_off_diff",
+    "ftr_def_diff"
+   ],
+   "overrides": {
+    "SHRINK_K_DEF": 20
+   },
+   "judgement": {
+    "keep": false
+   }
+  },
+  {
+   "ridge": {
+    "n": 11657,
+    "n_base_in_segment": 11657,
+    "n_cand_in_segment": 11657,
+    "mean": -0.005965288863951505,
+    "lo": -0.017331305062085637,
+    "hi": 0.005953732266085166,
+    "share_negative": 0.7,
+    "per_season": {
+     "2015-16": -0.05719840151000298,
+     "2016-17": -0.016046799484546834,
+     "2017-18": -0.02173961606094733,
+     "2018-19": -0.012968405432993293,
+     "2019-20": 0.0126268018784531,
+     "2020-21": 0.00300821980811305,
+     "2021-22": -0.017756031329048114,
+     "2022-23": -0.00019076375468707858,
+     "2023-24": -0.011273049437121733,
+     "2024-25": 0.02489829872594696
+    },
+    "cover_brier_delta": -0.00019288675590029003,
+    "keep": false,
+    "failed": [
+     "gain",
+     "interval"
+    ],
+    "halfwidth": 0.011642518664085402,
+    "detectable": true,
+    "info_over_market_candidate": {
+     "n": 11646,
+     "beta": 0.05663020793676168,
+     "se": 0.036995755569250666
+    },
+    "info_over_market_base": {
+     "n": 11646,
+     "beta": 0.05030951177795335,
+     "se": 0.037033564748024855
+    }
+   },
+   "name": "G4_three_rate",
+   "added": [
+    "three_rate_off_diff",
+    "three_rate_def_diff"
+   ],
+   "overrides": {},
+   "judgement": {
+    "keep": false
+   }
+  }
+ ],
+ "kept": []
+}
