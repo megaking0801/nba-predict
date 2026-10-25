@@ -13,7 +13,7 @@ python -m jobs.config                # 印出全部參數與 CONFIG_HASH
 python -m jobs.evaluate              # walk-forward 評估 + ATS 回測（只讀，但需要 DB 連線）
 python -m jobs.diagnose              # DB 狀態體檢（只讀，需要 DB 連線）
 python -m webui.build_site --out site  # 從 DB 產生靜態網站到 site/（只讀連線，需要 DB 連線；site/ 不提交）
-python -m jobs.feature_ablation --experiment data_scope  # 特徵／資料範圍的配對 walk-forward 比較（只讀連線，需要 DB 連線）
+python -m jobs.feature_ablation --experiment data_scope|context  # 特徵／資料範圍的配對 walk-forward 比較（只讀連線，需要 DB 連線）
 python -m jobs.quality --all           # 資料品質檢查（只讀連線，需要 DB 連線）；--since 7d 只看基準線之後的新資料；--verify-flags 驗證旗標 SQL
 ```
 會寫入 DB 的 job（`schema`、`ingest_*`、`backfill`、`settle`、`snapshot_*`、`predict_daily`、`predict_history`、`train`、`calibrate`、`run_daily`）

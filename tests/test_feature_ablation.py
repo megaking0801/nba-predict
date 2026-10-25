@@ -255,3 +255,74 @@ def test_e3_needs_one_kept_variant_from_each_family(monkeypatch):
                                         "season_types": ("regular",)})
     res = fa.run_data_scope([], pd.DataFrame(), reps=30, seed=1)
     assert "skipped" in res["E3_combined"]
+
+
+# ---------- cumulative feature steps (P4.1) ----------
+
+def test_feature_steps_are_the_preregistered_order():
+    names = [s["name"] for s in fa.CONTEXT_STEPS]
+    assert names == ["F1_ctx", "F2_elo_neutral", "F3_travel", "F4_altitude"]
+    assert fa.CONTEXT_STEPS[1]["overrides"] == {"ELO_NEUTRAL_HCA0": True}
+    assert fa.FEATURE_SEGMENT == {"first_season": "2015-16", "last_season": "2024-25",
+                                  "season_types": ("regular", "playoffs", "playin")}
+
+
+def _stub_feature_world(monkeypatch, better_after):
+    """walk_forward stub: predictions improve once the feature list contains `better_after`."""
+    base_preds = _preds(n=3000)
+    calls = []
+
+    def fake_table(bundles, cfg):
+        calls.append(("table", cfg.ELO_NEUTRAL_HCA0))
+        return pd.DataFrame({"game_id": base_preds["game_id"], "season": base_preds["season"],
+                             "season_type": "regular", "date": base_preds["date"]})
+
+    def fake_walk(df, kind, cfg=None, features=None, **kw):
+        calls.append(("walk", tuple(features or ())))
+        out = base_preds.copy()
+        if features and better_after in features:
+            out["mu"] = 0.5 * out["mu"] + 0.5 * out["margin"]
+        return out
+
+    monkeypatch.setattr(fa, "build_feature_table", fake_table)
+    monkeypatch.setattr(fa, "walk_forward", fake_walk)
+    return calls
+
+
+def test_steps_accumulate_only_kept_groups(monkeypatch):
+    calls = _stub_feature_world(monkeypatch, better_after="road_trip_len_away")
+    seg = {"first_season": "2019-20", "last_season": "2020-21", "season_types": ("regular",)}
+    ids = _preds(n=3000)["game_id"]
+    lines = pd.DataFrame({"game_id": ids, "home_spread": np.random.default_rng(3).normal(-2, 5, len(ids)),
+                          "home_price": 1.91, "away_price": 1.91})
+    res = fa.run_feature_steps([], lines, fa.CONTEXT_STEPS, seg, reps=60, seed=1)
+    kept = {s["name"]: s["judgement"]["keep"] for s in res["steps"]}
+    assert kept == {"F1_ctx": False, "F2_elo_neutral": False, "F3_travel": True, "F4_altitude": False}
+    # F3 was judged against the base (F1/F2 not kept), and F4 against base + travel
+    f4_features = [c[1] for c in calls if c[0] == "walk"][-1]
+    assert "road_trip_len_away" in f4_features and "altitude_edge" in f4_features
+    assert "neutral_game" not in f4_features                      # F1 was not kept
+    assert "road_trip_len_away" in res["final_features"] and "neutral_game" not in res["final_features"]
+
+
+def test_elo_override_only_applies_when_its_step_is_kept(monkeypatch):
+    calls = _stub_feature_world(monkeypatch, better_after="never")
+    seg = {"first_season": "2019-20", "last_season": "2020-21", "season_types": ("regular",)}
+    res = fa.run_feature_steps([], pd.DataFrame(), fa.CONTEXT_STEPS, seg, reps=30, seed=1)
+    assert res["final_overrides"] == {}
+    assert ("table", True) in calls                                # the step itself was evaluated
+
+
+def test_cli_context_experiment_dispatches(monkeypatch, tmp_path):
+    class Conn:
+        def close(self):
+            pass
+
+    monkeypatch.setattr(fa, "connect_readonly", lambda: Conn())
+    monkeypatch.setattr(fa, "load_bundles", lambda c: [])
+    monkeypatch.setattr(fa, "load_closing_lines", lambda c: pd.DataFrame())
+    monkeypatch.setattr(fa, "_prepare_session", lambda c: None)
+    monkeypatch.setattr(fa, "run_feature_steps", lambda b, l, steps, seg, **kw: {"steps": [], "final_features": []})
+    out = tmp_path / "c.json"
+    assert fa.main(["--experiment", "context", "--out", str(out)]) == 0
+    assert json.loads(out.read_text(encoding="utf-8"))["steps"] == []

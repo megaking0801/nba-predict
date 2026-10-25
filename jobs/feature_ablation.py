@@ -25,7 +25,7 @@ import pandas as pd
 from jobs.config import CONFIG
 from jobs.evaluate import (cover_metrics, load_closing_lines, margin_metrics,
                            split_tune_report, walk_forward)
-from jobs.features import build_feature_table, load_bundles
+from jobs.features import FEATURE_GROUPS, FEATURE_NAMES, build_feature_table, load_bundles
 from webui.build_site import connect_readonly
 
 MIN_GAIN = 0.02                 # MAE points a variant must improve by to be kept
@@ -42,6 +42,18 @@ DATA_SCOPE_EXPERIMENTS = [
     {"name": "E1_exclude_preseason", "overrides": {"EXCLUDE_PRESEASON": True}},
     {"name": "E2a_train_from_2016-17", "overrides": {"TRAIN_FROM_SEASON": "2016-17"}},
     {"name": "E2b_train_from_2018-19", "overrides": {"TRAIN_FROM_SEASON": "2018-19"}},
+]
+
+
+# P4.1: context features are judged one group at a time, cumulatively (a group is compared with
+# fs1 plus the groups kept so far). Tune segment is the whole of 2015-16..2024-25.
+FEATURE_SEGMENT = {"first_season": "2015-16", "last_season": "2024-25",
+                   "season_types": ("regular", "playoffs", "playin")}
+CONTEXT_STEPS = [
+    {"name": "F1_ctx", "add": FEATURE_GROUPS["ctx"], "overrides": {}},
+    {"name": "F2_elo_neutral", "add": [], "overrides": {"ELO_NEUTRAL_HCA0": True}},
+    {"name": "F3_travel", "add": FEATURE_GROUPS["travel"], "overrides": {}},
+    {"name": "F4_altitude", "add": FEATURE_GROUPS["altitude"], "overrides": {}},
 ]
 
 
@@ -239,6 +251,48 @@ def run_data_scope(bundles: list, lines: pd.DataFrame, reps: int = 2000, seed: i
     return out
 
 
+# ----- cumulative feature steps -----
+
+def run_feature_steps(bundles: list, lines: pd.DataFrame, steps: list, seg: dict, reps: int = 2000,
+                      seed: int = 0, kinds: Tuple[str, ...] = ("ridge",)) -> dict:
+    """Judge each step against fs1 + the steps kept so far; only kept steps accumulate."""
+    tables: dict = {}
+
+    def table_for(overrides: dict):
+        key = tuple(sorted(overrides.items()))
+        if key not in tables:
+            cfg = dataclasses.replace(CONFIG, **overrides)
+            tables[key] = (cfg, build_feature_table(bundles, cfg))
+        return tables[key]
+
+    cfg0, df0 = table_for({})
+    meta = df0[["game_id", "season", "season_type"]]
+    features, overrides = list(FEATURE_NAMES), {}
+    current = {k: walk_forward(df0, k, cfg=cfg0, features=features) for k in kinds}
+    tune, report = split_tune_report(current["ridge"] if "ridge" in current else next(iter(current.values())))
+    out = {"segment": seg, "start_features": list(features),
+           "baseline_selfcheck": {"report_margin": margin_metrics(report),
+                                  "report_cover": cover_metrics(report, lines) if len(lines) else None},
+           "steps": []}
+    for step in steps:
+        cand_features = features + [c for c in step["add"] if c not in features]
+        cand_overrides = {**overrides, **step["overrides"]}
+        cfg, df = table_for(cand_overrides)
+        res, preds = {}, {}
+        for kind in kinds:
+            preds[kind] = walk_forward(df, kind, cfg=cfg, features=cand_features)
+            res[kind] = compare(current[kind], preds[kind], lines, meta, season_types=seg["season_types"],
+                                first_season=seg["first_season"], last_season=seg["last_season"],
+                                reps=reps, seed=seed)
+        res["name"], res["added"], res["overrides"] = step["name"], step["add"], step["overrides"]
+        res["judgement"] = _judge(res)
+        out["steps"].append(res)
+        if res["judgement"]["keep"]:
+            features, overrides, current = cand_features, cand_overrides, preds
+    out["final_features"], out["final_overrides"] = features, overrides
+    return out
+
+
 # ----- CLI -----
 
 def _scrub(text: str) -> str:
@@ -254,7 +308,7 @@ def _prepare_session(conn) -> None:
 def main(argv: Optional[List[str]] = None) -> int:
     ap = argparse.ArgumentParser(prog="python -m jobs.feature_ablation",
                                  description="Paired walk-forward comparison (read-only)")
-    ap.add_argument("--experiment", required=True, choices=("data_scope",))
+    ap.add_argument("--experiment", required=True, choices=("data_scope", "context"))
     ap.add_argument("--out", help="write the result JSON here")
     ap.add_argument("--with-hgb", action="store_true", help="also run hgb as a no-worse check")
     ap.add_argument("--reps", type=int, default=2000)
@@ -275,7 +329,11 @@ def main(argv: Optional[List[str]] = None) -> int:
     finally:
         conn.close()
     kinds = ("ridge", "hgb") if args.with_hgb else ("ridge",)
-    result = run_data_scope(bundles, lines, reps=args.reps, seed=args.seed, kinds=kinds)
+    if args.experiment == "context":
+        result = run_feature_steps(bundles, lines, CONTEXT_STEPS, dict(FEATURE_SEGMENT),
+                                   reps=args.reps, seed=args.seed, kinds=kinds)
+    else:
+        result = run_data_scope(bundles, lines, reps=args.reps, seed=args.seed, kinds=kinds)
     text = json.dumps(result, indent=1, default=str, ensure_ascii=False)
     if args.out:
         Path(args.out).write_text(text, encoding="utf-8")
