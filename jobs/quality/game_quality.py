@@ -55,7 +55,8 @@ WITH tg AS (
     FROM public.player_game_stats p GROUP BY p.game_id, p.team_abbr
 ), plg AS (
   SELECT pl.game_id, count(*) AS pl_teams, min(pl.n_min) AS min_n_min,
-         sum(abs(pl.pp - t.pts)) AS pts_diff
+         CASE WHEN count(*) FILTER (WHERE t.pts IS NULL OR pl.pp IS NULL) > 0 THEN NULL
+              ELSE sum(abs(pl.pp - t.pts)) END AS pts_diff
     FROM pl JOIN public.team_game_stats t ON t.game_id = pl.game_id AND t.team_abbr = pl.team_abbr
    GROUP BY pl.game_id
 ), sh AS (

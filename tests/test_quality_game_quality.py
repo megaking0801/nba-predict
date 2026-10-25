@@ -149,3 +149,7 @@ def test_verify_flags_treats_null_like_none():
     df = _frame_from_rows([_row(raw_player_min_nonnull_min=0, raw_player_pts_diff=50)])
     assert df.loc[0, "points_consistent"] is None or pd.isna(df.loc[0, "points_consistent"])
     assert gq.verify_flags(df) == []
+
+
+def test_game_quality_sql_does_not_treat_a_null_team_score_as_consistent():
+    assert "IS NULL OR pl.pp IS NULL" in gq.SQL            # a NULL score makes pts_diff NULL, not 0

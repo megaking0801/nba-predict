@@ -19,7 +19,7 @@ MAX_EXAMPLES = 20
 _DB_COUNTS = """/* qc:A1 */
 SELECT g.season, g.season_type, count(*) AS n
   FROM public.games_v2 g
- WHERE g.status = 'final' AND g.game_date_et BETWEEN %s AND %s
+ WHERE g.status = 'final' AND g.game_date_et = ANY(%s)
  GROUP BY g.season, g.season_type
 """
 
@@ -71,14 +71,20 @@ def check_a1_espn_event_coverage(run, scope: Scope, fetch_scoreboard: Optional[C
     dates = _dates(scope, today)
     if not dates:
         return [Finding("A1", "error", "all/none", 0, 0, {})]
+    # DB first: do not hold a read transaction open (idle) across thousands of ESPN GETs.
+    db = run(_DB_COUNTS, (dates,))
+    db_counts = {(r["season"], r["season_type"]): int(r["n"]) for _, r in db.iterrows()} if len(db) else {}
     espn = collections.Counter()
-    bad, failed, skipped_total = [], [], 0
+    bad, failed, skipped_total, seen = [], [], 0, set()
     for d in dates:
         sb = fetch_scoreboard(d.strftime("%Y%m%d"))
         if sb is None:
             failed.append(d.isoformat())
             continue
         for e in sb.get("events", []):
+            if e.get("id") in seen:        # an event can be listed under two adjacent dates
+                continue
+            seen.add(e.get("id"))
             try:
                 info = classify_event(e)
             except (KeyError, IndexError, TypeError):
@@ -91,8 +97,6 @@ def check_a1_espn_event_coverage(run, scope: Scope, fetch_scoreboard: Optional[C
                 skipped_total += 1
                 if info["kind"] == "skip_bad":
                     bad.append({"id": info["id"], "abbrs": info["abbrs"], "type": info["type"]})
-    db = run(_DB_COUNTS, (dates[0], dates[-1]))
-    db_counts = {(r["season"], r["season_type"]): int(r["n"]) for _, r in db.iterrows()} if len(db) else {}
     out = [Finding("A1", "error", f"{s}/{t}", abs(n - db_counts.get((s, t), 0)), n,
                    {"espn": n, "db": db_counts.get((s, t), 0)})
            for (s, t), n in sorted(espn.items())]

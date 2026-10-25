@@ -49,7 +49,7 @@ def test_d2_regression_threshold():
     assert runner.classify_d2(drop3, entry).status == "known"        # exactly 3.0 points is still known
     assert runner.classify_d2(drop31, entry).status == "worse"
     assert runner.classify_d2(_f("D2", "x", 0, 0, n_comparable=0), None).status == "ok"
-    assert runner.classify_d2(_f("D2", "x", 5, 300, exact_pct=90.0, n_comparable=300), None).status == "new"
+    assert runner.classify_d2(_f("D2", "x", 20, 300, exact_pct=90.0, major_pct=6.7, n_comparable=300), None).status == "new"
     assert runner.classify_d2(_f("D2", "x", 5, 50, severity="info", n_comparable=50), None).status == "info"
 
 
@@ -237,3 +237,84 @@ def test_write_baseline_refuses_a_window(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(runner, "connect_readonly", lambda: called.append(1))
     assert runner.main(["--since", "7d", "--write-baseline", str(tmp_path / "b.json")]) == 2
     assert not called and "full run" in capsys.readouterr().out
+
+
+# ---------- review fixes ----------
+
+def test_since_mode_rate_tolerance_never_applies_to_error_checks(monkeypatch):
+    chronic_error = _f("C1", "2027-28/playoffs", 3, 25, severity="error")
+    chronic_warn = _f("B4", "2027-28/playoffs", 3, 25, severity="warn")
+    monkeypatch.setattr(runner, "REGISTRY", [("X", lambda r, s: [chronic_error, chronic_warn])])
+    baseline = {"as_of_date": "2026-10-24", "entries": {},
+                "rates": {"C1|playoffs": 0.094, "B4|playoffs": 0.094}}
+    got = runner.run(None, Scope(None, date(2026, 10, 24)), baseline)
+    assert [f.status for f in got] == ["new", "known"]
+
+
+def test_baseline_rates_only_for_warn_checks_and_complete_seasons():
+    findings = [
+        _f("C1", "2025-26/playoffs", 8, 85, severity="error"),
+        _f("B4", "2025-26/regular", 23, 2774),
+        _f("B4", "2026-27/regular", 5, 200),                       # season still running on 2026-10-24
+        _f("B4", "2025-26/preseason", 3, 130),
+        _f("B4", "2024-25/preseason", 2, 138),
+    ]
+    data = runner.build_baseline(findings, date(2026, 10, 24))
+    assert "C1|playoffs" not in data["rates"]
+    assert abs(data["rates"]["B4|regular"] - 23 / 2774) < 1e-9
+    assert abs(data["rates"]["B4|preseason"] - 3 / 130) < 1e-9      # latest finished season, not the biggest
+
+
+def test_d2_new_season_without_baseline_tolerates_a_small_bad_share():
+    small = _f("D2", "2027-28/regular", 5, 300, exact_pct=60.0, major_pct=1.7, none_pct=0.0, n_comparable=300)
+    big = _f("D2", "2027-28/regular", 20, 300, exact_pct=60.0, major_pct=6.7, none_pct=0.0, n_comparable=300)
+    assert runner.classify_d2(small, None).status == "ok"
+    assert runner.classify_d2(big, None).status == "new"
+
+
+def test_no_new_data_shortcut_counts_games_not_only_final_ones(monkeypatch, tmp_path):
+    run_fn, db = fake_run({"qc:NEW": frame([(5,)], ["n"])})
+    _patch_db(monkeypatch, run_fn)
+    monkeypatch.setattr(runner, "_today", lambda: date(2026, 11, 20))
+    monkeypatch.setattr(runner, "REGISTRY", [("B1", lambda r, s: [_f("B1", "2026-27/regular", 0, 10)])])
+    base = tmp_path / "b.json"
+    base.write_text(json.dumps({"as_of_date": "2026-11-18", "entries": {}}), encoding="utf-8")
+    assert runner.main(["--since", "7d", "--baseline", str(base)]) == 0
+    sql = db.calls[0][0]
+    assert "status" not in sql and "current_date" in sql      # stuck games must still reach A5
+
+
+def test_errors_after_connecting_keep_their_message_but_not_a_dsn(monkeypatch, capsys):
+    run_fn, _ = fake_run({"qc:ASOF": frame([(date(2026, 10, 24),)], ["d"])})
+    _patch_db(monkeypatch, run_fn)
+
+    def boom(r, s):
+        raise ValueError('column "price_point" does not exist (postgresql://u:secret@h/db)')
+
+    monkeypatch.setattr(runner, "REGISTRY", [("E6", boom)])
+    assert runner.main(["--all"]) == 2
+    out = capsys.readouterr().out
+    assert 'column "price_point" does not exist' in out and "E6" in out and "ValueError" in out
+    assert "secret" not in out
+
+
+def test_write_baseline_needs_all_seasons(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(runner, "connect_readonly", lambda: (_ for _ in ()).throw(AssertionError("no db")))
+    assert runner.main(["--seasons", "2025-26", "--write-baseline", str(tmp_path / "b.json")]) == 2
+    assert "--all" in capsys.readouterr().out
+
+
+def test_a1_queries_the_db_before_the_network_and_dedups_events():
+    order = []
+    run_fn, db = fake_run({"qc:A1": lambda p: (order.append("db"), frame([("2025-26", "regular", 1)],
+                                               ["season", "season_type", "n"]))[1]})
+
+    def fetch(d, **kw):
+        order.append("espn")
+        return {"events": [_event("1", ["LAL", "BOS"])]}          # the same event under every date
+
+    got = {f.scope: f for f in checks_espn.check_a1_espn_event_coverage(
+        run_fn, Scope(["2025-26"], date(2026, 2, 13)), fetch, today=date(2026, 2, 16))}
+    assert order[0] == "db"
+    assert got["2025-26/regular"].n_total == 1 and got["2025-26/regular"].n_bad == 0   # counted once
+    assert "ANY(%s)" in db.calls[0][0]

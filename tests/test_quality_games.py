@@ -101,3 +101,13 @@ def test_scope_filters_are_passed_as_parameters():
 
 def test_all_sql_is_select_only():
     assert_select_only(Path(cg.__file__))
+
+
+def test_a2_season_in_progress_is_decided_by_date_not_by_game_count(monkeypatch):
+    monkeypatch.setattr(cg, "_today", lambda: date(2026, 10, 25))
+    rows = [("2022-23", f"T{i}", 70) for i in range(30)]       # finished season that lost 12 games per team
+    got, _ = _one(cg.check_a2_team_game_counts, "qc:A2", rows, ["season", "team_abbr", "n"])
+    assert got[0].scope == "2022-23/regular" and got[0].n_bad == 30
+    monkeypatch.setattr(cg, "_today", lambda: date(2023, 1, 5))       # same data while 2022-23 is running
+    got, _ = _one(cg.check_a2_team_game_counts, "qc:A2", rows, ["season", "team_abbr", "n"])
+    assert got[0].n_total == 0

@@ -5,17 +5,18 @@ row per (season, season_type) with n_total / n_bad counts; Findings are built in
 """
 from __future__ import annotations
 
+from datetime import date
 from typing import Callable, List
 
 import pandas as pd
 
+from jobs import ingest_espn
 from jobs.quality.core import Finding, Scope, grouped_check, scope_where
 
 Run = Callable[[str, tuple], pd.DataFrame]
 
 # ---- A2: regular-season games per team --------------------------------------------------
 EXPECTED_GAMES = {"2020-21": 72}          # every other checked season: 82
-EXPECTED_TOTAL = {"2020-21": 1080}        # league total used to detect a season still in progress
 SKIP_SEASONS = {"2019-20"}                # suspended and finished with a reduced schedule
 CUP_SEASONS_FROM = "2023-24"              # NBA Cup final is tagged 'regular': two teams reach 83
 
@@ -31,6 +32,10 @@ SELECT season, team_abbr, count(*) AS n FROM tg GROUP BY season, team_abbr ORDER
 """
 
 
+def _today() -> date:
+    return date.today()
+
+
 def check_a2_team_game_counts(run: Run, scope: Scope) -> List[Finding]:
     if scope.since is not None:           # season totals mean nothing for a recent window
         return [Finding("A2", "warn", "all/none", 0, 0, {})]
@@ -41,8 +46,10 @@ def check_a2_team_game_counts(run: Run, scope: Scope) -> List[Finding]:
         if season in SKIP_SEASONS:
             continue
         expected = EXPECTED_GAMES.get(season, 82)
-        if grp["n"].sum() / 2 < 0.95 * EXPECTED_TOTAL.get(season, 1230):
-            continue                       # season still in progress
+        window = ingest_espn.SEASON_WINDOWS.get(season)
+        if window is not None and window[1] >= _today():
+            continue                       # season still in progress (decided by date, so a finished
+                                           # season that lost games is still reported)
         counts = grp["n"].astype(int).tolist()
         cup = season >= CUP_SEASONS_FROM
         ok = (lambda n: n in (expected, expected + 1)) if cup else (lambda n: n == expected)

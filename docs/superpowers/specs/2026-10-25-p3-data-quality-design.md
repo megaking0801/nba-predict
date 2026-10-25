@@ -160,7 +160,7 @@ P4（特徵）與 P5（模型）要用 12 季資料。P3 要回答三件事，�
 | D4 `shots_unknown_share` | info | `dist_bucket='unknown'` 的出手占比 | 只回報 | **0**：`team_shot_buckets` 裡沒有任何 `unknown` 列（distinct 的 `dist_bucket` 只有 0-4／4-8／8-14／14-24／24+）[全量，主線 MCP]。我先前抽樣看到的「有座標約 78%～86%」，分母含罰球（罰球沒有座標，桶本來就不含罰球），所以不能解讀成「桶有 14%～22% 是 unknown」。 |
 | D5 `shots_impossible_combo` | warn | 不可能的組合：2 分出手在 ≥ 24 呎，或 3 分出手在 < 14 呎（角落三分也有 22 呎，所以 0-4／4-8／8-14 的 3 分都不可能；14-24 的非角落 3 分是合法的 23.75～24 呎弧頂）；計 `fga` | 超出基準線；基準照實測 | 主線 MCP 實測有不合理列：3 分在 14-24 且非角落 4,052（合法範圍，不算）、**2 分在 24+ 有 611、3 分在 0-4 且角落 431、3 分在 8-14 少量**；原因可能是 2021-22 `pointsAttempted`＝0 時的 fallback 判斷，或座標雜訊 [全量 + 推測]；實作的 D5 把「合法的 14-24 非角落 3 分」排除，基準線以第一次實測為準 |
 
-2025-26 起 plays 多於 box 的現象：D2 對 2025-26 以後用另一組基準（`minor` 為常態）；若 `major` 比例明顯上升（> 2%，目前 2025-26 regular 為 21／2462＝0.9%）才升級。
+2025-26 起 plays 多於 box 的現象：D2 對 2025-26 以後用另一組基準（`minor` 為常態）；若 `major` 比例明顯上升（> 2%，目前 2025-26 regular 為 21／2462＝0.9%）才升級。實作：沒有基準線的新球季，`major` 加 `none` 占可比對隊場的比例 ≤ 2% 視為 ok，超過才 `new`；有基準線的範圍仍以 `exact` 比例退步超過 3 個百分點才 `worse`。
 
 ### 4.5 盤口（E 類）
 **使用哪一列盤口**：所有 E 類檢查與 `v_game_quality` 的盤口欄位一律用既有的 `v_closing_lines`（專案的收盤線規則：非 manual、`captured_at ≤ tipoff_utc`、依 book 排序後取最新一筆；P5 也會用它），每場至多一列。`line_provenance` 取該列的 `price_point`（讓分），`total_provenance` 取該列的 `total_price_point`（總分），兩者分開，因為同一列的讓分與總分可能來自不同時間點。2026-27 同時有 `close` 與 `current` 列：以 `v_closing_lines` 選出的那一列為準。
@@ -173,7 +173,7 @@ P4（特徵）與 P5（模型）要用 12 季資料。P3 要回答三件事，�
 | E4 `total_range` | error | 總分線 ∉ [170, 280]，**所有 `season_type` 都檢查**（有線但無總分另記 info） | > 0（先排除基準線內已知壞資料） | 2021-22：regular 24 場（49.5～60）、全賽別共 26 場（最大 63.5）；2015-16 1 場（2001）；2017-18 4 場（−1，regular 1＋playoffs 3）；其他季非 regular 未查 |
 | E5 `total_health` | warn | 每季 regular：總分線與總分相關 ≥ 0.25，平均誤差絕對值 ≤ 2 | 排除 E4 旗標後仍不符才 warn | 全量未排除時：2015-16 相關 0.068、2021-22 相關 0.146／誤差 +3.62；排除 E4 旗標後已恢復：2015-16 0.406、2021-22 0.442 [全量，主線 MCP] |
 | E6 `price_point_provenance` | info | 各季 `price_point` 分布；NULL 列是否全為 `captured_at = tipoff_utc` | 只回報；若出現 `captured_at ≠ tipoff_utc` 的 NULL 列即 warn | 2023-24～2025-26 NULL 列全部 `captured_at = tipoff_utc` [全量，S9] |
-| E7 `line_flip_check` | error | 讓分符號慣例：`corr(margin, −home_spread)` > 0 | ≤ 0 即 error | 全季為正 |
+| E7 `line_flip_check` | error | 讓分符號慣例：`corr(margin, −home_spread)` > 0；**樣本門檻 n ≥ 30（不是 200）**：符號寫反在幾週內就很明顯，不能等到 200 場；n < 30 只回報 | ≤ 0 即 error | 全季為正 |
 
 ### 4.6 情境旗標（F 類，不是成敗檢查，是 `v_game_quality` 的欄位）
 - `is_cup_final`：NBA Cup 冠軍賽（ESPN 標成 regular，不計入每隊 82 場）。已知 3 場以明列 game_id 內嵌在檢視表；2026-27 的冠軍賽打完後由 A2（有 2 隊為 83 場）偵測並提醒人工補列。
@@ -275,6 +275,8 @@ python -m jobs.quality [--seasons 2025-26,2026-27 | --all] [--since 7d]
 - 基準線的鍵是 `(檢查 id, 季, 季別類型)`；§4 表格中寫成單季總數的基準，實作時要拆成季別類型（regular／playoffs／playin／preseason）。檔頭記錄 `as_of_date`（產生基準線的日期）。
 - 狀態：不良數 ≤ 基準 → `known`；> 基準 → `worse`；基準沒有的範圍出現不良 → `new`；不良數 < 基準（資料被修好）→ `ok`，並提示「可以降低基準線」。**結束碼只看 `new` 與 `worse`**：已知的非零基準（例如 B5 有 1 列 `min_played > 60`）即使嚴重度是 error，狀態是 `known`，結束碼為 0。
 - **區間執行（`--since`、每日）**：只評估 `game_date_et > as_of_date` 的場次；這些場次是基準線之後的新資料，出現任何不良一律 `new`。基準線之前的場次由完整執行負責，區間執行不拿局部數字去比整季基準（否則幾乎都會顯示 ok／known）。
+- **慢性容許只給 warn 級檢查**：區間模式的容許值（`recent_rate`）只套用在嚴重度為 `warn` 的檢查；error 級檢查（例如 C1、D1、B5、E4）在區間模式一律是「任何不良即 `new`」，否則一次性的 ingest 失敗（如 2025-26 季後賽 8 場缺資料）會被誤當成慢性比率，把往後的真故障吃掉。`recent_rate` 取「最近一個已結束球季」（`SEASON_WINDOWS` 結束日早於基準線日期）的不良率。
+- **「無新資料」判斷**：數的是窗口內 `game_date_et < current_date` 的所有場次（不限 status），否則卡在 `scheduled` 的場次會被誤判成沒有新資料而跳過 A5。
 - **比例型檢查（D2、E3、E5）與進行中的球季**：某範圍可比對的 regular 場次少於 200 場時只回報（info），不判成敗。例如 2026-27 目前 n=11 時 MAE 6.23、相關 0.702 會超出 E3 的範圍，這在樣本不足時是預期的，不是資料問題。
 - **基準線不是手抄 §3 的數字**：實作者先用檢查入口對正式 DB 跑一次（唯讀）產生初稿，與 §3 逐項比對；不一致要找出原因，不能直接採用較大的數字。
 - 修改基準線必須在 commit 訊息說明原因，並讓 `reviewer` 看到（CLAUDE.md 對 gates 的「不為了通過而放寬」同樣適用）。
@@ -315,6 +317,8 @@ python -m jobs.quality [--seasons 2025-26,2026-27 | --all] [--since 7d]
 - **P3d（選配）**：A1 的 ESPN 覆蓋檢查改成每季完成後自動執行。
 
 ## 10. 對這份設計的限制與未驗證
+
+- reviewer 提出、未處理的小項（記錄，不影響交付）：A1 的略過白名單比設計寬（「regular 且兩隊都不認得」一律當全明星，兩支新縮寫的隊互打會被略過）；`USE_ODDS=1` 時 oddsapi 列（無總分、無 price_point）可能勝過 ESPN 列，使 `has_total` 為假；`verify_flags` 只驗最後一層旗標運算，驗不到 `raw_*` 的 CTE 與 join，Step 3b 應另外把各季旗標加總和 B1、B2、C1、D2 的結果對帳。
 
 - 所有「門檻」都是建議值，要等 P3a 用檢查入口對正式 DB 跑出基準後才定案。
 - `v_game_quality` 的 SQL 尚未寫出，也未對真實 Postgres 驗證（效能與正確性）。

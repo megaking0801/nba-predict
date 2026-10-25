@@ -93,3 +93,12 @@ def test_empty_data_gives_zero_findings():
 
 def test_all_sql_is_select_only():
     assert_select_only(Path(cl.__file__))
+
+
+def test_e7_uses_a_small_sample_threshold_not_the_200_game_one():
+    cols = ["season", "n", "corr_v"]
+    run, _ = fake_run({"qc:E7": frame([("2026-27", 50, -0.45)], cols)})
+    f = cl.check_e7_line_flip(run, ALL)[0]
+    assert f.severity == "error" and f.n_bad == 1          # a flipped sign shows after ~50 games
+    run, _ = fake_run({"qc:E7": frame([("2026-27", 20, -0.45)], cols)})
+    assert cl.check_e7_line_flip(run, ALL)[0].severity == "info"

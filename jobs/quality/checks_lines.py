@@ -13,6 +13,7 @@ from jobs.quality.core import Finding, Scope, grouped_check, scope_where
 
 Run = Callable[[str, tuple], pd.DataFrame]
 MIN_GAMES = 200
+E7_MIN_GAMES = 30      # a flipped sign is obvious after a few weeks, so E7 does not wait for 200
 SPREAD_CORR = (0.30, 0.65)
 SPREAD_MAE = (8.0, 12.0)
 SPREAD_BIAS = 1.0
@@ -105,8 +106,8 @@ def _num(v):
 
 
 def _per_season(check_id: str, severity: str, sql: str, judge: Callable[[dict], int],
-                n_metrics: int) -> Callable:
-    """Ratio-type checks: one Finding per season; below MIN_GAMES it is info only."""
+                n_metrics: int, min_games: int = MIN_GAMES) -> Callable:
+    """Ratio-type checks: one Finding per season; below ``min_games`` it is info only."""
     def check(run: Run, scope: Scope) -> List[Finding]:
         extra, params = scope_where(scope)
         df = run(sql.format(extra=extra), params)
@@ -115,7 +116,7 @@ def _per_season(check_id: str, severity: str, sql: str, judge: Callable[[dict], 
         out = []
         for _, r in df.iterrows():
             vals = {c: (int(r[c]) if c == "n" else _num(r[c])) for c in df.columns if c != "season"}
-            enough = vals["n"] >= MIN_GAMES
+            enough = vals["n"] >= min_games
             out.append(Finding(check_id, severity if enough else "info", f"{r['season']}/regular",
                                judge(vals) if enough else 0, n_metrics, vals))
         return out
@@ -144,4 +145,4 @@ def _judge_e7(v: dict) -> int:
 
 check_e3_spread_health = _per_season("E3", "error", _E3, _judge_e3, 3)
 check_e5_total_health = _per_season("E5", "warn", _E5, _judge_e5, 2)
-check_e7_line_flip = _per_season("E7", "error", _E7, _judge_e7, 1)
+check_e7_line_flip = _per_season("E7", "error", _E7, _judge_e7, 1, min_games=E7_MIN_GAMES)

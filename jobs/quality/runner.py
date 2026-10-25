@@ -18,6 +18,7 @@ from datetime import date, timedelta
 from pathlib import Path
 from typing import Callable, List, Optional
 
+from jobs import ingest_espn
 from jobs.quality import (checks_box, checks_games, checks_lines, checks_shots)
 from jobs.quality.checks_espn import check_a1_espn_event_coverage
 from jobs.quality.core import (Finding, Scope, baseline_key, classify, exit_code, load_baseline,
@@ -27,6 +28,7 @@ from webui.build_site import connect_readonly, make_run
 
 DEFAULT_BASELINE = Path(__file__).resolve().parent / "baseline.json"
 D2_DROP_ALLOWED = 3.0     # percentage points of exact-match share a season may lose
+D2_NEW_SEASON_BAD_SHARE = 2.0   # a season without a baseline: major + none share (%) allowed
 
 REGISTRY: List[tuple] = [
     ("A2", checks_games.check_a2_team_game_counts), ("A3", checks_games.check_a3_duplicate_games),
@@ -47,8 +49,15 @@ REGISTRY: List[tuple] = [
 ]
 
 
+_current = {"check": None}   # which check is running, for error messages
+
+
 def _today() -> date:
     return date.today()
+
+
+def _scrub(text: str) -> str:
+    return re.sub(r"postgres(?:ql)?://\S+", "[redacted]", text)
 
 
 def classify_d2(f: Finding, entry: Optional[dict]) -> Finding:
@@ -60,7 +69,8 @@ def classify_d2(f: Finding, entry: Optional[dict]) -> Finding:
     elif f.detail.get("n_comparable", f.n_total) == 0:
         out.status = "ok"
     elif entry is None:
-        out.status = "ok" if f.n_bad == 0 else "new"
+        bad_share = f.detail.get("major_pct", 0) + f.detail.get("none_pct", 0)
+        out.status = "ok" if bad_share <= D2_NEW_SEASON_BAD_SHARE else "new"
     elif entry.get("exact_pct") is not None and \
             entry["exact_pct"] - f.detail["exact_pct"] > D2_DROP_ALLOWED + 1e-9:
         out.status = "worse"
@@ -73,16 +83,19 @@ def run(run_sql, scope: Scope, baseline: dict, *, with_espn: bool = False,
         fetch_scoreboard: Optional[Callable] = None) -> List[Finding]:
     since_mode = scope.since is not None
     findings: List[Finding] = []
-    checks = list(REGISTRY)
-    for _, fn in checks:
+    for check_id, fn in list(REGISTRY):
+        _current["check"] = check_id
         findings.extend(fn(run_sql, scope))
     if with_espn:
+        _current["check"] = "A1"
         findings.extend(check_a1_espn_event_coverage(run_sql, scope, fetch_scoreboard))
     out = []
     for f in findings:
         if since_mode:
             rate = baseline["rates"].get(f"{f.check_id}|{f.scope.split('/', 1)[-1]}")
-            entry = {"recent_rate": rate} if rate else None
+            # The tolerance is for chronic low-rate WARN problems only: an error-level check
+            # (e.g. missing status rows after an ingest failure) is news on the first bad row.
+            entry = {"recent_rate": rate} if rate and f.severity == "warn" else None
         else:
             entry = baseline["entries"].get(baseline_key(f.check_id, f.scope))
         if f.check_id == "D2" and not since_mode:
@@ -114,14 +127,15 @@ def build_baseline(findings: List[Finding], as_of: date) -> dict:
                 entry["exact_pct"] = f.detail["exact_pct"]
             entries[baseline_key(f.check_id, f.scope)] = entry
         season, stype = f.scope.split("/", 1)
-        if re.fullmatch(r"\d{4}-\d{2}", season):
+        if f.severity == "warn" and re.fullmatch(r"\d{4}-\d{2}", season):
             groups.setdefault((f.check_id, stype), []).append((season, f))
     rates = {}
     for (check, stype), items in groups.items():
-        biggest = max(f.n_total for _, f in items)
-        complete = [(s, f) for s, f in items if f.n_total >= 0.9 * biggest and f.n_total > 0]
-        if complete:
-            _, latest = max(complete, key=lambda x: x[0])
+        finished = [(s, f) for s, f in items
+                    if f.n_total > 0 and s in ingest_espn.SEASON_WINDOWS
+                    and ingest_espn.SEASON_WINDOWS[s][1] < as_of]
+        if finished:
+            _, latest = max(finished, key=lambda x: x[0])
             rate = latest.n_bad / latest.n_total
             if rate > 0:
                 rates[f"{check}|{stype}"] = rate
@@ -159,47 +173,53 @@ def _build_parser() -> argparse.ArgumentParser:
     return ap
 
 
-def _execute(args) -> int:
+def _execute(args, conn) -> int:
     baseline = load_baseline(Path(args.baseline))
-    conn = connect_readonly()
-    try:
-        run_sql = make_run(conn)
-        seasons = [s.strip() for s in args.seasons.split(",") if s.strip()] if args.seasons else None
-        since = since_date(args.since, baseline["as_of_date"], _today()) if args.since else None
-        scope = Scope(seasons, since)
-        if args.verify_flags:
-            bad = verify_flags(game_quality(run_sql, scope))
-            print(f"verify-flags: {len(bad)} games differ" + (f": {', '.join(bad[:20])}" if bad else ""))
-            return 1 if bad else 0
-        if since is not None:
-            extra, params = scope_where(scope)
-            n_new = run_sql("/* qc:NEW */ SELECT count(*) AS n FROM public.games_v2 g "
-                            "WHERE g.status = 'final'" + extra, params)
-            if int(n_new.iloc[0]["n"]) == 0:
-                print(f"無新資料 (no finished games after {since.isoformat()})")
-                return 0
-        findings = run(run_sql, scope, baseline, with_espn=args.with_espn)
-        _print(findings)
-        if args.json:
-            Path(args.json).write_text(json.dumps([dataclasses.asdict(f) for f in findings], indent=1,
-                                                  default=str, ensure_ascii=False), encoding="utf-8")
-        if args.write_baseline:
-            asof = run_sql("/* qc:ASOF */ SELECT max(game_date_et) AS d FROM public.games_v2 "
-                           "WHERE status = 'final'", ()).iloc[0]["d"]
-            write_baseline(Path(args.write_baseline), build_baseline(findings, asof))
-            return 0          # measuring a baseline accepts the current state
-        return exit_code(findings, args.fail_on)
-    finally:
-        conn.close()
+    run_sql = make_run(conn)
+    seasons = [s.strip() for s in args.seasons.split(",") if s.strip()] if args.seasons else None
+    since = since_date(args.since, baseline["as_of_date"], _today()) if args.since else None
+    scope = Scope(seasons, since)
+    if args.verify_flags:
+        bad = verify_flags(game_quality(run_sql, scope))
+        print(f"verify-flags: {len(bad)} games differ" + (f": {', '.join(bad[:20])}" if bad else ""))
+        return 1 if bad else 0
+    if since is not None:
+        extra, params = scope_where(scope)
+        # any status: games stuck in 'scheduled' must still reach A5
+        n_new = run_sql("/* qc:NEW */ SELECT count(*) AS n FROM public.games_v2 g "
+                        "WHERE g.game_date_et < current_date" + extra, params)
+        if int(n_new.iloc[0]["n"]) == 0:
+            print(f"無新資料 (no games dated after {since.isoformat()})")
+            return 0
+    findings = run(run_sql, scope, baseline, with_espn=args.with_espn)
+    _print(findings)
+    if args.json:
+        Path(args.json).write_text(json.dumps([dataclasses.asdict(f) for f in findings], indent=1,
+                                              default=str, ensure_ascii=False), encoding="utf-8")
+    if args.write_baseline:
+        asof = run_sql("/* qc:ASOF */ SELECT max(game_date_et) AS d FROM public.games_v2 "
+                       "WHERE status = 'final'", ()).iloc[0]["d"]
+        write_baseline(Path(args.write_baseline), build_baseline(findings, asof))
+        return 0          # measuring a baseline accepts the current state
+    return exit_code(findings, args.fail_on)
 
 
 def main(argv: Optional[List[str]] = None) -> int:
     args = _build_parser().parse_args(argv)
-    if args.write_baseline and args.since:
-        print("--write-baseline needs a full run (no --since): a window would record partial counts.")
+    if args.write_baseline and (args.since or args.seasons):
+        print("--write-baseline needs a full run (--all, no --since): a window or a subset of seasons "
+              "would record partial counts.")
         return 2
     try:
-        return _execute(args)
-    except Exception as exc:  # message may carry a connection string: print the class only
-        print(f"Quality check failed ({type(exc).__name__}); see the job log.")
+        conn = connect_readonly()
+    except Exception as exc:  # the message may carry a connection string: print the class only
+        print(f"DB connection failed ({type(exc).__name__}); check the DB credentials.")
         return 2
+    try:
+        return _execute(args, conn)
+    except Exception as exc:  # server-side errors carry no DSN; keep the text, scrub anyway
+        print(f"Quality check failed in {_current['check'] or 'setup'}: "
+              f"{type(exc).__name__}: {_scrub(str(exc))}")
+        return 2
+    finally:
+        conn.close()

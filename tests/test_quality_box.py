@@ -85,3 +85,9 @@ def test_empty_data_is_zero_not_an_error():
 
 def test_all_sql_is_select_only():
     assert_select_only(Path(cb.__file__))
+
+
+def test_b6_counts_a_null_team_score_as_bad():
+    run, db = _run("qc:B6", [])
+    cb.check_b6_team_points_equal_score(run, ALL)
+    assert "IS DISTINCT FROM" in db.calls[0][0]

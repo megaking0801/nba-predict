@@ -75,7 +75,7 @@ SELECT g.season, g.season_type, count(*) AS n_total,
 
 _B6 = """/* qc:B6 */
 SELECT g.season, g.season_type, count(*) AS n_total,
-       count(*) FILTER (WHERE t.pts <> CASE WHEN t.is_home THEN g.home_score ELSE g.away_score END) AS n_bad
+       count(*) FILTER (WHERE t.pts IS DISTINCT FROM CASE WHEN t.is_home THEN g.home_score ELSE g.away_score END) AS n_bad
   FROM public.team_game_stats t
   JOIN public.games_v2 g ON g.game_id = t.game_id
  WHERE g.status = 'final'{extra}
