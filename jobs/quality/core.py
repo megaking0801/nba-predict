@@ -10,7 +10,7 @@ import math
 from dataclasses import dataclass, field, replace
 from datetime import date
 from pathlib import Path
-from typing import List, NamedTuple, Optional
+from typing import Callable, List, NamedTuple, Optional
 
 import pandas as pd
 
@@ -129,3 +129,16 @@ def _py(v):
     except (TypeError, ValueError):
         pass
     return v.item() if hasattr(v, "item") else v
+
+
+def grouped_check(check_id: str, severity: str, sql: str, detail_cols: tuple = (),
+                  repeat: int = 1, name: Optional[str] = None) -> Callable:
+    """Build a check from one query that returns a row per (season, season_type) with
+    n_total / n_bad. ``sql`` holds an ``{extra}`` slot for the scope filter, repeated
+    ``repeat`` times when the query uses it in several UNION ALL branches."""
+    def check(run, scope: Scope) -> List[Finding]:
+        extra, params = scope_where(scope)
+        df = run(sql.format(extra=extra), params * repeat)
+        return findings_from_frame(df, check_id, severity, "n_bad", "n_total", detail_cols)
+    check.__name__ = name or f"check_{check_id.lower()}"
+    return check

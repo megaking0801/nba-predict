@@ -9,7 +9,7 @@ from typing import Callable, List
 
 import pandas as pd
 
-from jobs.quality.core import Finding, Scope, findings_from_frame, scope_where
+from jobs.quality.core import Finding, Scope, grouped_check, scope_where
 
 Run = Callable[[str, tuple], pd.DataFrame]
 
@@ -56,15 +56,6 @@ def check_a2_team_game_counts(run: Run, scope: Scope) -> List[Finding]:
 
 
 # ---- one-row-per-(season, season_type) checks -------------------------------------------
-def _grouped(check_id: str, severity: str, sql: str, detail_cols: tuple = ()) -> Callable:
-    def check(run: Run, scope: Scope) -> List[Finding]:
-        extra, params = scope_where(scope)
-        df = run(sql.format(extra=extra), params)
-        return findings_from_frame(df, check_id, severity, "n_bad", "n_total", detail_cols)
-    check.__name__ = f"check_{check_id.lower()}"
-    return check
-
-
 _A3 = """/* qc:A3 */
 WITH d AS (
   SELECT g.season, g.season_type, g.game_date_et, g.home_abbr, g.away_abbr, count(*) AS c
@@ -143,21 +134,11 @@ SELECT g.season, g.season_type, count(*) AS n_total,
 """
 
 
-def _doubled(sql: str, fn_name: str) -> Callable:
-    """Like _grouped, for queries whose {extra} appears twice (UNION ALL halves)."""
-    def check(run: Run, scope: Scope) -> List[Finding]:
-        extra, params = scope_where(scope)
-        df = run(sql.format(extra=extra), params * 2)
-        return findings_from_frame(df, "A4", "warn", "n_bad", "n_total")
-    check.__name__ = fn_name
-    return check
-
-
-check_a3_duplicate_games = _grouped("A3", "error", _A3)
-check_a4_team_twice_same_day = _doubled(_A4, "check_a4_team_twice_same_day")
-check_a5_stuck_not_final = _grouped("A5", "error", _A5)
-check_a6_final_without_score = _grouped("A6", "error", _A6)
-check_a7_suspicious_tipoff = _grouped("A7", "warn", _A7, ("early_hour", "tip_null", "date_mismatch"))
-check_c1_status_rows_present = _grouped("C1", "error", _C1)
-check_c2_starters_are_ten = _grouped("C2", "warn", _C2)
-check_c3_officials_at_least_three = _grouped("C3", "info", _C3)
+check_a3_duplicate_games = grouped_check("A3", "error", _A3)
+check_a4_team_twice_same_day = grouped_check("A4", "warn", _A4, repeat=2)
+check_a5_stuck_not_final = grouped_check("A5", "error", _A5)
+check_a6_final_without_score = grouped_check("A6", "error", _A6)
+check_a7_suspicious_tipoff = grouped_check("A7", "warn", _A7, ("early_hour", "tip_null", "date_mismatch"))
+check_c1_status_rows_present = grouped_check("C1", "error", _C1)
+check_c2_starters_are_ten = grouped_check("C2", "warn", _C2)
+check_c3_officials_at_least_three = grouped_check("C3", "info", _C3)
