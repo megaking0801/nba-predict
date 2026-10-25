@@ -471,3 +471,42 @@ def test_parse_close_line_provider_without_priority_goes_last():
     b = _prov(0, "-8.5", "230.5")
     b["provider"] = {"name": "no priority"}
     assert ingest_espn.parse_close_line([b, a])["home_spread"] == -3.5
+
+
+# ---------- old-format prices: American only, no decimal ----------
+
+def _old_format_item():
+    """ESPN's 2015-16 style provider: prices only as American numbers, in the 'current' block."""
+    return {"provider": {"priority": 0, "name": "5Dimes.eu"},
+            "homeTeamOdds": {"current": {"pointSpread": {"american": "+1.5"}, "spread": {"american": "-118"}}},
+            "awayTeamOdds": {"current": {"pointSpread": {"american": "-1.5"}, "spread": {"american": "-102"}}},
+            "current": {"over": {"american": "-118"}, "under": {"american": "-102"}, "total": {"american": "202"}}}
+
+
+def test_old_format_spread_and_total_prices_are_read_from_american():
+    got = ingest_espn.parse_close_line([_old_format_item()])
+    assert got["home_price"] == pytest.approx(1 + 100 / 118) and got["away_price"] == pytest.approx(1 + 100 / 102)
+    assert got["over_price"] == pytest.approx(1 + 100 / 118) and got["under_price"] == pytest.approx(1 + 100 / 102)
+    assert got["home_spread"] == 1.5 and got["total_line"] == 202.0
+
+
+def test_decimal_still_wins_over_american():
+    item = _old_format_item()
+    item["homeTeamOdds"]["current"]["spread"] = {"american": "-118", "decimal": 1.91}
+    assert ingest_espn.parse_close_line([item])["home_price"] == 1.91
+
+
+def test_prices_default_when_neither_decimal_nor_american():
+    item = _old_format_item()
+    item["homeTeamOdds"]["current"]["spread"] = {}
+    item["awayTeamOdds"]["current"].pop("spread")
+    got = ingest_espn.parse_close_line([item])
+    assert got["home_price"] == 1.91 and got["away_price"] == 1.91
+
+
+def test_american_to_decimal_edge_cases():
+    f = ingest_espn._price_decimal
+    assert f({"american": "+100"}) == pytest.approx(2.0)
+    assert f({"american": "EVEN"}) == pytest.approx(2.0)
+    assert f({"american": "-110"}) == pytest.approx(1 + 100 / 110)
+    assert f({"american": "0"}) is None and f({"american": "abc"}) is None and f(None) is None and f({}) is None
