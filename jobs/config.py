@@ -18,6 +18,7 @@ class Config:
     WINDOW_TALENT_GAMES: int = 5      # realized-talent lookback
     SHRINK_K_SHORT: int = 5           # prior weight vs 10-game window
     SHRINK_K_LONG: int = 10
+    SHRINK_K_DEF: int = 5             # defence side of the four-factor split (5 = same as offence)
     PREV_SEASON_PRIOR_W: float = 0.6  # regression-to-mean on prev-season net rating
     PLAYER_EWMA_LAMBDA: float = 0.15  # ~13-game effective memory
     PLAYER_MIN_MINUTES: float = 8.0   # below this, per-minute rates are noise

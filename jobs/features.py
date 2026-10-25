@@ -49,7 +49,11 @@ FEATURE_GROUPS = {
     "travel": ["travel_km_diff", "tz_shift_away", "travel_km_diff_short_rest",
                "road_trip_len_away", "road_trip_len_home", "games_last7_diff"],
     "altitude": ["altitude_edge"],
+    # P4.2: each existing four-factor diff = off_diff + def_diff (when SHRINK_K_DEF == SHRINK_K_SHORT)
+    "ff": [f"{f}_{k}_diff" for f in ("efg", "tov", "orb", "ftr") for k in ("off", "def")],
+    "three_rate": ["three_rate_off_diff", "three_rate_def_diff"],
 }
+FF_FACTORS = ("efg", "tov", "orb", "ftr", "tr")     # tr = three-point attempt rate
 
 _SUFFIXES = {"jr", "sr", "ii", "iii", "iv", "v"}
 
@@ -136,6 +140,8 @@ class FeatureBuilder:
         self._ortg_sum = 0.0   # league-average offensive rating (totals shrink prior)
         self._drtg_sum = 0.0
         self._rtg_n = 0
+        self._fac_sum = {f: 0.0 for f in FF_FACTORS}   # league running mean of each factor (own side)
+        self._fac_n = 0
 
     # ----- state access -----
 
@@ -200,6 +206,25 @@ class FeatureBuilder:
     def _three_in_four(self, ts: TeamState, date: dt.date) -> int:
         recent = sum(1 for d in ts.dates if 0 < (date - d).days <= 3)
         return 1 if recent >= 2 else 0
+
+    def _league_factor(self, f: str) -> float:
+        return self._fac_sum[f] / self._fac_n if self._fac_n else 0.0
+
+    def _ff_features(self, h: TeamState, a: TeamState) -> Dict[str, float]:
+        """Own-quality split of the four factors (+ three-point rate): off_diff = h.own - a.own,
+        def_diff = a.allowed - h.allowed. Both shrink toward the league mean; the defence side may
+        use a heavier prior (SHRINK_K_DEF) because allowed shooting is mostly the opponent's luck."""
+        cfg = self.cfg
+        window = lambda ts, key: [g[key] for g in list(ts.nets)[-cfg.WINDOW_SHORT:]]
+        out = {}
+        for f in FF_FACTORS:
+            prior = self._league_factor(f)
+            name = "three_rate" if f == "tr" else f
+            out[f"{name}_off_diff"] = (shrunk(window(h, f + "_o"), cfg.SHRINK_K_SHORT, prior)
+                                       - shrunk(window(a, f + "_o"), cfg.SHRINK_K_SHORT, prior))
+            out[f"{name}_def_diff"] = (shrunk(window(a, f + "_d"), cfg.SHRINK_K_DEF, prior)
+                                       - shrunk(window(h, f + "_d"), cfg.SHRINK_K_DEF, prior))
+        return out
 
     def _venue_state(self, ts: TeamState, date: dt.date) -> Tuple[Optional[str], int]:
         """(last known arena, road streak), forgotten after an off-season gap."""
@@ -283,6 +308,7 @@ class FeatureBuilder:
             "talent_gap_away": gap(a),
             "games_played_min": float(min(h.gp, a.gp)),
             **self._context_features(home_abbr, away_abbr, h, a, date, ctx or {}),
+            **self._ff_features(h, a),
         }
 
     def emit_totals(self, home_abbr: str, away_abbr: str, date: dt.date) -> Dict[str, float]:
@@ -329,6 +355,7 @@ class FeatureBuilder:
         drtg = 100.0 * f(opp, "pts") / opp_poss
         efg = lambda d: (f(d, "fgm") + 0.5 * f(d, "fg3m")) / f(d, "fga")
         ftr = lambda d: f(d, "fta") / f(d, "fga")
+        tr = lambda d: f(d, "fg3a") / f(d, "fga")
         own_orb_pct = f(own, "oreb") / max(1.0, f(own, "oreb") + f(opp, "dreb"))
         opp_orb_pct = f(opp, "oreb") / max(1.0, f(opp, "oreb") + f(own, "dreb"))
         return {
@@ -340,6 +367,12 @@ class FeatureBuilder:
             "orb": own_orb_pct - opp_orb_pct,
             "ftr": ftr(own) - ftr(opp),
             "pace": (own_poss + opp_poss) / 2.0,
+            # own side (_o) and what the opponent did against this team (_d): P4.2 split
+            "efg_o": efg(own), "efg_d": efg(opp),
+            "tov_o": f(own, "tov") / own_poss, "tov_d": f(opp, "tov") / opp_poss,
+            "orb_o": own_orb_pct, "orb_d": opp_orb_pct,
+            "ftr_o": ftr(own), "ftr_d": ftr(opp),
+            "tr_o": tr(own), "tr_d": tr(opp),
         }
 
     def update(self, bundle: dict) -> None:
@@ -403,6 +436,9 @@ class FeatureBuilder:
             self._ortg_sum += m_h["ortg"] + m_a["ortg"]
             self._drtg_sum += m_h["drtg"] + m_a["drtg"]
             self._rtg_n += 2
+            for fac in FF_FACTORS:
+                self._fac_sum[fac] += m_h[fac + "_o"] + m_a[fac + "_o"]
+            self._fac_n += 2
 
         ctx = ctx_from_bundle(bundle)
         neutral = ctx["neutral_site"] or context.is_bubble(date)
