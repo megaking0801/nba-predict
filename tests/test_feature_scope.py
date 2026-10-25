@@ -14,7 +14,9 @@ FS1_FROZEN_HASH = 1509810820937614110      # numeric columns of make_bundles() r
 
 
 def _frozen_hash(table: pd.DataFrame) -> int:
-    num = table.select_dtypes("number").round(9)
+    """Hash of the fs1/ts1 columns only (new context columns may be added without touching it)."""
+    fs1_cols = {"margin", *FEATURE_NAMES, *TOTAL_FEATURE_NAMES}
+    num = table[[c for c in table.columns if c in fs1_cols]].select_dtypes("number").round(9)
     return int(pd.util.hash_pandas_object(num, index=True).sum() % (2 ** 61))
 
 

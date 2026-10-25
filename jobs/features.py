@@ -20,6 +20,7 @@ from typing import Dict, List, Optional, Set, Tuple
 
 import pandas as pd
 
+from jobs import context
 from jobs.config import CONFIG
 from jobs.ratings import Elo
 from jobs.teams import require_abbr
@@ -42,7 +43,22 @@ TOTAL_FEATURE_NAMES = [
     "three_in_four_home", "three_in_four_away", "games_played_min",
 ]
 
+# Context/schedule features (P4.1). emit() always outputs these; a model picks columns by name.
+FEATURE_GROUPS = {
+    "ctx": ["neutral_game", "crowd_restricted", "is_playoffs", "is_playin"],
+    "travel": ["travel_km_diff", "tz_shift_away", "travel_km_diff_short_rest",
+               "road_trip_len_away", "road_trip_len_home", "games_last7_diff"],
+    "altitude": ["altitude_edge"],
+}
+
+OFFSEASON_GAP_DAYS = 60     # a longer gap since a team's last game means the last venue no longer counts
+
 _SUFFIXES = {"jr", "sr", "ii", "iii", "iv", "v"}
+
+
+def ctx_from_bundle(b: dict) -> dict:
+    """The schedule-level facts known before tip-off (never anything from the game itself)."""
+    return {"neutral_site": bool(b.get("neutral_site")), "season_type": b.get("season_type") or "regular"}
 
 
 def norm_player_name(s: str) -> str:
@@ -89,6 +105,8 @@ class TeamState:
         self.prev_final_net30: Optional[float] = None
         self.player_minutes: Dict[int, float] = {}
         self.last_game_players: Set[str] = set()
+        self.venue: Optional[str] = None     # abbr of the arena of the last game with a known venue
+        self.away_streak: int = 0            # consecutive road games played so far
 
     def season_reset(self, k_long: float, prior_w: float) -> None:
         if self.gp > 0:
@@ -102,6 +120,8 @@ class TeamState:
         self.realized.clear()
         self.player_minutes.clear()
         self.last_game_players.clear()
+        self.venue = None
+        self.away_streak = 0
 
 
 class FeatureBuilder:
@@ -183,7 +203,44 @@ class FeatureBuilder:
         recent = sum(1 for d in ts.dates if 0 < (date - d).days <= 3)
         return 1 if recent >= 2 else 0
 
-    def emit(self, home_abbr: str, away_abbr: str, date: dt.date) -> Dict[str, float]:
+    def _venue_state(self, ts: TeamState, date: dt.date) -> Tuple[Optional[str], int]:
+        """(last known arena, road streak), forgotten after an off-season gap."""
+        if ts.dates and (date - ts.dates[-1]).days > OFFSEASON_GAP_DAYS:
+            return None, 0
+        return ts.venue, ts.away_streak
+
+    def _context_features(self, home_abbr: str, away_abbr: str, h: TeamState, a: TeamState,
+                          date: dt.date, ctx: dict) -> Dict[str, float]:
+        neutral = bool(ctx.get("neutral_site")) or context.is_bubble(date)
+        stype = ctx.get("season_type") or "regular"
+        h_venue, h_streak = self._venue_state(h, date)
+        a_venue, a_streak = self._venue_state(a, date)
+        h_rest, a_rest = self._rest_days(h, date), self._rest_days(a, date)
+        if neutral:     # the arena is unknown, so no distance/clock/altitude is claimed
+            h_km = a_km = tz_away = alt = 0.0
+        else:
+            h_km = context.distance_km(h_venue, home_abbr) if h_venue else 0.0
+            a_km = context.distance_km(a_venue, home_abbr) if a_venue else 0.0
+            tz_away = context.tz_shift_hours(a_venue, home_abbr, date) if a_venue else 0.0
+            alt = max(0.0, context.elevation_m(home_abbr) - context.elevation_m(away_abbr)) / 1000.0
+        last7 = lambda ts: sum(1 for d in ts.dates if 0 < (date - d).days <= 7)
+        return {
+            "neutral_game": float(neutral),
+            "crowd_restricted": float(context.is_crowd_restricted(date)),
+            "is_playoffs": float(stype == "playoffs"),
+            "is_playin": float(stype == "playin"),
+            "travel_km_diff": (h_km - a_km) / 1000.0,
+            "tz_shift_away": float(tz_away),
+            "travel_km_diff_short_rest": ((h_km if h_rest <= 1 else 0.0)
+                                          - (a_km if a_rest <= 1 else 0.0)) / 1000.0,
+            "road_trip_len_away": float(a_streak + 1),
+            "road_trip_len_home": float(h_streak),
+            "games_last7_diff": float(last7(h) - last7(a)),
+            "altitude_edge": alt,
+        }
+
+    def emit(self, home_abbr: str, away_abbr: str, date: dt.date,
+             ctx: Optional[dict] = None) -> Dict[str, float]:
         cfg = self.cfg
         h, a = self.team(home_abbr), self.team(away_abbr)
 
@@ -226,6 +283,7 @@ class FeatureBuilder:
             "talent_gap_home": gap(h),
             "talent_gap_away": gap(a),
             "games_played_min": float(min(h.gp, a.gp)),
+            **self._context_features(home_abbr, away_abbr, h, a, date, ctx or {}),
         }
 
     def emit_totals(self, home_abbr: str, away_abbr: str, date: dt.date) -> Dict[str, float]:
@@ -347,6 +405,13 @@ class FeatureBuilder:
             self._drtg_sum += m_h["drtg"] + m_a["drtg"]
             self._rtg_n += 2
 
+        ctx = ctx_from_bundle(bundle)
+        neutral = ctx["neutral_site"] or context.is_bubble(date)
+        if not neutral:
+            h.venue = a.venue = home_abbr
+            h.away_streak = 0
+            a_prev = self._venue_state(a, date)[1]      # forgets a streak across the off-season
+            a.away_streak = a_prev + 1
         h.dates.append(date)
         a.dates.append(date)
         h.gp += 1
@@ -354,7 +419,8 @@ class FeatureBuilder:
 
         margin = bundle.get("margin")
         if margin is not None:
-            self.elo.update(home_abbr, away_abbr, int(margin))
+            self.elo.update(home_abbr, away_abbr, int(margin),
+                            neutral=bool(cfg.ELO_NEUTRAL_HCA0 and neutral))
 
 
 # ----- data loading + table building -----
@@ -369,7 +435,7 @@ def load_bundles(conn, through_date: Optional[dt.date] = None) -> List[dict]:
     with conn.cursor() as cur:
         cur.execute(f"""
             SELECT g.game_id, g.season, g.season_type, g.game_date_et,
-                   g.home_abbr, g.away_abbr, g.margin, g.home_score, g.away_score
+                   g.home_abbr, g.away_abbr, g.margin, g.home_score, g.away_score, g.neutral_site
             FROM public.games_v2 g
             WHERE g.status = 'final' AND g.margin IS NOT NULL {clause}
             ORDER BY g.game_date_et, g.game_id
@@ -404,14 +470,14 @@ def load_bundles(conn, through_date: Optional[dt.date] = None) -> List[dict]:
             player_stats.setdefault(d["game_id"], []).append(d)
 
     bundles = []
-    for game_id, season, season_type, date, home, away, margin, hs, as_ in games:
+    for game_id, season, season_type, date, home, away, margin, hs, as_, neutral in games:
         ts = team_stats.get(game_id)
         if not ts or home not in ts or away not in ts:
             continue  # boxscore not landed yet; replay skips it
         bundles.append({
             "game_id": game_id, "season": season, "season_type": season_type,
             "date": date, "home_abbr": home, "away_abbr": away,
-            "margin": margin, "home_score": hs, "away_score": as_,
+            "margin": margin, "home_score": hs, "away_score": as_, "neutral_site": neutral,
             "team_stats": ts, "player_stats": player_stats.get(game_id, []),
         })
     return bundles
@@ -431,7 +497,7 @@ def build_feature_table(bundles: List[dict], cfg=CONFIG) -> pd.DataFrame:
     first_season = bundles[0]["season"] if bundles else None
     rows = []
     for b in bundles:
-        feats = builder.emit(b["home_abbr"], b["away_abbr"], b["date"])
+        feats = builder.emit(b["home_abbr"], b["away_abbr"], b["date"], ctx_from_bundle(b))
         tfeats = builder.emit_totals(b["home_abbr"], b["away_abbr"], b["date"])
         warmup = (cfg.WARMUP_GP_FIRST_SEASON if b["season"] == first_season
                   else cfg.MIN_GP_OTHER_SEASONS)
@@ -464,7 +530,7 @@ def replay_and_emit(bundles: List[dict], upcoming: List[dict],
         builder.update(b)
     rows = []
     for g in upcoming:
-        feats = builder.emit(g["home_abbr"], g["away_abbr"], g["date"])
+        feats = builder.emit(g["home_abbr"], g["away_abbr"], g["date"], ctx_from_bundle(g))
         tfeats = builder.emit_totals(g["home_abbr"], g["away_abbr"], g["date"])
         rows.append({**g, **feats, **{k: tfeats[k] for k in tfeats if k not in feats}})
     return rows, builder

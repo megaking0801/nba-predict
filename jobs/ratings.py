@@ -24,20 +24,22 @@ class Elo:
     def diff(self, home_abbr: str, away_abbr: str) -> float:
         return self.get(home_abbr) - self.get(away_abbr)
 
-    def expected_home_win(self, home_abbr: str, away_abbr: str) -> float:
-        gap = self.get(home_abbr) + self.hca - self.get(away_abbr)
+    def expected_home_win(self, home_abbr: str, away_abbr: str, hca: float | None = None) -> float:
+        gap = self.get(home_abbr) + (self.hca if hca is None else hca) - self.get(away_abbr)
         return 1.0 / (1.0 + 10.0 ** (-gap / 400.0))
 
-    def update(self, home_abbr: str, away_abbr: str, margin: int) -> None:
-        """margin = home_score - away_score (ties impossible in the NBA)."""
-        e_home = self.expected_home_win(home_abbr, away_abbr)
+    def update(self, home_abbr: str, away_abbr: str, margin: int, neutral: bool = False) -> None:
+        """margin = home_score - away_score (ties impossible in the NBA).
+        neutral=True: nobody had a home court, so no home advantage is assumed."""
+        hca = 0.0 if neutral else self.hca
+        e_home = self.expected_home_win(home_abbr, away_abbr, hca)
         s_home = 1.0 if margin > 0 else 0.0
 
         # 538 MOV multiplier, damped by the winner's pregame Elo edge (incl. HCA)
         if margin > 0:
-            winner_gap = self.get(home_abbr) + self.hca - self.get(away_abbr)
+            winner_gap = self.get(home_abbr) + hca - self.get(away_abbr)
         else:
-            winner_gap = self.get(away_abbr) - (self.get(home_abbr) + self.hca)
+            winner_gap = self.get(away_abbr) - (self.get(home_abbr) + hca)
         mov_mult = ((abs(margin) + 3.0) ** 0.8) / (7.5 + 0.006 * winner_gap)
 
         delta = self.k * mov_mult * (s_home - e_home)

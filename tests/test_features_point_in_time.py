@@ -7,7 +7,7 @@ import random
 
 import pytest
 
-from jobs.features import FeatureBuilder, build_feature_table, norm_player_name
+from jobs.features import FeatureBuilder, build_feature_table, ctx_from_bundle, norm_player_name
 from jobs.teams import CANONICAL_ABBRS, normalize_espn_abbr
 
 TEAMS4 = ["BOS", "LAL", "GSW", "WAS"]
@@ -85,7 +85,7 @@ def test_point_in_time_golden():
         for b in bundles[:i]:
             builder.update(b)
         b = bundles[i]
-        feats = builder.emit(b["home_abbr"], b["away_abbr"], b["date"])
+        feats = builder.emit(b["home_abbr"], b["away_abbr"], b["date"], ctx_from_bundle(b))
         tfeats = builder.emit_totals(b["home_abbr"], b["away_abbr"], b["date"])
         feats = {**feats, **{k: v for k, v in tfeats.items() if k not in feats}}
         row = table.iloc[i]

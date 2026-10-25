@@ -29,7 +29,8 @@ class Config:
     ELO_HCA: float = 65.0             # Elo points of home advantage
     ELO_CARRYOVER: float = 0.75       # preseason regression; rest to mean 1505
     ELO_MEAN: float = 1505.0
-    ENABLE_ALTITUDE_FLAG: bool = False
+    ENABLE_ALTITUDE_FLAG: bool = False   # unused: altitude_edge is always emitted and chosen by feature list
+    ELO_NEUTRAL_HCA0: bool = False       # True: neutral-site/bubble games update Elo without home advantage
 
     # --- training-row eligibility ---
     WARMUP_GP_FIRST_SEASON: int = 15  # no priors exist in season 1 of backfill
