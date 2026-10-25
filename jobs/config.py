@@ -35,6 +35,10 @@ class Config:
     WARMUP_GP_FIRST_SEASON: int = 15  # no priors exist in season 1 of backfill
     MIN_GP_OTHER_SEASONS: int = 5
     MIN_TRAIN_ROWS: int = 800         # below this, training refuses to ship
+    # Data scope (P4.0). Defaults keep the pre-P4 behaviour; flip only after a walk-forward
+    # comparison (python -m jobs.feature_ablation --experiment data_scope).
+    EXCLUDE_PRESEASON: bool = False   # True: preseason games neither update state nor become rows
+    TRAIN_FROM_SEASON: str = ""       # e.g. "2018-19": earlier seasons still build state but are not eligible
 
     # --- model ---
     RIDGE_ALPHA: float = 10.0         # default; walk-forward picks from RIDGE_ALPHA_GRID

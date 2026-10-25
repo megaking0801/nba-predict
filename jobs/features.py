@@ -417,8 +417,16 @@ def load_bundles(conn, through_date: Optional[dt.date] = None) -> List[dict]:
     return bundles
 
 
+def scope_bundles(bundles: List[dict], cfg=CONFIG) -> List[dict]:
+    """Apply the data-scope switches. With the defaults this is the identity."""
+    if cfg.EXCLUDE_PRESEASON:
+        return [b for b in bundles if b.get("season_type") != "preseason"]
+    return bundles
+
+
 def build_feature_table(bundles: List[dict], cfg=CONFIG) -> pd.DataFrame:
     """One row per final game: meta + label + features + train eligibility."""
+    bundles = scope_bundles(bundles, cfg)
     builder = FeatureBuilder(cfg)
     first_season = bundles[0]["season"] if bundles else None
     rows = []
@@ -435,7 +443,8 @@ def build_feature_table(bundles: List[dict], cfg=CONFIG) -> pd.DataFrame:
             "home_abbr": b["home_abbr"], "away_abbr": b["away_abbr"],
             "margin": float(b["margin"]),
             "total": total,
-            "eligible": feats["games_played_min"] >= warmup,
+            "eligible": (feats["games_played_min"] >= warmup
+                         and (not cfg.TRAIN_FROM_SEASON or b["season"] >= cfg.TRAIN_FROM_SEASON)),
             **feats,
             **{k: tfeats[k] for k in tfeats if k not in feats},
         })
@@ -451,7 +460,7 @@ def replay_and_emit(bundles: List[dict], upcoming: List[dict],
     Returns (rows, builder) — the builder is exposed for the injury veto.
     """
     builder = FeatureBuilder(cfg)
-    for b in bundles:
+    for b in scope_bundles(bundles, cfg):
         builder.update(b)
     rows = []
     for g in upcoming:
