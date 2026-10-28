@@ -102,7 +102,7 @@ def _index_page(games: pd.DataFrame, tr: dict, acc, season: str, now: dt.datetim
     chunks += [
         render.team_section_head(season, with_game_hint=False),
         _team_list_html(),
-        '<details class="nb-explainer"><summary>ℹ️ 這個模型怎麼運作？</summary>'
+        '<details class="nb-explainer"><summary>這個模型怎麼運作？</summary>'
         f'{explainer_html(acc)}</details>',
         render.DISCLAIMER_HTML,
     ]

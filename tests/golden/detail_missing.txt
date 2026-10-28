@@ -178,6 +178,6 @@ table.ntable tbody td { padding: 7px 0; border-top: 1px solid var(--hair); text-
 }
 </style>
 <!--chunk-->
-markdown:<a class="nb-back" href="?" target="_self">返回今天的賽程</a><div class="nb-topbar"><div class="nb-brand">NBA 勝負預測</div><div class="nb-badge"><b class="led">66%</b><span>近三季猜中率</span></div></div>
+markdown:<a class="nb-back" href="?" target="_self">返回今天的賽程</a><div class="nb-topbar"><div class="nb-brand">NBA 勝負預測</div><div class="nb-badge"><b class="led">66%</b><span>時間外猜中率</span></div></div>
 <!--chunk-->
 markdown:<div class="nb-honest">查無此場比賽。</div>

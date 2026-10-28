@@ -160,7 +160,7 @@ team_df = load_team_recent(team_pick)
 player_df = load_player_recent(team_pick, season)
 st.markdown(render.team_tables_html(team_pick, team_df, player_df), unsafe_allow_html=True)
 
-with st.expander("ℹ️ 這個模型怎麼運作？"):
+with st.expander("這個模型怎麼運作？"):
     st.markdown(render.explainer_md(acc))
 
 # ---------- footer ----------

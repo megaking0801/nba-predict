@@ -68,7 +68,7 @@ def test_bet_spread_missing_line():
 def test_injury_panel_empty_df():
     cols = ["player_name", "status", "detail", "snap_date"]
     html = render.injury_panel(pd.DataFrame([], columns=cols), "LAL", "主")
-    assert "（無傷病回報）" in html
+    assert "沒有傷病回報" in html
 
 
 def _tr(**kw) -> dict:
@@ -386,3 +386,31 @@ def test_game_row_marks_the_favourite_without_a_pick_sentence():
     html = render.game_card_html(_game(p_home_win=0.66))
     assert "34%" in html and "66%" in html and "看好" not in html
     assert '<span class="nb-pct fav">66%</span>' in html
+
+
+# ---------- site simplification step 3: stale or pick-like copy must not come back ----------
+
+BANNED_COPY = ("三季", "4000", "近三季", "最有把握", "信心", "看好", "擅長", "穩賺明牌！")
+
+
+def test_banned_copy_is_not_in_the_web_sources():
+    for rel in ("webui/render.py", "webui/build_site.py", "auto_nba_predict.py"):
+        src = (ROOT / rel).read_text(encoding="utf-8")
+        for word in BANNED_COPY[:-1]:
+            assert word not in src, (rel, word)
+
+
+def test_banned_copy_is_not_in_rendered_pages(tmp_path):
+    from tests import fakes
+    from webui import build_site
+    build_site.build(fakes.scenario_board().run, tmp_path / "site", NOW)
+    for page in (tmp_path / "site").rglob("*.html"):
+        html = page.read_text(encoding="utf-8")
+        for word in BANNED_COPY[:-1]:
+            assert word not in html, (page.name, word)
+
+
+def test_honesty_copy_is_still_there():
+    assert "僅供球迷參考與娛樂，非投注建議" in render.DISCLAIMER_HTML
+    assert "高命中率不等於能獲利" in render.DISCLAIMER_HTML
+    assert "不是穩賺明牌" in "".join(render.record_chunks({"rec_n": 0}, 0.65))

@@ -178,9 +178,9 @@ table.ntable tbody td { padding: 7px 0; border-top: 1px solid var(--hair); text-
 }
 </style>
 <!--chunk-->
-markdown:<div class="nb-topbar"><div class="nb-brand">NBA 勝負預測</div><div class="nb-badge"><b class="led">66%</b><span>近三季猜中率</span></div></div>
+markdown:<div class="nb-topbar"><div class="nb-brand">NBA 勝負預測</div><div class="nb-badge"><b class="led">66%</b><span>時間外猜中率</span></div></div>
 <!--chunk-->
-markdown:<div class="nb-hero"><h1>今晚 1 場</h1><p class="nb-lede">10/29，台北時間。三季、4000+ 場比賽訓練的模型，逐場輸出勝率。每場只用「該場之前」的資料，不偷看未來。</p></div>
+markdown:<div class="nb-hero"><h1>今晚 1 場</h1><p class="nb-lede">10/29，台北時間。模型用球隊近況與實力逐場算出勝率，每場只用開賽前的資料。勝率不是推薦：盤口通常比模型準。</p></div>
 <!--chunk-->
 markdown:<div class="nb-group"><div class="nb-datehead"><span class="d">10/24 週六</span><span class="cnt">1 場，尚未開賽</span></div><div class="nb-rows"><a class="nb-row" href="?game=0022600001" target="_self"><div class="nb-rtop"><span class="nb-when">10/25 07:30</span><span class="nb-state">尚未開賽</span></div><div class="nb-rmain"><span class="nb-rteam">勇士<span class="nb-ha">客</span></span><div class="nb-prob"><span class="nb-pct">34%</span><span class="nb-split" aria-hidden="true"><i class="a" style="width:34%"></i><i class="h fav" style="width:66%"></i></span><span class="nb-pct fav">66%</span></div><span class="nb-rteam r fav">湖人<span class="nb-ha">主</span></span></div></a></div></div>
 <!--chunk-->
@@ -188,26 +188,26 @@ markdown:<div class="nb-group"><div class="nb-datehead"><span class="d">10/23 �
 <!--chunk-->
 markdown:<details class="nb-more"><summary>其他日期（1 場）</summary><div class="nb-group"><div class="nb-datehead"><span class="d">10/22 週四</span><span class="cnt">1 場，已結束</span></div><div class="nb-rows"><a class="nb-row" href="?game=0022600003" target="_self"><div class="nb-rtop"><span class="nb-when">10/23 07:00</span><span class="nb-state">尚未開賽</span></div><div class="nb-rmain"><span class="nb-rteam fav">太陽<span class="nb-ha">客</span></span><div class="nb-prob"><span class="nb-pct fav">54%</span><span class="nb-split" aria-hidden="true"><i class="a fav" style="width:54%"></i><i class="h" style="width:46%"></i></span><span class="nb-pct">46%</span></div><span class="nb-rteam r">金塊<span class="nb-ha">主</span></span></div></a></div></div></details>
 <!--chunk-->
-markdown:<div class="nb-sechead" style="margin-top:24px;"><h2>模型戰績 <span class="bar">·</span> 誠實揭露</h2><span class="sub">walk-forward · 不灌水</span></div>
+markdown:<div class="nb-sechead" style="margin-top:24px;"><h2>模型戰績</h2><span class="sub">每場只用開賽前的資料驗證</span></div>
 <!--chunk-->
-markdown:<div class="nb-record"><div class="nb-rcell"><div class="k">近三季猜中率</div><div class="v c led">65.5%</div><div class="note">3000 場時間外驗證</div></div><div class="nb-rcell"><div class="k">已結算預測</div><div class="v led">60</div><div class="note">上線以來實際場次</div></div><div class="nb-rcell"><div class="k">其中命中</div><div class="v m led">66.7%</div><div class="note">40 / 60 場</div></div><div class="nb-rcell"><div class="k">大小分時間外猜中率</div><div class="v m led">48.2%</div><div class="note">900 場 O/U 驗證</div></div><div class="nb-rcell"><div class="k">大小分已結算命中</div><div class="v led">48.8%</div><div class="note">20 / 41 場</div></div></div>
+markdown:<div class="nb-record"><div class="nb-rcell"><div class="k">時間外驗證猜中率</div><div class="v c led">65.5%</div><div class="note">3000 場時間外驗證</div></div><div class="nb-rcell"><div class="k">已結算預測</div><div class="v led">60</div><div class="note">上線以來實際場次</div></div><div class="nb-rcell"><div class="k">其中命中</div><div class="v m led">66.7%</div><div class="note">40 / 60 場</div></div><div class="nb-rcell"><div class="k">大小分時間外猜中率</div><div class="v m led">48.2%</div><div class="note">900 場 O/U 驗證</div></div><div class="nb-rcell"><div class="k">大小分已結算命中</div><div class="v led">48.8%</div><div class="note">20 / 41 場</div></div></div>
 <!--chunk-->
 markdown:<div class="nb-honest">「猜中率」是每場只用該場之前的資料、不偷看未來算出來的，所以誠實可信；模型越有把握，命中率越高。<b>但這不等於能賺錢</b>——運彩賠率早已反映強弱，高命中率 ≠ 能獲利。本站是數據預測與分析，不是穩賺明牌。</div>
 <!--chunk-->
-markdown:<div class="nb-sechead" style="margin-top:36px;"><h2>任選球隊 <span class="bar">·</span> 看數據</h2><span class="sub">season 2025-26 · 點上方對戰可看雙隊對比</span></div>
+markdown:<div class="nb-sechead" style="margin-top:36px;"><h2>球隊數據</h2><span class="sub">season 2025-26，點上方對戰可看雙隊對比</span></div>
 <!--chunk-->
 markdown:<div class="nb-tables"><div class="nb-panel"><h3>老鷹 近 10 場 <span>主＝主場</span></h3><div class="empty">尚無資料</div></div><div class="nb-panel"><h3>老鷹 球員場均 <span>min ≥ 10</span></h3><div class="empty">尚無資料</div></div></div>
 <!--chunk-->
-markdown:- **資料**：每場比賽的球隊/球員數據(來自 ESPN),共三季、4000+ 場。
-- **模型**：用球隊近況、Elo 實力、四要素、休息天數、傷兵等，預測雙方分差，
-  再換算成勝率。每場只用「該場之前」的資料,所以驗證數字不灌水。
-- **誠實話**：猜勝負準(66% 左右),但這不等於能在運彩賺錢——
-  賠率早就反映了強弱。本站定位是**數據預測與分析**,不是穩賺明牌。
+markdown:- **資料**：ESPN 的球隊與球員數據，2015-16 球季起。
+- **模型**：用球隊近況、Elo 實力、四要素、休息天數等預測雙方分差，
+  再換算成勝率。每場只用開賽前的資料，所以驗證數字不灌水。
+- **誠實話**：時間外驗證猜中勝負約 66%，但盤口比模型準，這不等於能在運彩賺錢。
+  本站定位是**數據預測與分析**，不是穩賺明牌。
 <!--chunk-->
-markdown:<div class="nb-disc">⚠️ 預測由數據模型產生，<b>僅供球迷參考與娛樂，非投注建議</b>。模型擅長預測勝負，但運彩賠率已反映強弱，高命中率不等於能獲利。<br>資料來源：每場球隊／球員數據（ESPN），共三季、4000+ 場。模型用近況、Elo 實力、四要素、休息天數、傷兵等預測雙方分差，再換算成勝率。</div><div class="nb-sign">NBA 勝負預測 · 數據驅動 · 僅供參考娛樂</div>
+markdown:<div class="nb-disc">⚠ 預測由數據模型產生，<b>僅供球迷參考與娛樂，非投注建議</b>。模型會猜勝負，但不比盤口準；運彩賠率早已反映強弱，高命中率不等於能獲利。<br>資料來源：ESPN 的球隊與球員數據（2015-16 球季起）。模型用近況、Elo 實力、四要素、休息天數等預測雙方分差，再換算成勝率。</div><div class="nb-sign">NBA 勝負預測，僅供參考與娛樂</div>
 <!--chunk-->
 caption:NBA 勝負預測 · 數據驅動 · 僅供參考娛樂
 <!--chunk-->
 selectbox:選擇球隊|['老鷹（ATL）', '籃網（BKN）', '塞爾提克（BOS）', '黃蜂（CHA）', '公牛（CHI）', '騎士（CLE）', '獨行俠（DAL）', '金塊（DEN）', '活塞（DET）', '勇士（GSW）', '火箭（HOU）', '溜馬（IND）', '快艇（LAC）', '湖人（LAL）', '灰熊（MEM）', '熱火（MIA）', '公鹿（MIL）', '灰狼（MIN）', '鵜鶘（NOP）', '尼克（NYK）', '雷霆（OKC）', '魔術（ORL）', '76人（PHI）', '太陽（PHX）', '拓荒者（POR）', '國王（SAC）', '馬刺（SAS）', '暴龍（TOR）', '爵士（UTA）', '巫師（WAS）']
 <!--chunk-->
-expander:ℹ️ 這個模型怎麼運作？
+expander:這個模型怎麼運作？

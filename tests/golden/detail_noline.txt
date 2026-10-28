@@ -178,20 +178,20 @@ table.ntable tbody td { padding: 7px 0; border-top: 1px solid var(--hair); text-
 }
 </style>
 <!--chunk-->
-markdown:<a class="nb-back" href="?" target="_self">返回今天的賽程</a><div class="nb-topbar"><div class="nb-brand">NBA 勝負預測</div><div class="nb-badge"><b class="led">66%</b><span>近三季猜中率</span></div></div>
+markdown:<a class="nb-back" href="?" target="_self">返回今天的賽程</a><div class="nb-topbar"><div class="nb-brand">NBA 勝負預測</div><div class="nb-badge"><b class="led">66%</b><span>時間外猜中率</span></div></div>
 <!--chunk-->
-markdown:<div class="nb-detailhead"><div class="nb-mbig"><div class="nb-tb fav"><div class="abbr">PHX</div><div class="name">太陽<span class="nb-ha away">客</span></div></div><span class="nb-at">＠</span><div class="nb-tb"><div class="abbr">DEN</div><div class="name">金塊<span class="nb-ha home">主</span></div></div></div><div class="when">10/23 07:00（台北時間）· 終場</div></div>
+markdown:<div class="nb-detailhead"><div class="nb-mbig"><div class="nb-tb fav"><div class="abbr">PHX</div><div class="name">太陽<span class="nb-ha away">客</span></div></div><span class="nb-at">＠</span><div class="nb-tb"><div class="abbr">DEN</div><div class="name">金塊<span class="nb-ha home">主</span></div></div></div><div class="when">10/23 07:00（台北時間），終場</div></div>
 <!--chunk-->
-markdown:<div class="nb-sechead" style="margin-top:30px;"><h2>玩法 <span class="bar">·</span> 預測</h2><span class="sub">勝負 · 受讓分 · 大小分</span></div>
+markdown:<div class="nb-sechead" style="margin-top:30px;"><h2>玩法預測</h2><span class="sub">勝負、受讓分、大小分</span></div>
 <!--chunk-->
-markdown:<div class="nb-bets"><div class="nb-bet"><h4>勝負 <span>Moneyline</span></h4><div class="nb-prob big"><span class="nb-pct fav">54%</span><span class="nb-split" aria-hidden="true"><i class="a fav" style="width:54%"></i><i class="h" style="width:46%"></i></span><span class="nb-pct">46%</span></div><div class="verdict">🔮 看好 <b>太陽</b>（客）勝</div></div><div class="nb-bet"><h4>受讓分 <span>Spread</span></h4><div class="empty">這場沒有盤口資料。</div></div><div class="nb-bet disabled"><h4>大小分 <span>O/U</span></h4><div class="soon">本季開賽後顯示——模型估總分、盤口線與大小分傾向。</div></div></div>
+markdown:<div class="nb-bets"><div class="nb-bet"><h4>勝負 <span>Moneyline</span></h4><div class="nb-prob big"><span class="nb-pct fav">54%</span><span class="nb-split" aria-hidden="true"><i class="a fav" style="width:54%"></i><i class="h" style="width:46%"></i></span><span class="nb-pct">46%</span></div><div class="verdict">勝率較高：<b>太陽</b>（客）</div></div><div class="nb-bet"><h4>受讓分 <span>Spread</span></h4><div class="empty">這場沒有盤口資料。</div></div><div class="nb-bet disabled"><h4>大小分 <span>O/U</span></h4><div class="soon">本季開賽後顯示——模型估總分、盤口線與大小分傾向。</div></div></div>
 <!--chunk-->
-markdown:<div class="nb-sechead" style="margin-top:36px;"><h2>傷病 <span class="bar">·</span> 名單</h2><span class="sub">最新回報（≤ 該場日期）</span></div>
+markdown:<div class="nb-sechead" style="margin-top:36px;"><h2>傷病名單</h2><span class="sub">最新回報（≤ 該場日期）</span></div>
 <!--chunk-->
-markdown:<div class="nb-twocol"><div class="nb-panel"><h3>太陽 <span>· 客 · 傷病</span></h3><div class="empty">（無傷病回報）</div></div><div class="nb-panel"><h3>金塊 <span>· 主 · 傷病</span></h3><div class="empty">（無傷病回報）</div></div></div>
+markdown:<div class="nb-twocol"><div class="nb-panel"><h3>太陽 <span>客隊傷病</span></h3><div class="empty">沒有傷病回報</div></div><div class="nb-panel"><h3>金塊 <span>主隊傷病</span></h3><div class="empty">沒有傷病回報</div></div></div>
 <!--chunk-->
-markdown:<div class="nb-sechead" style="margin-top:36px;"><h2>球員 <span class="bar">·</span> 場均</h2><span class="sub">season 2025-26 · min ≥ 10</span></div>
+markdown:<div class="nb-sechead" style="margin-top:36px;"><h2>球員場均</h2><span class="sub">2025-26 球季，上場 10 分鐘以上</span></div>
 <!--chunk-->
-markdown:<div class="nb-twocol"><div class="nb-panel"><h3>太陽 <span>· 客</span></h3><div class="empty">尚無資料</div></div><div class="nb-panel"><h3>金塊 <span>· 主</span></h3><div class="empty">尚無資料</div></div></div>
+markdown:<div class="nb-twocol"><div class="nb-panel"><h3>太陽 <span>客隊</span></h3><div class="empty">尚無資料</div></div><div class="nb-panel"><h3>金塊 <span>主隊</span></h3><div class="empty">尚無資料</div></div></div>
 <!--chunk-->
-markdown:<div class="nb-disc">⚠️ 預測由數據模型產生，<b>僅供球迷參考與娛樂，非投注建議</b>。模型擅長預測勝負，但運彩賠率已反映強弱，高命中率不等於能獲利。<br>資料來源：每場球隊／球員數據（ESPN），共三季、4000+ 場。模型用近況、Elo 實力、四要素、休息天數、傷兵等預測雙方分差，再換算成勝率。</div><div class="nb-sign">NBA 勝負預測 · 數據驅動 · 僅供參考娛樂</div>
+markdown:<div class="nb-disc">⚠ 預測由數據模型產生，<b>僅供球迷參考與娛樂，非投注建議</b>。模型會猜勝負，但不比盤口準；運彩賠率早已反映強弱，高命中率不等於能獲利。<br>資料來源：ESPN 的球隊與球員數據（2015-16 球季起）。模型用近況、Elo 實力、四要素、休息天數等預測雙方分差，再換算成勝率。</div><div class="nb-sign">NBA 勝負預測，僅供參考與娛樂</div>

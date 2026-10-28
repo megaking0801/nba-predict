@@ -229,11 +229,11 @@ table.ntable tbody td { padding: 7px 0; border-top: 1px solid var(--hair); text-
 """
 
 DISCLAIMER_HTML = (
-    '<div class="nb-disc">⚠️ 預測由數據模型產生，<b>僅供球迷參考與娛樂，非投注建議</b>。'
-    '模型擅長預測勝負，但運彩賠率已反映強弱，高命中率不等於能獲利。<br>'
-    '資料來源：每場球隊／球員數據（ESPN），共三季、4000+ 場。模型用近況、Elo 實力、'
-    '四要素、休息天數、傷兵等預測雙方分差，再換算成勝率。</div>'
-    '<div class="nb-sign">NBA 勝負預測 · 數據驅動 · 僅供參考娛樂</div>'
+    '<div class="nb-disc">⚠ 預測由數據模型產生，<b>僅供球迷參考與娛樂，非投注建議</b>。'
+    '模型會猜勝負，但不比盤口準；運彩賠率早已反映強弱，高命中率不等於能獲利。<br>'
+    '資料來源：ESPN 的球隊與球員數據（2015-16 球季起）。模型用近況、Elo 實力、'
+    '四要素、休息天數等預測雙方分差，再換算成勝率。</div>'
+    '<div class="nb-sign">NBA 勝負預測，僅供參考與娛樂</div>'
 )
 
 
@@ -399,7 +399,7 @@ def table_html(df: pd.DataFrame) -> str:
 
 def topbar_html(acc, back: bool = False, links: Links = STREAMLIT_LINKS) -> str:
     badge = (f'<div class="nb-badge"><b class="led">{acc * 100:.0f}%</b>'
-             f'<span>近三季猜中率</span></div>') if acc else ""
+             f'<span>時間外猜中率</span></div>') if acc else ""
     bar = f'<div class="nb-topbar"><div class="nb-brand">NBA 勝負預測</div>{badge}</div>'
     if back:
         return f'<a class="nb-back" href="{links.home()}" target="_self">返回今天的賽程</a>{bar}'
@@ -424,7 +424,7 @@ def _bet_moneyline(g) -> str:
     return (
         '<div class="nb-bet"><h4>勝負 <span>Moneyline</span></h4>'
         f'{prob_bar(g, big=True)}'
-        f'<div class="verdict">🔮 看好 <b>{fmt_team(fav_abbr)}</b>（{side}）勝</div>'
+        f'<div class="verdict">勝率較高：<b>{fmt_team(fav_abbr)}</b>（{side}）</div>'
         f'{res}</div>'
     )
 
@@ -538,7 +538,7 @@ def _bet_total(g, over_acc=None) -> str:
 def injury_panel(df: pd.DataFrame, team_abbr: str, who: str) -> str:
     if df is None or df.empty:
         return (f'<div class="nb-panel"><h3>{fmt_team(team_abbr)} '
-                f'<span>· {who} · 傷病</span></h3><div class="empty">（無傷病回報）</div></div>')
+                f'<span>{who}隊傷病</span></h3><div class="empty">沒有傷病回報</div></div>')
     snap = df.iloc[0]["snap_date"]
     snap_lbl = (pd.Timestamp(snap).strftime("%m/%d 回報")
                 if snap is not None and not pd.isna(snap) else "")
@@ -554,7 +554,7 @@ def injury_panel(df: pd.DataFrame, team_abbr: str, who: str) -> str:
             f'<span class="det">{esc(det)}</span></div>'
         )
     return (f'<div class="nb-panel"><h3>{fmt_team(team_abbr)} '
-            f'<span>· {who} · 傷病 {snap_lbl}</span></h3>{"".join(rows)}</div>')
+            f'<span>{who}隊傷病 {snap_lbl}</span></h3>{"".join(rows)}</div>')
 
 
 # =========================================================
@@ -579,25 +579,25 @@ def detail_chunks(g: pd.Series, tr: dict, inj_away: pd.DataFrame, inj_home: pd.D
 
     score = ""
     if final and pd.notna(g["home_score"]):
-        score = f'　·　{esc(away)} {int(g["away_score"])} – {int(g["home_score"])} {esc(home)}'
+        score = f'，{esc(away)} {int(g["away_score"])} : {int(g["home_score"])} {esc(home)}'
     return [
         topbar_html(acc, back=True, links=links),
         f'<div class="nb-detailhead">{matchup_block(g, big=True)}'
-        f'<div class="when">{fmt_when(g["tipoff_utc"], gdate)}（台北時間）· '
+        f'<div class="when">{fmt_when(g["tipoff_utc"], gdate)}（台北時間），'
         f'{"終場" if final else "尚未開賽"}{score}</div></div>',
-        '<div class="nb-sechead" style="margin-top:30px;"><h2>玩法 <span class="bar">·</span> 預測</h2>'
-        '<span class="sub">勝負 · 受讓分 · 大小分</span></div>',
+        '<div class="nb-sechead" style="margin-top:30px;"><h2>玩法預測</h2>'
+        '<span class="sub">勝負、受讓分、大小分</span></div>',
         f'<div class="nb-bets">{_bet_moneyline(g)}{_bet_spread(g)}'
         f'{_bet_total(g, (tr or {}).get("over_wf_acc"))}</div>',
-        '<div class="nb-sechead" style="margin-top:36px;"><h2>傷病 <span class="bar">·</span> 名單</h2>'
+        '<div class="nb-sechead" style="margin-top:36px;"><h2>傷病名單</h2>'
         '<span class="sub">最新回報（≤ 該場日期）</span></div>',
         f'<div class="nb-twocol">{injury_panel(inj_away, away, "客")}'
         f'{injury_panel(inj_home, home, "主")}</div>',
-        f'<div class="nb-sechead" style="margin-top:36px;"><h2>球員 <span class="bar">·</span> 場均</h2>'
-        f'<span class="sub">season {esc(season)} · min ≥ 10</span></div>',
+        f'<div class="nb-sechead" style="margin-top:36px;"><h2>球員場均</h2>'
+        f'<span class="sub">{esc(season)} 球季，上場 10 分鐘以上</span></div>',
         f'<div class="nb-twocol">'
-        f'<div class="nb-panel"><h3>{fmt_team(away)} <span>· 客</span></h3>{table_html(players_away)}</div>'
-        f'<div class="nb-panel"><h3>{fmt_team(home)} <span>· 主</span></h3>{table_html(players_home)}</div>'
+        f'<div class="nb-panel"><h3>{fmt_team(away)} <span>客隊</span></h3>{table_html(players_away)}</div>'
+        f'<div class="nb-panel"><h3>{fmt_team(home)} <span>主隊</span></h3>{table_html(players_home)}</div>'
         f'</div>',
         DISCLAIMER_HTML,
     ]
@@ -609,8 +609,8 @@ def hero_html(n_up: int, now: dt.datetime) -> str:
     local = now.astimezone(TW)
     if n_up:
         headline = f"今晚 {n_up} 場"
-        sub = (f"{local:%m/%d}，台北時間。三季、4000+ 場比賽訓練的模型，逐場輸出勝率。"
-               "每場只用「該場之前」的資料，不偷看未來。")
+        sub = (f"{local:%m/%d}，台北時間。模型用球隊近況與實力逐場算出勝率，每場只用開賽前的資料。"
+               "勝率不是推薦：盤口通常比模型準。")
     else:
         headline = "休賽季：近期預測與結果"
         sub = ("目前 NBA 休賽季、暫無賽事。以下回顧近期比賽的預測與實際結果，"
@@ -619,10 +619,10 @@ def hero_html(n_up: int, now: dt.datetime) -> str:
 
 
 def record_chunks(tr: dict, acc) -> list[str]:
-    acc_cell = (f'<div class="nb-rcell"><div class="k">近三季猜中率</div>'
+    acc_cell = (f'<div class="nb-rcell"><div class="k">時間外驗證猜中率</div>'
                 f'<div class="v c led">{acc * 100:.1f}%</div>'
                 f'<div class="note">{esc(tr.get("wf_n"))} 場時間外驗證</div></div>') if acc else \
-               ('<div class="nb-rcell"><div class="k">近三季猜中率</div>'
+               ('<div class="nb-rcell"><div class="k">時間外驗證猜中率</div>'
                 '<div class="v led">—</div><div class="note">尚未訓練</div></div>')
     if tr["rec_n"]:
         hit_pct = tr["rec_hit"] / tr["rec_n"] * 100
@@ -651,8 +651,8 @@ def record_chunks(tr: dict, acc) -> list[str]:
                        f'<div class="v led">{op:.1f}%</div>'
                        f'<div class="note">{tr["over_rec_hit"]} / {tr["over_rec_n"]} 場</div></div>')
     return [
-        '<div class="nb-sechead" style="margin-top:24px;"><h2>模型戰績 <span class="bar">·</span> 誠實揭露</h2>'
-        '<span class="sub">walk-forward · 不灌水</span></div>',
+        '<div class="nb-sechead" style="margin-top:24px;"><h2>模型戰績</h2>'
+        '<span class="sub">每場只用開賽前的資料驗證</span></div>',
         f'<div class="nb-record">{acc_cell}{rec_cells}{over_cells}</div>',
         '<div class="nb-honest">「猜中率」是每場只用該場之前的資料、不偷看未來算出來的，所以誠實可信；'
         '模型越有把握，命中率越高。<b>但這不等於能賺錢</b>——運彩賠率早已反映強弱，高命中率 ≠ 能獲利。'
@@ -697,8 +697,8 @@ def board_chunks(games: pd.DataFrame, tr: dict, acc, now: dt.datetime,
 
 
 def team_section_head(season: str, with_game_hint: bool = True) -> str:
-    hint = " · 點上方對戰可看雙隊對比" if with_game_hint else ""
-    return (f'<div class="nb-sechead" style="margin-top:36px;"><h2>任選球隊 <span class="bar">·</span> 看數據</h2>'
+    hint = "，點上方對戰可看雙隊對比" if with_game_hint else ""
+    return (f'<div class="nb-sechead" style="margin-top:36px;"><h2>球隊數據</h2>'
             f'<span class="sub">season {esc(season)}{hint}</span></div>')
 
 
@@ -713,16 +713,16 @@ def team_tables_html(team: str, team_df: pd.DataFrame, player_df: pd.DataFrame) 
 
 def explainer_md(acc) -> str:
     return f"""
-- **資料**：每場比賽的球隊/球員數據(來自 ESPN),共三季、4000+ 場。
-- **模型**：用球隊近況、Elo 實力、四要素、休息天數、傷兵等，預測雙方分差，
-  再換算成勝率。每場只用「該場之前」的資料,所以驗證數字不灌水。
-- **誠實話**：猜勝負準({acc * 100:.0f}% 左右),但這不等於能在運彩賺錢——
-  賠率早就反映了強弱。本站定位是**數據預測與分析**,不是穩賺明牌。
+- **資料**：ESPN 的球隊與球員數據，2015-16 球季起。
+- **模型**：用球隊近況、Elo 實力、四要素、休息天數等預測雙方分差，
+  再換算成勝率。每場只用開賽前的資料，所以驗證數字不灌水。
+- **誠實話**：時間外驗證猜中勝負約 {acc * 100:.0f}%，但盤口比模型準，這不等於能在運彩賺錢。
+  本站定位是**數據預測與分析**，不是穩賺明牌。
 """ if acc else """
-- **資料**：每場比賽的球隊/球員數據(來自 ESPN),共三季、4000+ 場。
-- **模型**：用球隊近況、Elo 實力、四要素、休息天數、傷兵等，預測雙方分差，
-  再換算成勝率。每場只用「該場之前」的資料,所以驗證數字不灌水。
-- **誠實話**：模型猜勝負準,但這不等於能在運彩賺錢——賠率早就反映了強弱。
+- **資料**：ESPN 的球隊與球員數據，2015-16 球季起。
+- **模型**：用球隊近況、Elo 實力、四要素、休息天數等預測雙方分差，
+  再換算成勝率。每場只用開賽前的資料，所以驗證數字不灌水。
+- **誠實話**：盤口比模型準，猜中勝負不等於能在運彩賺錢。本站定位是**數據預測與分析**，不是穩賺明牌。
 """
 
 
@@ -818,7 +818,7 @@ def static_page(title: str, body_html: str, built_at: dt.datetime,
     built_txt = built_at.astimezone(TW).strftime("%Y-%m-%d %H:%M")
     if data_at is not None:
         data_txt = data_at.astimezone(TW).strftime("%Y-%m-%d %H:%M")
-        shown = f"資料更新於 {data_txt}（台北時間）　·　頁面建置於 {built_txt}（台北時間）"
+        shown = f"資料更新於 {data_txt}（台北時間），頁面建置於 {built_txt}（台北時間）"
     else:
         shown = f"頁面建置於 {built_txt}（台北時間）；沒有預測資料時間可顯示"
     tip_attr = (f' data-next-tip="{esc(next_tip.isoformat(timespec="seconds"))}"'

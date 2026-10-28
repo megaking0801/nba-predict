@@ -15,6 +15,7 @@ python -m jobs.config                # 印出全部參數與 CONFIG_HASH
 python -m jobs.evaluate              # walk-forward 評估 + ATS 回測（只讀，但需要 DB 連線）
 python -m jobs.diagnose              # DB 狀態體檢（只讀，需要 DB 連線）
 python -m webui.build_site --out site  # 從 DB 產生靜態網站到 site/（只讀連線，需要 DB 連線；site/ 不提交）
+python scripts/preview_site.py         # 不用 DB，用 tests/fakes 的假資料產生靜態站預覽（淺色、強制深色）到 data_local/site-preview/
 python -m jobs.feature_ablation --experiment data_scope|context|four_factor  # 特徵／資料範圍的配對 walk-forward 比較（只讀連線，需要 DB 連線）
 python -m jobs.market_layer --report baseline|clv|residual  # P5.0：盤口本身的基準與預測當下線對收盤線的差（只讀連線，需要 DB 連線）
 python -m jobs.playbook fetch|moneyline|totals  # 玩法搜尋（只讀 DB、只 GET ESPN；抓下來的賠率存 data/moneylines.jsonl.gz，在資料 repo 提交）
