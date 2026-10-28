@@ -332,6 +332,11 @@ def prob_bar(g, big: bool = False) -> str:
     )
 
 
+def _pts(v) -> str:
+    """A score as a whole number ('110', not '110.0'); blank when unknown."""
+    return "" if v is None or pd.isna(v) else str(int(v))
+
+
 def _result_html(g) -> str:
     """Final score and whether the side with the higher win probability won."""
     if not (g["status"] == "final" and pd.notna(g["win_result"])):
@@ -341,16 +346,15 @@ def _result_html(g) -> str:
     win_abbr = g["home_abbr"] if home_won else g["away_abbr"]
     mark = ('<span class="nb-hit">命中</span>' if home_fav == home_won
             else '<span class="nb-miss">未中</span>')
-    return (f'<div class="nb-rres"><span class="score">{esc(g["away_abbr"])} {g["away_score"]} : '
-            f'{g["home_score"]} {esc(g["home_abbr"])}　{fmt_team(win_abbr)}勝</span>{mark}</div>')
+    return (f'<div class="nb-rres"><span class="score">{esc(g["away_abbr"])} {_pts(g["away_score"])} : '
+            f'{_pts(g["home_score"])} {esc(g["home_abbr"])}　{fmt_team(win_abbr)}勝</span>{mark}</div>')
 
 
 def game_card_html(g, links: Links = STREAMLIT_LINKS) -> str:
     """One game as one row: time and state, the two teams with their win probabilities, the result."""
     p_home = float(g["p_home_win"])
     home_fav = p_home >= 0.5
-    final = g["status"] == "final" and pd.notna(g["win_result"])
-    state = "終場" if final else "尚未開賽"
+    state = "終場" if g["status"] == "final" else "尚未開賽"
     a_cls, h_cls = ("", " fav") if home_fav else (" fav", "")
     return (
         f'<a class="nb-row" href="{esc(links.game(g["game_id"]))}" target="_self">'
@@ -699,7 +703,7 @@ def board_chunks(games: pd.DataFrame, tr: dict, acc, now: dt.datetime,
 def team_section_head(season: str, with_game_hint: bool = True) -> str:
     hint = "，點上方對戰可看雙隊對比" if with_game_hint else ""
     return (f'<div class="nb-sechead" style="margin-top:36px;"><h2>球隊數據</h2>'
-            f'<span class="sub">season {esc(season)}{hint}</span></div>')
+            f'<span class="sub">{esc(season)} 球季{hint}</span></div>')
 
 
 def team_tables_html(team: str, team_df: pd.DataFrame, player_df: pd.DataFrame) -> str:
@@ -825,7 +829,7 @@ def static_page(title: str, body_html: str, built_at: dt.datetime,
                 if next_tip is not None else "")
     notyet = ""
     if data_at is not None:
-        notyet = ('<div id="notyet" class="nb-stale" hidden>今天的推薦還沒出來，以下是 '
+        notyet = ('<div id="notyet" class="nb-stale" hidden>今天的預測還沒出來，以下是 '
                   f'{data_at.astimezone(TW):%m/%d} 的預測。</div>')
     return (
         '<!doctype html>\n<html lang="zh-Hant"><head><meta charset="utf-8">'
