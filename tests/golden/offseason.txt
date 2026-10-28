@@ -45,9 +45,13 @@ header[data-testid="stHeader"] { background: transparent; }
 .nb-brand { font-weight: 700; font-size: 16px; }
 .nb-badge { display: flex; align-items: baseline; gap: 6px; font-size: 14px; color: var(--muted); }
 .nb-badge b { color: var(--text); font-family: var(--num); font-variant-numeric: tabular-nums; font-weight: 600; }
-.nb-hero { padding: 16px 0 4px; }
-.nb-hero h1 { font-weight: 700; font-size: 24px; line-height: 1.3; margin: 0 0 6px; }
-.nb-lede { max-width: 640px; color: var(--muted); font-size: 15px; margin: 0; line-height: 1.7; }
+.nb-hero { display: flex; align-items: flex-start; gap: 14px; padding: 18px 0 10px; }
+.nb-day { font-family: var(--num); font-weight: 600; font-size: 64px; line-height: 0.9;
+          font-variant-numeric: tabular-nums; min-width: 1.2em; }
+.nb-dayinfo { min-width: 0; }
+.nb-daysub { font-size: 14px; color: var(--muted); margin-bottom: 2px; }
+.nb-hero h1 { font-weight: 700; font-size: 22px; line-height: 1.35; margin: 0 0 6px; }
+.nb-lede { max-width: 600px; color: var(--muted); font-size: 14px; margin: 0; line-height: 1.7; }
 
 /* ---- matchup head (detail page) ---- */
 .nb-mbig { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 12px; }
@@ -84,30 +88,36 @@ header[data-testid="stHeader"] { background: transparent; }
 .nb-sechead h2 { font-weight: 700; font-size: 18px; margin: 0; }
 .nb-sechead .sub { color: var(--muted); font-size: 14px; }
 
-/* ---- date groups and game rows ---- */
-.nb-group { margin-bottom: 20px; }
-.nb-datehead { display: flex; align-items: baseline; gap: 10px; margin: 4px 0 8px; }
-.nb-datehead .d { font-size: 15px; font-weight: 700; }
-.nb-datehead .cnt { font-size: 14px; color: var(--muted); }
+/* ---- the schedule: one centre line down the page ---- */
+.nb-board { position: relative; margin-bottom: 8px; }
+.nb-board::before { content: ""; position: absolute; left: 50%; top: 0; bottom: 0; width: 1px; margin-left: -0.5px;
+                    background: var(--text); z-index: 1; transform-origin: top; animation: nb-draw 0.5s ease-out both; }
+@keyframes nb-draw { from { transform: scaleY(0); } to { transform: scaleY(1); } }
+@media (prefers-reduced-motion: reduce) { .nb-board::before { animation: none; } }
+.nb-group { padding-bottom: 12px; }
+.nb-datehead { display: flex; justify-content: center; padding: 12px 0 6px; }
+.nb-datehead span { position: relative; z-index: 2; background: var(--ground); padding: 2px 10px;
+                    font-size: 14px; font-weight: 700; }
 .nb-ha { font-size: 13px; font-weight: 400; color: var(--muted); margin: 0 4px; }
-.nb-rows { background: var(--surface); border: 1px solid var(--hair); border-radius: 10px; }
-a.nb-row { display: block; min-height: 56px; box-sizing: border-box; padding: 10px 14px;
+a.nb-row { display: block; min-height: 56px; box-sizing: border-box; padding: 10px 12px;
            color: inherit; text-decoration: none; border-top: 1px solid var(--hair); }
-a.nb-row:first-child { border-top: none; border-radius: 10px 10px 0 0; }
-a.nb-row:last-child { border-radius: 0 0 10px 10px; }
-a.nb-row:hover { background: var(--ground); }
+.nb-rows a.nb-row:first-child { border-top: none; }
+a.nb-row:hover { background: var(--surface); }
 a.nb-row:focus-visible { outline: 2px solid var(--text); outline-offset: -2px; }
-.nb-rtop { display: flex; justify-content: space-between; font-size: 14px; color: var(--muted); margin-bottom: 4px; }
-/* phone: line 1 = away team ... home team, line 2 = 34% [full-width bar] 66%; one line from 720px */
-.nb-rmain { display: grid; grid-template-columns: 1fr 1fr; grid-template-areas: "an hn" "pr pr";
-            align-items: center; gap: 6px 12px; }
-.nb-rmain > .nb-rteam:first-child { grid-area: an; }
-.nb-rmain > .nb-rteam.r { grid-area: hn; text-align: right; }
-.nb-rmain > .nb-prob { grid-area: pr; }
+.nb-rline { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); align-items: baseline;
+            gap: 8px; margin-bottom: 6px; }
 .nb-rteam { font-size: 15px; font-weight: 600; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.nb-rteam.h { text-align: right; }
 .nb-rteam.fav { color: var(--text); }
-.nb-rres { margin-top: 6px; display: flex; justify-content: space-between; gap: 8px; font-size: 14px; }
-.nb-rres .score { font-family: var(--num); font-variant-numeric: tabular-nums; }
+.nb-rmid { position: relative; z-index: 2; background: var(--ground); padding: 0 8px; display: inline-flex;
+           align-items: baseline; gap: 6px; font-size: 14px; color: var(--muted); white-space: nowrap; }
+a.nb-row:hover .nb-rmid { background: var(--surface); }
+.nb-rmid .nb-when, .nb-rmid .nb-score { font-family: var(--num); font-variant-numeric: tabular-nums; }
+.nb-rmid .nb-score { color: var(--text); font-size: 15px; }
+.nb-rmid .nb-state { color: var(--text); }
+.nb-row .nb-prob { display: grid; grid-template-columns: minmax(0, 1fr) clamp(140px, 56%, 440px) minmax(0, 1fr); gap: 10px; }
+.nb-row .nb-prob > .nb-pct:first-child { text-align: right; }
+.nb-row .nb-mid { min-width: 0; }
 .nb-hit { color: var(--win); font-weight: 600; }
 .nb-miss { color: var(--miss); font-weight: 600; }
 details.nb-more { margin: 4px 0 20px; }
@@ -180,8 +190,6 @@ table.ntable tbody td { padding: 6px 0; border-top: 1px solid var(--hair); text-
 .nb-injstatus.dtd { color: var(--muted); }
 
 @media (min-width: 720px) {
-  .nb-rmain { grid-template-columns: minmax(96px, auto) minmax(260px, 1fr) minmax(96px, auto);
-              grid-template-areas: "an pr hn"; gap: 12px; }
   .nb-record { grid-template-columns: repeat(3, 1fr); gap: 16px; }
   .nb-tables { grid-template-columns: 1.15fr 1fr; }
   .nb-twocol { grid-template-columns: 1fr 1fr; }
@@ -194,11 +202,9 @@ table.ntable tbody td { padding: 6px 0; border-top: 1px solid var(--hair); text-
 <!--chunk-->
 markdown:<div class="nb-topbar"><div class="nb-brand">NBA 勝負預測</div><div class="nb-badge"><b class="led">66%</b><span>時間外猜中率</span></div></div>
 <!--chunk-->
-markdown:<div class="nb-hero"><h1>休賽季：近期預測與結果</h1><p class="nb-lede">目前 NBA 休賽季、暫無賽事。以下回顧近期比賽的預測與實際結果，以及模型的長期戰績。賽季開始後會自動恢復每日預測。</p></div>
+markdown:<div class="nb-hero"><div class="nb-day">29</div><div class="nb-dayinfo"><div class="nb-daysub">10 月 週四，台北時間</div><h1>休賽季：近期預測與結果</h1><p class="nb-lede">目前 NBA 休賽季、暫無賽事。以下回顧近期比賽的預測與實際結果，以及模型的長期戰績。賽季開始後會自動恢復每日預測。</p></div></div>
 <!--chunk-->
-markdown:<div class="nb-group"><div class="nb-datehead"><span class="d">10/23 週五</span><span class="cnt">1 場，已結束</span></div><div class="nb-rows"><a class="nb-row" href="?game=0022600002" target="_self" aria-label="尼克（客）26%，塞爾提克（主）74%，10/24 07:00 台北時間，終場，105 比 110，勝率較高的一方贏了"><div class="nb-rtop"><span class="nb-when">10/24 07:00</span><span class="nb-state">終場</span></div><div class="nb-rmain"><span class="nb-rteam">尼克<span class="nb-ha">客</span></span><div class="nb-prob"><span class="nb-pct">26%</span><span class="nb-mid" aria-hidden="true"><i class="fill h" style="width:24%"></i></span><span class="nb-pct fav">74%</span></div><span class="nb-rteam r fav">塞爾提克<span class="nb-ha">主</span></span></div><div class="nb-rres"><span class="score">NYK 105 : 110 BOS　塞爾提克勝</span><span class="nb-hit">命中</span></div></a></div></div>
-<!--chunk-->
-markdown:<div class="nb-group"><div class="nb-datehead"><span class="d">10/22 週四</span><span class="cnt">1 場，已結束</span></div><div class="nb-rows"><a class="nb-row" href="?game=0022600003" target="_self" aria-label="太陽（客）54%，金塊（主）46%，10/23 07:00 台北時間，終場"><div class="nb-rtop"><span class="nb-when">10/23 07:00</span><span class="nb-state">終場</span></div><div class="nb-rmain"><span class="nb-rteam fav">太陽<span class="nb-ha">客</span></span><div class="nb-prob"><span class="nb-pct fav">54%</span><span class="nb-mid" aria-hidden="true"><i class="fill a" style="width:4%"></i></span><span class="nb-pct">46%</span></div><span class="nb-rteam r">金塊<span class="nb-ha">主</span></span></div></a></div></div>
+markdown:<div class="nb-board"><section class="nb-group"><div class="nb-datehead"><span>10/23 週五　1 場，已結束</span></div><div class="nb-rows"><a class="nb-row" href="?game=0022600002" target="_self" aria-label="尼克（客）26%，塞爾提克（主）74%，10/24 07:00 台北時間，終場，105 比 110，勝率較高的一方贏了"><div class="nb-rline"><span class="nb-rteam a">尼克<span class="nb-ha">客</span></span><span class="nb-rmid"><span class="nb-state">終場</span><span class="nb-score">105 : 110</span><span class="nb-hit">命中</span></span><span class="nb-rteam h fav"><span class="nb-ha">主</span>塞爾提克</span></div><div class="nb-prob"><span class="nb-pct">26%</span><span class="nb-mid" aria-hidden="true"><i class="fill h" style="width:24%"></i></span><span class="nb-pct fav">74%</span></div></a></div></section><section class="nb-group"><div class="nb-datehead"><span>10/22 週四　1 場，已結束</span></div><div class="nb-rows"><a class="nb-row" href="?game=0022600003" target="_self" aria-label="太陽（客）54%，金塊（主）46%，10/23 07:00 台北時間，終場"><div class="nb-rline"><span class="nb-rteam a fav">太陽<span class="nb-ha">客</span></span><span class="nb-rmid"><span class="nb-state">終場</span></span><span class="nb-rteam h"><span class="nb-ha">主</span>金塊</span></div><div class="nb-prob"><span class="nb-pct fav">54%</span><span class="nb-mid" aria-hidden="true"><i class="fill a" style="width:4%"></i></span><span class="nb-pct">46%</span></div></a></div></section></div>
 <!--chunk-->
 markdown:<div class="nb-sechead" style="margin-top:24px;"><h2>模型戰績</h2><span class="sub">每場只用開賽前的資料驗證</span></div>
 <!--chunk-->

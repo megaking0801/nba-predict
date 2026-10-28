@@ -15,6 +15,7 @@ import pandas as pd
 from jobs.teams import TEAM_NAME_CH
 
 TW = ZoneInfo("Asia/Taipei")
+ET = ZoneInfo("America/New_York")
 
 
 class Links(Protocol):
@@ -94,9 +95,13 @@ header[data-testid="stHeader"] { background: transparent; }
 .nb-brand { font-weight: 700; font-size: 16px; }
 .nb-badge { display: flex; align-items: baseline; gap: 6px; font-size: 14px; color: var(--muted); }
 .nb-badge b { color: var(--text); font-family: var(--num); font-variant-numeric: tabular-nums; font-weight: 600; }
-.nb-hero { padding: 16px 0 4px; }
-.nb-hero h1 { font-weight: 700; font-size: 24px; line-height: 1.3; margin: 0 0 6px; }
-.nb-lede { max-width: 640px; color: var(--muted); font-size: 15px; margin: 0; line-height: 1.7; }
+.nb-hero { display: flex; align-items: flex-start; gap: 14px; padding: 18px 0 10px; }
+.nb-day { font-family: var(--num); font-weight: 600; font-size: 64px; line-height: 0.9;
+          font-variant-numeric: tabular-nums; min-width: 1.2em; }
+.nb-dayinfo { min-width: 0; }
+.nb-daysub { font-size: 14px; color: var(--muted); margin-bottom: 2px; }
+.nb-hero h1 { font-weight: 700; font-size: 22px; line-height: 1.35; margin: 0 0 6px; }
+.nb-lede { max-width: 600px; color: var(--muted); font-size: 14px; margin: 0; line-height: 1.7; }
 
 /* ---- matchup head (detail page) ---- */
 .nb-mbig { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 12px; }
@@ -133,30 +138,36 @@ header[data-testid="stHeader"] { background: transparent; }
 .nb-sechead h2 { font-weight: 700; font-size: 18px; margin: 0; }
 .nb-sechead .sub { color: var(--muted); font-size: 14px; }
 
-/* ---- date groups and game rows ---- */
-.nb-group { margin-bottom: 20px; }
-.nb-datehead { display: flex; align-items: baseline; gap: 10px; margin: 4px 0 8px; }
-.nb-datehead .d { font-size: 15px; font-weight: 700; }
-.nb-datehead .cnt { font-size: 14px; color: var(--muted); }
+/* ---- the schedule: one centre line down the page ---- */
+.nb-board { position: relative; margin-bottom: 8px; }
+.nb-board::before { content: ""; position: absolute; left: 50%; top: 0; bottom: 0; width: 1px; margin-left: -0.5px;
+                    background: var(--text); z-index: 1; transform-origin: top; animation: nb-draw 0.5s ease-out both; }
+@keyframes nb-draw { from { transform: scaleY(0); } to { transform: scaleY(1); } }
+@media (prefers-reduced-motion: reduce) { .nb-board::before { animation: none; } }
+.nb-group { padding-bottom: 12px; }
+.nb-datehead { display: flex; justify-content: center; padding: 12px 0 6px; }
+.nb-datehead span { position: relative; z-index: 2; background: var(--ground); padding: 2px 10px;
+                    font-size: 14px; font-weight: 700; }
 .nb-ha { font-size: 13px; font-weight: 400; color: var(--muted); margin: 0 4px; }
-.nb-rows { background: var(--surface); border: 1px solid var(--hair); border-radius: 10px; }
-a.nb-row { display: block; min-height: 56px; box-sizing: border-box; padding: 10px 14px;
+a.nb-row { display: block; min-height: 56px; box-sizing: border-box; padding: 10px 12px;
            color: inherit; text-decoration: none; border-top: 1px solid var(--hair); }
-a.nb-row:first-child { border-top: none; border-radius: 10px 10px 0 0; }
-a.nb-row:last-child { border-radius: 0 0 10px 10px; }
-a.nb-row:hover { background: var(--ground); }
+.nb-rows a.nb-row:first-child { border-top: none; }
+a.nb-row:hover { background: var(--surface); }
 a.nb-row:focus-visible { outline: 2px solid var(--text); outline-offset: -2px; }
-.nb-rtop { display: flex; justify-content: space-between; font-size: 14px; color: var(--muted); margin-bottom: 4px; }
-/* phone: line 1 = away team ... home team, line 2 = 34% [full-width bar] 66%; one line from 720px */
-.nb-rmain { display: grid; grid-template-columns: 1fr 1fr; grid-template-areas: "an hn" "pr pr";
-            align-items: center; gap: 6px 12px; }
-.nb-rmain > .nb-rteam:first-child { grid-area: an; }
-.nb-rmain > .nb-rteam.r { grid-area: hn; text-align: right; }
-.nb-rmain > .nb-prob { grid-area: pr; }
+.nb-rline { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); align-items: baseline;
+            gap: 8px; margin-bottom: 6px; }
 .nb-rteam { font-size: 15px; font-weight: 600; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.nb-rteam.h { text-align: right; }
 .nb-rteam.fav { color: var(--text); }
-.nb-rres { margin-top: 6px; display: flex; justify-content: space-between; gap: 8px; font-size: 14px; }
-.nb-rres .score { font-family: var(--num); font-variant-numeric: tabular-nums; }
+.nb-rmid { position: relative; z-index: 2; background: var(--ground); padding: 0 8px; display: inline-flex;
+           align-items: baseline; gap: 6px; font-size: 14px; color: var(--muted); white-space: nowrap; }
+a.nb-row:hover .nb-rmid { background: var(--surface); }
+.nb-rmid .nb-when, .nb-rmid .nb-score { font-family: var(--num); font-variant-numeric: tabular-nums; }
+.nb-rmid .nb-score { color: var(--text); font-size: 15px; }
+.nb-rmid .nb-state { color: var(--text); }
+.nb-row .nb-prob { display: grid; grid-template-columns: minmax(0, 1fr) clamp(140px, 56%, 440px) minmax(0, 1fr); gap: 10px; }
+.nb-row .nb-prob > .nb-pct:first-child { text-align: right; }
+.nb-row .nb-mid { min-width: 0; }
 .nb-hit { color: var(--win); font-weight: 600; }
 .nb-miss { color: var(--miss); font-weight: 600; }
 details.nb-more { margin: 4px 0 20px; }
@@ -229,8 +240,6 @@ table.ntable tbody td { padding: 6px 0; border-top: 1px solid var(--hair); text-
 .nb-injstatus.dtd { color: var(--muted); }
 
 @media (min-width: 720px) {
-  .nb-rmain { grid-template-columns: minmax(96px, auto) minmax(260px, 1fr) minmax(96px, auto);
-              grid-template-areas: "an pr hn"; gap: 12px; }
   .nb-record { grid-template-columns: repeat(3, 1fr); gap: 16px; }
   .nb-tables { grid-template-columns: 1.15fr 1fr; }
   .nb-twocol { grid-template-columns: 1fr 1fr; }
@@ -368,35 +377,35 @@ def _pts(v) -> str:
     return "" if v is None or pd.isna(v) else str(int(v))
 
 
-def _result_html(g) -> str:
-    """Final score and whether the side with the higher win probability won."""
-    if not (g["status"] == "final" and pd.notna(g["win_result"])):
-        return ""
-    home_won = g["win_result"] == 1
-    home_fav = float(g["p_home_win"]) >= 0.5
-    win_abbr = g["home_abbr"] if home_won else g["away_abbr"]
-    mark = ('<span class="nb-hit">命中</span>' if home_fav == home_won
-            else '<span class="nb-miss">未中</span>')
-    return (f'<div class="nb-rres"><span class="score">{esc(g["away_abbr"])} {_pts(g["away_score"])} : '
-            f'{_pts(g["home_score"])} {esc(g["home_abbr"])}　{fmt_team(win_abbr)}勝</span>{mark}</div>')
+def _row_mid(g) -> str:
+    """The label that sits on the centre line: tip-off time, or the final score and whether the side with
+    the higher win probability won."""
+    if g["status"] != "final":
+        return f'<span class="nb-when">{fmt_when(g["tipoff_utc"], g["game_date_et"])}</span>'
+    score = ""
+    if pd.notna(g["away_score"]) and pd.notna(g["home_score"]):
+        score = f'<span class="nb-score">{_pts(g["away_score"])} : {_pts(g["home_score"])}</span>'
+    mark = ""
+    if pd.notna(g["win_result"]):
+        home_won = g["win_result"] == 1
+        mark = ('<span class="nb-hit">命中</span>' if (float(g["p_home_win"]) >= 0.5) == home_won
+                else '<span class="nb-miss">未中</span>')
+    return f'<span class="nb-state">終場</span>{score}{mark}'
 
 
 def game_card_html(g, links: Links = STREAMLIT_LINKS) -> str:
-    """One game as one row: time and state, the two teams with their win probabilities, the result."""
-    p_home = float(g["p_home_win"])
-    home_fav = p_home >= 0.5
-    state = "終場" if g["status"] == "final" else "尚未開賽"
+    """One game in two lines: away team, the centre-line label, home team; then 34% [bar] 66%.
+    The bar's centre sits on the page-long centre line."""
+    home_fav = float(g["p_home_win"]) >= 0.5
     a_cls, h_cls = ("", " fav") if home_fav else (" fav", "")
     return (
         f'<a class="nb-row" href="{esc(links.game(g["game_id"]))}" target="_self" aria-label="{esc(_row_label(g))}">'
-        f'<div class="nb-rtop"><span class="nb-when">{fmt_when(g["tipoff_utc"], g["game_date_et"])}</span>'
-        f'<span class="nb-state">{state}</span></div>'
-        f'<div class="nb-rmain">'
-        f'<span class="nb-rteam{a_cls}">{fmt_team(g["away_abbr"])}<span class="nb-ha">客</span></span>'
-        f'{prob_bar(g)}'
-        f'<span class="nb-rteam r{h_cls}">{fmt_team(g["home_abbr"])}<span class="nb-ha">主</span></span>'
+        f'<div class="nb-rline">'
+        f'<span class="nb-rteam a{a_cls}">{fmt_team(g["away_abbr"])}<span class="nb-ha">客</span></span>'
+        f'<span class="nb-rmid">{_row_mid(g)}</span>'
+        f'<span class="nb-rteam h{h_cls}"><span class="nb-ha">主</span>{fmt_team(g["home_abbr"])}</span>'
         f'</div>'
-        f'{_result_html(g)}'
+        f'{prob_bar(g)}'
         f'</a>'
     )
 
@@ -415,10 +424,9 @@ def date_group_html(date_val, rows: list, links: Links = STREAMLIT_LINKS) -> str
         word = f"{n - finals} 場待打"
     games = "".join(game_card_html(r, links) for r in rows)
     return (
-        f'<div class="nb-group">'
-        f'<div class="nb-datehead"><span class="d">{label} {wd}</span>'
-        f'<span class="cnt">{n} 場，{word}</span></div>'
-        f'<div class="nb-rows">{games}</div></div>'
+        f'<section class="nb-group">'
+        f'<div class="nb-datehead"><span>{label} {wd}　{n} 場，{word}</span></div>'
+        f'<div class="nb-rows">{games}</div></section>'
     )
 
 
@@ -637,19 +645,27 @@ def detail_chunks(g: pd.Series, tr: dict, inj_away: pd.DataFrame, inj_home: pd.D
     ]
 
 
-def hero_html(n_up: int, now: dt.datetime) -> str:
+def hero_html(n_up: int, now: dt.datetime, next_date=None) -> str:
+    """The day (Taipei date) as a large number, then tonight's count. ``next_date`` is the ET date of the
+    next games; when that is not today (ET) the headline says when the next games are."""
     if now.tzinfo is None:
         raise ValueError("now must be timezone-aware")
     local = now.astimezone(TW)
-    if n_up:
+    lede = "模型用球隊近況與實力逐場算出勝率，每場只用開賽前的資料。勝率不是推薦：盤口通常比模型準。"
+    if n_up and next_date is not None and pd.Timestamp(next_date).date() != now.astimezone(ET).date():
+        nd = pd.Timestamp(next_date)
+        headline = f"今天沒有比賽。下一場是 {nd:%m/%d} 週{_WD[nd.weekday()]}，{n_up} 場。"
+    elif n_up:
         headline = f"今晚 {n_up} 場"
-        sub = (f"{local:%m/%d}，台北時間。模型用球隊近況與實力逐場算出勝率，每場只用開賽前的資料。"
-               "勝率不是推薦：盤口通常比模型準。")
     else:
         headline = "休賽季：近期預測與結果"
-        sub = ("目前 NBA 休賽季、暫無賽事。以下回顧近期比賽的預測與實際結果，"
-               "以及模型的長期戰績。賽季開始後會自動恢復每日預測。")
-    return f'<div class="nb-hero"><h1>{headline}</h1><p class="nb-lede">{sub}</p></div>'
+        lede = ("目前 NBA 休賽季、暫無賽事。以下回顧近期比賽的預測與實際結果，"
+                "以及模型的長期戰績。賽季開始後會自動恢復每日預測。")
+    return (
+        f'<div class="nb-hero"><div class="nb-day">{local.day}</div>'
+        f'<div class="nb-dayinfo"><div class="nb-daysub">{local.month} 月 週{_WD[local.weekday()]}，台北時間</div>'
+        f'<h1>{headline}</h1><p class="nb-lede">{lede}</p></div></div>'
+    )
 
 
 def record_chunks(tr: dict, acc) -> list[str]:
@@ -719,13 +735,15 @@ def board_chunks(games: pd.DataFrame, tr: dict, acc, now: dt.datetime,
     by_date = {d: grp for d, grp in games.groupby("game_date_et", sort=False)}
     tonight = by_date[shown[0]]
     n_up = int((tonight["status"] != "final").sum())
-    chunks = [topbar_html(acc, links=links), hero_html(n_up, now)]
-    for d in shown:
-        chunks.append(date_group_html(d, [r for _, r in by_date[d].iterrows()], links))
+    chunks = [topbar_html(acc, links=links), hero_html(n_up, now, shown[0] if n_up else None)]
+    # one container for the shown days, so the centre line runs unbroken through both of them
+    groups = "".join(date_group_html(d, [r for _, r in by_date[d].iterrows()], links) for d in shown)
+    chunks.append(f'<div class="nb-board">{groups}</div>')
     if folded:
         n_more = sum(len(by_date[d]) for d in folded)
         inner = "".join(date_group_html(d, [r for _, r in by_date[d].iterrows()], links) for d in folded)
-        chunks.append(f'<details class="nb-more"><summary>其他日期（{n_more} 場）</summary>{inner}</details>')
+        chunks.append(f'<details class="nb-more"><summary>其他日期（{n_more} 場）</summary>'
+                      f'<div class="nb-board">{inner}</div></details>')
     chunks.extend(record_chunks(tr, acc))
     return chunks
 

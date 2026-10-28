@@ -5,6 +5,7 @@ import datetime as dt
 from pathlib import Path
 
 import pandas as pd
+import pytest
 
 from webui import render
 from tests.fakes import BOARD_VIEW_COLS, UTC
@@ -234,8 +235,27 @@ def test_static_page_escapes_title():
 
 def test_hero_uses_taipei_date():
     utc = dt.datetime(2026, 10, 22, 17, 0, tzinfo=UTC)  # 01:00 next day in Taipei
-    assert "10/23，台北時間" in render.hero_html(2, utc)
-    assert "今晚 2 場" in render.hero_html(2, utc)
+    html = render.hero_html(2, utc)
+    assert '<div class="nb-day">23</div>' in html and "10 月 週五，台北時間" in html
+    assert "今晚 2 場" in html
+
+
+@pytest.mark.parametrize("utc,day,sub", [
+    (dt.datetime(2026, 9, 4, 16, 30, tzinfo=UTC), "5", "9 月 週六"),       # 00:30 Taipei on 9/5
+    (dt.datetime(2026, 9, 4, 15, 59, tzinfo=UTC), "4", "9 月 週五"),       # still 9/4 in Taipei
+    (dt.datetime(2026, 12, 31, 15, 0, tzinfo=UTC), "31", "12 月 週四"),    # 23:00 Taipei on 12/31
+    (dt.datetime(2026, 12, 31, 16, 0, tzinfo=UTC), "1", "1 月 週五"),      # 00:00 Taipei, new year
+])
+def test_big_date_is_the_taipei_date_across_month_and_year(utc, day, sub):
+    html = render.hero_html(3, utc)
+    assert f'<div class="nb-day">{day}</div>' in html and f"{sub}，台北時間" in html
+
+
+def test_headline_says_when_the_next_games_are_if_not_today():
+    now = dt.datetime(2026, 10, 30, 3, 0, tzinfo=UTC)          # 10/29 23:00 in New York
+    assert "今晚 5 場" in render.hero_html(5, now, dt.date(2026, 10, 29))
+    later = render.hero_html(5, now, dt.date(2026, 10, 31))
+    assert "今天沒有比賽。下一場是 10/31 週六，5 場。" in later and "今晚" not in later
 
 
 def test_hero_rejects_naive_now():
@@ -348,6 +368,21 @@ def test_spread_card_result_has_no_hit_or_miss_badge():
 
 
 # ---------- site simplification step 2: rows, folded dates, no featured card ----------
+
+def test_row_has_two_lines_and_puts_the_time_or_the_score_on_the_centre_line():
+    up = render.game_card_html(_game(p_home_win=0.66))
+    assert up.count('class="nb-rline"') == 1 and up.count('class="nb-prob"') == 1
+    assert '<span class="nb-rmid"><span class="nb-when">' in up
+    fin = render.game_card_html(_game(p_home_win=0.66, status="final", win_result=1, home_score=110, away_score=105))
+    assert ('<span class="nb-state">終場</span><span class="nb-score">105 : 110</span>'
+            '<span class="nb-hit">命中</span>') in fin
+
+
+def test_shown_days_share_one_board_so_the_centre_line_is_unbroken():
+    html = "".join(render.board_chunks(_board_games(), {"rec_n": 0}, None, NOW))
+    head = html.split('<details class="nb-more">')[0]
+    assert head.count('<div class="nb-board">') == 1 and head.count('<section class="nb-group">') == 2
+
 
 def _board_games():
     rows = []
