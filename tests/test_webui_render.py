@@ -41,7 +41,7 @@ def test_card_upcoming_and_final():
     assert "尚未開賽" in up and "命中" not in up
     fin = render.game_card_html(_game(status="final", win_result=1, home_score=100,
                                       away_score=90))
-    assert "終場" in fin and "✅ 命中" in fin
+    assert "終場" in fin and '<span class="nb-hit">命中</span>' in fin
 
 
 def test_card_missing_tipoff():
@@ -52,7 +52,7 @@ def test_card_missing_tipoff():
 
 def test_bet_total_variants():
     none = render._bet_total(_game())
-    assert "🔧 本季開賽後顯示" in none
+    assert "本季開賽後顯示——模型估總分" in none
     line_only = render._bet_total(_game(total_line=220.5))
     assert "本季開賽後顯示模型估總分" in line_only
     pred_only = render._bet_total(_game(pred_total=225.0))
@@ -232,10 +232,10 @@ def test_static_page_escapes_title():
 
 # ---------- review follow-ups ----------
 
-def test_hero_kicker_uses_taipei_date():
+def test_hero_uses_taipei_date():
     utc = dt.datetime(2026, 10, 22, 17, 0, tzinfo=UTC)  # 01:00 next day in Taipei
-    assert "2026.10.23" in render.hero_html(2, utc)
-    assert "2026.10.23" in render.hero_html(0, utc)
+    assert "10/23，台北時間" in render.hero_html(2, utc)
+    assert "今晚 2 場" in render.hero_html(2, utc)
 
 
 def test_hero_rejects_naive_now():
@@ -345,3 +345,44 @@ def test_spread_card_result_has_no_hit_or_miss_badge():
     assert "LAL" in covered and "破盤" in covered
     assert "GSW" in missed and "破盤" in missed
     assert "push" in push
+
+
+# ---------- site simplification step 2: rows, folded dates, no featured card ----------
+
+def _board_games():
+    rows = []
+    for d, status, n in ((dt.date(2026, 10, 20), "final", 2), (dt.date(2026, 10, 21), "final", 3),
+                         (dt.date(2026, 10, 22), "scheduled", 4), (dt.date(2026, 10, 23), "scheduled", 2)):
+        for i in range(n):
+            rows.append(_game(game_id=f"{d:%m%d}{i}", game_date_et=d, status=status,
+                              win_result=1 if status == "final" else None, home_score=100, away_score=90))
+    return pd.DataFrame(rows)
+
+
+def test_board_shows_tonight_and_the_last_finished_day_and_folds_the_rest():
+    html = "".join(render.board_chunks(_board_games(), {"rec_n": 0}, None, NOW))
+    head, more = html.split('<details class="nb-more">')
+    assert "10/22 週四" in head and "10/21 週三" in head
+    assert "10/20 週二" not in head and "10/23 週五" not in head          # (the headline shows today's date)
+    assert "其他日期（4 場）" in more and "10/20" in more and "10/23" in more
+    assert "今晚 4 場" in head
+
+
+def test_board_without_upcoming_shows_the_two_latest_days():
+    g = _board_games()
+    g = g[g["status"] == "final"]
+    html = "".join(render.board_chunks(g, {"rec_n": 0}, None, NOW))
+    head = html.split('<details class="nb-more">')[0]
+    assert "10/21" in head and "10/20" in head and "休賽季" in head
+
+
+def test_board_has_no_featured_card_or_confidence_word():
+    html = "".join(render.board_chunks(_board_games(), {"rec_n": 0}, None, NOW))
+    for gone in ("nb-featured", "最有把握", "信心", "🔮", "🗓", "🔍", "→"):
+        assert gone not in html, gone
+
+
+def test_game_row_marks_the_favourite_without_a_pick_sentence():
+    html = render.game_card_html(_game(p_home_win=0.66))
+    assert "34%" in html and "66%" in html and "看好" not in html
+    assert '<span class="nb-pct fav">66%</span>' in html

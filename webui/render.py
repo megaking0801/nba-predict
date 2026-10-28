@@ -85,47 +85,30 @@ header[data-testid="stHeader"] { background: transparent; }
 .nb-topbar { display: flex; align-items: center; justify-content: space-between; gap: 12px;
              padding: 10px 0 14px; margin-bottom: 8px; border-bottom: 1px solid var(--hair); }
 .nb-brand { display: flex; align-items: center; gap: 8px; font-weight: 700; font-size: 20px; }
-.nb-brand .ball { font-size: 18px; }
-.nb-brand .tag { font-size: 14px; font-weight: 400; color: var(--muted); }
 .nb-badge { display: flex; align-items: baseline; gap: 6px; }
 .nb-badge b { font-size: 20px; color: var(--text); font-variant-numeric: tabular-nums; }
 .nb-badge span { color: var(--muted); font-size: 14px; }
 
 /* ---- hero ---- */
 .nb-hero { padding: 16px 0 4px; }
-.nb-kicker { font-size: 14px; color: var(--muted); margin-bottom: 6px; }
 .nb-hero h1 { font-weight: 700; font-size: 28px; line-height: 1.3; margin: 0 0 8px; }
-.nb-hero h1 em { font-style: normal; }
 .nb-lede { max-width: 640px; color: var(--muted); font-size: 16px; margin: 0; line-height: 1.7; }
 
-/* ---- featured ---- */
-.nb-featured { margin-top: 20px; border-radius: 10px; padding: 18px 20px;
-               background: var(--surface); border: 1px solid var(--hair); }
-.nb-ftag { font-size: 14px; color: var(--muted); margin-bottom: 12px; display: flex; align-items: center; gap: 8px; }
-.nb-ftag .dot { display: none; }
+/* ---- matchup head (detail page) ---- */
 .nb-mbig { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 12px; }
 .nb-tb { text-align: center; }
 .nb-tb .abbr { font-weight: 700; font-size: 28px; line-height: 1.2; }
 .nb-tb .name { color: var(--muted); font-size: 14px; margin-top: 2px; }
-.nb-tb.fav .abbr { color: var(--text); }
 .nb-at { color: var(--faint); font-size: 14px; }
 
-/* win-probability bar: thin, flat */
-.nb-pbar { margin-top: 14px; }
-.nb-track { position: relative; height: 28px; border-radius: 6px; overflow: hidden;
-            background: var(--ground); border: 1px solid var(--hair); display: flex; align-items: center; }
-.nb-fill { position: absolute; top: 0; bottom: 0; background: var(--accent-soft) !important; }
-.nb-lbl { position: relative; z-index: 1; flex: 1; display: flex; align-items: center; gap: 6px;
-          padding: 0 10px; font-weight: 600; color: var(--muted); font-size: 14px; }
-.nb-lbl.r { justify-content: flex-end; }
-.nb-lbl.fav { color: var(--text); }
-.nb-pct { font-variant-numeric: tabular-nums; font-size: 16px; font-weight: 700; }
-.nb-read { margin-top: 12px; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
-.nb-chip { display: inline-flex; align-items: center; gap: 6px; font-weight: 600; font-size: 14px;
-           padding: 4px 10px; border-radius: 6px; color: var(--cyan); background: var(--accent-soft); }
-.nb-read .meta { color: var(--muted); font-size: 14px; }
-.nb-read .meta b { color: var(--text); }
-
+/* ---- win probability: two numbers and a thin split bar ---- */
+.nb-prob { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.nb-prob .nb-pct { font-variant-numeric: tabular-nums; font-size: 16px; font-weight: 600; color: var(--muted); min-width: 3ch; }
+.nb-prob .nb-pct.fav { color: var(--text); font-weight: 700; }
+.nb-prob.big .nb-pct { font-size: 28px; }
+.nb-split { flex: 1; display: flex; height: 6px; border-radius: 3px; overflow: hidden; background: var(--hair); min-width: 48px; }
+.nb-split i { display: block; height: 100%; background: var(--hair-strong); }
+.nb-split i.fav { background: var(--cyan); }
 /* ---- section heads ---- */
 .nb-sechead { display: flex; align-items: baseline; justify-content: space-between; gap: 12px;
               margin: 8px 0 12px; padding-bottom: 6px; border-bottom: 1px solid var(--hair); }
@@ -136,41 +119,30 @@ header[data-testid="stHeader"] { background: transparent; }
 /* ---- date group ---- */
 .nb-datehead { display: flex; align-items: center; gap: 10px; margin: 4px 0 10px; }
 .nb-datehead .d { font-size: 16px; font-weight: 700; }
-.nb-datehead .d b { color: var(--text); }
-.nb-datehead .ln { flex: 1; height: 1px; background: var(--hair); }
 .nb-datehead .cnt { font-size: 14px; color: var(--muted); }
 .nb-group { margin-bottom: 24px; }
 
 /* home/away tag */
 .nb-ha { font-size: 12px; font-weight: 400; color: var(--muted); margin-left: 4px; }
 
-/* ---- game cards ---- */
-.nb-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
-.nb-card { background: var(--surface); border: 1px solid var(--hair); border-radius: 10px; padding: 14px 16px; }
-.nb-crow { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
-.nb-when { font-size: 14px; color: var(--muted); }
-.nb-pill { font-size: 12px; padding: 1px 8px; border-radius: 999px; }
-.nb-pill.up { color: var(--muted); border: 1px solid var(--hair); }
-.nb-pill.fin { color: var(--muted); background: var(--ground); }
-.nb-cmatch { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 8px; }
-.nb-cmatch .t { text-align: left; }
-.nb-cmatch .t:last-child { text-align: right; }
-.nb-cmatch .abbr { font-weight: 700; font-size: 18px; }
-.nb-cmatch .name { font-size: 12px; color: var(--muted); }
-.nb-cmatch .t.fav .abbr { color: var(--text); }
-.nb-cmatch .at { font-size: 14px; color: var(--faint); }
-.nb-cbar { position: relative; height: 24px; border-radius: 6px; overflow: hidden; margin-bottom: 8px;
-           background: var(--ground); border: 1px solid var(--hair); display: flex; align-items: center; }
-.nb-cbar .nb-lbl { padding: 0 8px; font-size: 13px; }
-.nb-cbar .nb-pct { font-size: 14px; }
-.nb-cverdict { font-size: 14px; color: var(--muted); }
-.nb-cverdict b { color: var(--text); }
-.nb-cresult { margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--hair);
-              display: flex; justify-content: space-between; align-items: center; font-size: 14px; }
-.nb-cresult .score { color: var(--text); font-variant-numeric: tabular-nums; }
+/* ---- game rows ---- */
+.nb-rows { background: var(--surface); border: 1px solid var(--hair); border-radius: 10px; }
+a.nb-row { display: block; padding: 12px 16px; color: inherit; text-decoration: none; border-top: 1px solid var(--hair); }
+a.nb-row:first-child { border-top: none; }
+a.nb-row:hover { background: var(--ground); }
+a.nb-row:focus-visible { outline: 2px solid var(--cyan); outline-offset: -2px; }
+.nb-rtop { display: flex; justify-content: space-between; font-size: 13px; color: var(--muted); margin-bottom: 6px; }
+.nb-rmain { display: grid; grid-template-columns: minmax(0, 1fr) minmax(140px, 1.4fr) minmax(0, 1fr); align-items: center; gap: 10px; }
+.nb-rteam { font-size: 16px; font-weight: 600; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.nb-rteam.fav { color: var(--text); }
+.nb-rteam.r { text-align: right; }
+.nb-rres { margin-top: 8px; display: flex; justify-content: space-between; font-size: 14px; }
+.nb-rres .score { font-variant-numeric: tabular-nums; }
 .nb-hit { color: var(--win); font-weight: 600; }
 .nb-miss { color: var(--miss); font-weight: 600; }
-
+details.nb-more { margin: 4px 0 20px; }
+details.nb-more summary { cursor: pointer; color: var(--cyan); font-size: 14px; padding: 6px 0; }
+details.nb-more[open] summary { margin-bottom: 12px; }
 /* ---- track record ---- */
 .nb-record { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
 .nb-rcell { background: var(--surface); border: 1px solid var(--hair); border-radius: 10px; padding: 14px 16px; }
@@ -204,12 +176,6 @@ table.ntable tbody td { padding: 7px 0; border-top: 1px solid var(--hair); text-
 .stButton > button { background: var(--cyan); color: #FFFFFF; border: none; font-weight: 600; border-radius: 8px; }
 [data-baseweb="select"] > div { background: var(--surface); border-color: var(--hair-strong); }
 
-/* ---- clickable card ---- */
-a.nb-cardlink { text-decoration: none; color: inherit; display: block; }
-a.nb-cardlink:hover .nb-card { border-color: var(--hair-strong); }
-a.nb-cardlink:focus-visible { outline: 2px solid var(--cyan); outline-offset: 2px; border-radius: 10px; }
-.nb-cta { margin-top: 8px; font-size: 14px; color: var(--cyan); }
-
 /* ---- detail page ---- */
 .nb-back { display: inline-flex; align-items: center; gap: 4px; color: var(--cyan); text-decoration: none; font-size: 14px; }
 .nb-back:hover { text-decoration: underline; }
@@ -217,8 +183,10 @@ a.nb-cardlink:focus-visible { outline: 2px solid var(--cyan); outline-offset: 2p
                  background: var(--surface); border: 1px solid var(--hair); }
 .nb-detailhead .when { text-align: center; font-size: 14px; color: var(--muted); margin-top: 10px; }
 
-.nb-bets { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; align-items: start; }
-.nb-bet { background: var(--surface); border: 1px solid var(--hair); border-radius: 10px; padding: 14px 16px; }
+.nb-bets { display: grid; grid-template-columns: repeat(3, 1fr); align-items: start;
+            background: var(--surface); border: 1px solid var(--hair); border-radius: 10px; }
+.nb-bet { padding: 14px 16px; border-left: 1px solid var(--hair); }
+.nb-bet:first-child { border-left: none; }
 .nb-bet h4 { margin: 0 0 10px; font-size: 16px; font-weight: 700; display: flex; align-items: baseline; gap: 6px; }
 .nb-bet h4 span { font-size: 13px; font-weight: 400; color: var(--muted); }
 .nb-bet .line { font-size: 14px; color: var(--text); margin-bottom: 8px; font-variant-numeric: tabular-nums; }
@@ -251,7 +219,11 @@ a.nb-cardlink:focus-visible { outline: 2px solid var(--cyan); outline-offset: 2p
 .nb-injstatus.dtd { color: var(--muted); border: 1px solid var(--hair-strong); }
 
 @media (max-width: 720px) {
-  .nb-grid, .nb-tables, .nb-record, .nb-bets, .nb-twocol { grid-template-columns: 1fr; }
+  .nb-tables, .nb-record, .nb-bets, .nb-twocol { grid-template-columns: 1fr; }
+  .nb-bet { border-left: none; border-top: 1px solid var(--hair); }
+  .nb-bet:first-child { border-top: none; }
+  .nb-rmain { grid-template-columns: minmax(0, 1fr) minmax(110px, 1.2fr) minmax(0, 1fr); gap: 8px; }
+  .nb-rteam { font-size: 15px; }
 }
 </style>
 """
@@ -321,27 +293,6 @@ def fmt_when(ts, date_et) -> str:
     return esc(date_et)
 
 
-def _conf_word(p_home: float) -> str:
-    edge = abs(float(p_home) - 0.5)
-    if edge >= 0.15:
-        return "高"
-    if edge >= 0.07:
-        return "中"
-    return "低"
-
-
-def _fill_html(home_fav: bool, fav_pct: int, big: bool = False) -> str:
-    """Glowing tug-of-war fill anchored on the favored team's side."""
-    if home_fav:  # favored team is on the right
-        grad = "linear-gradient(270deg, rgba(123,91,255,0.45), var(--cyan))"
-        anchor = "right:0;left:auto;"
-    else:         # favored team is on the left
-        grad = "linear-gradient(90deg, var(--cyan), rgba(123,91,255,0.45))"
-        anchor = "left:0;right:auto;"
-    return (f'<div class="nb-fill" style="{anchor}width:{fav_pct}%;'
-            f'background:{grad};"></div>')
-
-
 def matchup_block(g, big: bool = False) -> str:
     """Away ＠ Home with 主/客 badges; favored side highlighted in cyan."""
     p_home = float(g["p_home_win"])
@@ -364,71 +315,54 @@ def matchup_block(g, big: bool = False) -> str:
 
 
 def prob_bar(g, big: bool = False) -> str:
+    """Two win probabilities and one thin split bar; the favoured side is the accent colour."""
     p_home = float(g["p_home_win"])
     home_fav = p_home >= 0.5
     home_pct = round(p_home * 100)
     away_pct = 100 - home_pct
-    fav_pct = home_pct if home_fav else away_pct
-    away, home = g["away_abbr"], g["home_abbr"]
-    track = "nb-track" if big else "nb-track nb-cbar"
-    l_fav = "" if home_fav else " fav"
-    r_fav = " fav" if home_fav else ""
+    a_cls, h_cls = ("", " fav") if home_fav else (" fav", "")
+    size = " big" if big else ""
     return (
-        f'<div class="{track}">'
-        f'{_fill_html(home_fav, fav_pct, big)}'
-        f'<div class="nb-lbl l{l_fav}">{esc(away)} <span class="nb-pct led">{away_pct}%</span></div>'
-        f'<div class="nb-lbl r{r_fav}"><span class="nb-pct led">{home_pct}%</span> {esc(home)}</div>'
+        f'<div class="nb-prob{size}">'
+        f'<span class="nb-pct{a_cls}">{away_pct}%</span>'
+        f'<span class="nb-split" aria-hidden="true"><i class="a{a_cls}" style="width:{away_pct}%"></i>'
+        f'<i class="h{h_cls}" style="width:{home_pct}%"></i></span>'
+        f'<span class="nb-pct{h_cls}">{home_pct}%</span>'
         f'</div>'
     )
+
+
+def _result_html(g) -> str:
+    """Final score and whether the side with the higher win probability won."""
+    if not (g["status"] == "final" and pd.notna(g["win_result"])):
+        return ""
+    home_won = g["win_result"] == 1
+    home_fav = float(g["p_home_win"]) >= 0.5
+    win_abbr = g["home_abbr"] if home_won else g["away_abbr"]
+    mark = ('<span class="nb-hit">命中</span>' if home_fav == home_won
+            else '<span class="nb-miss">未中</span>')
+    return (f'<div class="nb-rres"><span class="score">{esc(g["away_abbr"])} {g["away_score"]} : '
+            f'{g["home_score"]} {esc(g["home_abbr"])}　{fmt_team(win_abbr)}勝</span>{mark}</div>')
 
 
 def game_card_html(g, links: Links = STREAMLIT_LINKS) -> str:
+    """One game as one row: time and state, the two teams with their win probabilities, the result."""
     p_home = float(g["p_home_win"])
     home_fav = p_home >= 0.5
-    fav_abbr = g["home_abbr"] if home_fav else g["away_abbr"]
-    side = "主" if home_fav else "客"
     final = g["status"] == "final" and pd.notna(g["win_result"])
-    pill = ('<span class="nb-pill fin">終場</span>' if final
-            else '<span class="nb-pill up">尚未開賽</span>')
-    result = ""
-    if final:
-        home_won = g["win_result"] == 1
-        win_abbr = g["home_abbr"] if home_won else g["away_abbr"]
-        correct = home_fav == home_won
-        badge = ('<span class="nb-hit">✅ 命中</span>' if correct
-                 else '<span class="nb-miss">❌ 未中</span>')
-        result = (
-            f'<div class="nb-cresult"><span class="score">'
-            f'{esc(g["away_abbr"])} {g["away_score"]} – {g["home_score"]} {esc(g["home_abbr"])}'
-            f'（{fmt_team(win_abbr)}勝）</span>{badge}</div>'
-        )
+    state = "終場" if final else "尚未開賽"
+    a_cls, h_cls = ("", " fav") if home_fav else (" fav", "")
     return (
-        f'<a class="nb-cardlink" href="{esc(links.game(g["game_id"]))}" target="_self">'
-        f'<div class="nb-card">'
-        f'<div class="nb-crow"><span class="nb-when">🗓 {fmt_when(g["tipoff_utc"], g["game_date_et"])}</span>{pill}</div>'
-        f'{matchup_block(g, big=False)}'
-        f'{prob_bar(g, big=False)}'
-        f'<div class="nb-cverdict">🔮 看好 <b>{fmt_team(fav_abbr)}</b>（{side}）贏</div>'
-        f'{result}'
-        f'<div class="nb-cta">🔍 點看詳細玩法 · 傷病 · 球員 →</div>'
+        f'<a class="nb-row" href="{esc(links.game(g["game_id"]))}" target="_self">'
+        f'<div class="nb-rtop"><span class="nb-when">{fmt_when(g["tipoff_utc"], g["game_date_et"])}</span>'
+        f'<span class="nb-state">{state}</span></div>'
+        f'<div class="nb-rmain">'
+        f'<span class="nb-rteam{a_cls}">{fmt_team(g["away_abbr"])}<span class="nb-ha">客</span></span>'
+        f'{prob_bar(g)}'
+        f'<span class="nb-rteam r{h_cls}">{fmt_team(g["home_abbr"])}<span class="nb-ha">主</span></span>'
         f'</div>'
+        f'{_result_html(g)}'
         f'</a>'
-    )
-
-
-def featured_html(g) -> str:
-    p_home = float(g["p_home_win"])
-    home_fav = p_home >= 0.5
-    fav_abbr = g["home_abbr"] if home_fav else g["away_abbr"]
-    side = "主" if home_fav else "客"
-    return (
-        f'<div class="nb-featured">'
-        f'<div class="nb-ftag"><span class="dot"></span>今晚最有把握的一場</div>'
-        f'{matchup_block(g, big=True)}'
-        f'<div class="nb-pbar">{prob_bar(g, big=True)}</div>'
-        f'<div class="nb-read"><span class="nb-chip">🔮 看好 {fmt_team(fav_abbr)}（{side}）贏</span>'
-        f'<span class="meta">信心 <b>{_conf_word(p_home)}</b>　·　🗓 {fmt_when(g["tipoff_utc"], g["game_date_et"])}（台北時間）</span>'
-        f'</div></div>'
     )
 
 
@@ -444,12 +378,12 @@ def date_group_html(date_val, rows: list, links: Links = STREAMLIT_LINKS) -> str
         word = "尚未開賽"
     else:
         word = f"{n - finals} 場待打"
-    cards = "".join(game_card_html(r, links) for r in rows)
+    games = "".join(game_card_html(r, links) for r in rows)
     return (
         f'<div class="nb-group">'
-        f'<div class="nb-datehead"><span class="d"><b>{label}</b> {wd}</span>'
-        f'<span class="cnt">{n} 場 · {word}</span><span class="ln"></span></div>'
-        f'<div class="nb-grid">{cards}</div></div>'
+        f'<div class="nb-datehead"><span class="d">{label} {wd}</span>'
+        f'<span class="cnt">{n} 場，{word}</span></div>'
+        f'<div class="nb-rows">{games}</div></div>'
     )
 
 
@@ -466,11 +400,9 @@ def table_html(df: pd.DataFrame) -> str:
 def topbar_html(acc, back: bool = False, links: Links = STREAMLIT_LINKS) -> str:
     badge = (f'<div class="nb-badge"><b class="led">{acc * 100:.0f}%</b>'
              f'<span>近三季猜中率</span></div>') if acc else ""
-    bar = (f'<div class="nb-topbar"><div class="nb-brand"><span class="ball">🏀</span>'
-           f'NBA 勝負預測 <span class="tag">live model</span></div>{badge}</div>')
+    bar = f'<div class="nb-topbar"><div class="nb-brand">NBA 勝負預測</div>{badge}</div>'
     if back:
-        return (f'<a class="nb-back" href="{links.home()}" target="_self">← 返回看板</a>'
-                f'<div style="height:10px;"></div>{bar}')
+        return f'<a class="nb-back" href="{links.home()}" target="_self">返回今天的賽程</a>{bar}'
     return bar
 
 
@@ -486,8 +418,8 @@ def _bet_moneyline(g) -> str:
         home_won = g["win_result"] == 1
         correct = home_fav == home_won
         win_abbr = g["home_abbr"] if home_won else g["away_abbr"]
-        badge = ('<span class="nb-hit">✅ 命中</span>' if correct
-                 else '<span class="nb-miss">❌ 未中</span>')
+        badge = ('<span class="nb-hit">命中</span>' if correct
+                 else '<span class="nb-miss">未中</span>')
         res = (f'<div class="res"><span class="score">{fmt_team(win_abbr)} 勝</span>{badge}</div>')
     return (
         '<div class="nb-bet"><h4>勝負 <span>Moneyline</span></h4>'
@@ -566,7 +498,7 @@ def _bet_total(g, over_acc=None) -> str:
                     '<div class="empty">本季開賽後顯示模型估總分與大小分傾向。</div>'
                     f'{caveat}</div>')
         return ('<div class="nb-bet disabled"><h4>大小分 <span>O/U</span></h4>'
-                '<div class="soon">🔧 本季開賽後顯示——模型估總分、盤口線與大小分傾向。</div></div>')
+                '<div class="soon">本季開賽後顯示——模型估總分、盤口線與大小分傾向。</div></div>')
 
     pt = float(pt)
     pick = None  # None = no comparable line / 貼盤; True = lean over; False = lean under
@@ -597,8 +529,8 @@ def _bet_total(g, over_acc=None) -> str:
             went_over = orr == 1
             correct = went_over == pick
             actual = "大" if went_over else "小"
-            badge = ('<span class="nb-hit">✅ 命中</span>' if correct
-                     else '<span class="nb-miss">❌ 未中</span>')
+            badge = ('<span class="nb-hit">命中</span>' if correct
+                     else '<span class="nb-miss">未中</span>')
             res = f'<div class="res"><span class="score">開出 {actual}分</span>{badge}</div>'
     return f'{head}{lineblk}{hero}{caveat}{res}</div>'
 
@@ -651,7 +583,7 @@ def detail_chunks(g: pd.Series, tr: dict, inj_away: pd.DataFrame, inj_home: pd.D
     return [
         topbar_html(acc, back=True, links=links),
         f'<div class="nb-detailhead">{matchup_block(g, big=True)}'
-        f'<div class="when">🗓 {fmt_when(g["tipoff_utc"], gdate)}（台北時間）· '
+        f'<div class="when">{fmt_when(g["tipoff_utc"], gdate)}（台北時間）· '
         f'{"終場" if final else "尚未開賽"}{score}</div></div>',
         '<div class="nb-sechead" style="margin-top:30px;"><h2>玩法 <span class="bar">·</span> 預測</h2>'
         '<span class="sub">勝負 · 受讓分 · 大小分</span></div>',
@@ -676,17 +608,14 @@ def hero_html(n_up: int, now: dt.datetime) -> str:
         raise ValueError("now must be timezone-aware")
     local = now.astimezone(TW)
     if n_up:
-        kicker = f"{local:%Y.%m.%d}　今晚 {n_up} 場 · 台北時間"
-        headline = "今晚<br><em>誰會贏？</em>"
-        sub = ("三季、4000+ 場比賽訓練的模型，逐場輸出勝率。每場只用「該場之前」的資料，"
-               "不偷看未來——所以這些數字誠實、可信。")
+        headline = f"今晚 {n_up} 場"
+        sub = (f"{local:%m/%d}，台北時間。三季、4000+ 場比賽訓練的模型，逐場輸出勝率。"
+               "每場只用「該場之前」的資料，不偷看未來。")
     else:
-        kicker = f"{local:%Y.%m.%d}　休賽季 · 近期回顧"
-        headline = "近期<br><em>預測 vs 結果</em>"
+        headline = "休賽季：近期預測與結果"
         sub = ("目前 NBA 休賽季、暫無賽事。以下回顧近期比賽的預測與實際結果，"
                "以及模型的長期戰績。賽季開始後會自動恢復每日預測。")
-    return (f'<div class="nb-hero"><div class="nb-kicker">{kicker}</div>'
-            f'<h1>{headline}</h1><p class="nb-lede">{sub}</p></div>')
+    return f'<div class="nb-hero"><h1>{headline}</h1><p class="nb-lede">{sub}</p></div>'
 
 
 def record_chunks(tr: dict, acc) -> list[str]:
@@ -731,34 +660,45 @@ def record_chunks(tr: dict, acc) -> list[str]:
     ]
 
 
+def _pick_dates(games: pd.DataFrame) -> tuple[list, list]:
+    """(shown, folded) game dates: the first date that still has unplayed games ("tonight") and the
+    latest date before it whose games are all final; with nothing upcoming, the two latest dates."""
+    by_date = {d: grp for d, grp in games.groupby("game_date_et", sort=False)}
+    dates = sorted(by_date)
+    pending = [d for d in dates if (by_date[d]["status"] != "final").any()]
+    if pending:
+        tonight = pending[0]
+        done = [d for d in dates if d < tonight and (by_date[d]["status"] == "final").all()]
+        shown = [tonight] + done[-1:]
+    else:
+        shown = list(reversed(dates))[:2]
+    folded = [d for d in reversed(dates) if d not in shown]
+    return shown, folded
+
+
 def board_chunks(games: pd.DataFrame, tr: dict, acc, now: dt.datetime,
                  links: Links = STREAMLIT_LINKS) -> list[str]:
-    """Top bar + hero, then (if there are games) featured, predictions and record."""
-    upcoming = games[games["status"] != "final"] if not games.empty else games
-    n_up = len(upcoming)
-    chunks = [topbar_html(acc, links=links), hero_html(n_up, now)]
+    """Top bar and headline, then tonight's games, the last finished day, other dates folded, the record."""
     if games.empty:
-        return chunks
-
-    if not upcoming.empty:
-        feat = upcoming.loc[(upcoming["p_home_win"].astype(float) - 0.5).abs().idxmax()]
-        chunks.append(featured_html(feat))
-
-    preds_title = ("今日 <span class=\"bar\">·</span> 近期預測" if n_up
-                   else "近期 <span class=\"bar\">·</span> 預測 vs 結果")
-    chunks.append(
-        f'<div class="nb-sechead" style="margin-top:40px;"><h2>{preds_title}</h2>'
-        f'<span class="sub">依日期分組 · 客 ＠ 主</span></div>')
-    for date_val, grp in games.groupby("game_date_et", sort=False):
-        rows = [r for _, r in grp.iterrows()]
-        chunks.append(date_group_html(date_val, rows, links))
+        return [topbar_html(acc, links=links), hero_html(0, now)]
+    shown, folded = _pick_dates(games)
+    by_date = {d: grp for d, grp in games.groupby("game_date_et", sort=False)}
+    tonight = by_date[shown[0]]
+    n_up = int((tonight["status"] != "final").sum())
+    chunks = [topbar_html(acc, links=links), hero_html(n_up, now)]
+    for d in shown:
+        chunks.append(date_group_html(d, [r for _, r in by_date[d].iterrows()], links))
+    if folded:
+        n_more = sum(len(by_date[d]) for d in folded)
+        inner = "".join(date_group_html(d, [r for _, r in by_date[d].iterrows()], links) for d in folded)
+        chunks.append(f'<details class="nb-more"><summary>其他日期（{n_more} 場）</summary>{inner}</details>')
     chunks.extend(record_chunks(tr, acc))
     return chunks
 
 
 def team_section_head(season: str, with_game_hint: bool = True) -> str:
     hint = " · 點上方對戰可看雙隊對比" if with_game_hint else ""
-    return (f'<div class="nb-sechead" style="margin-top:36px;"><h2>🔍 任選球隊 <span class="bar">·</span> 看數據</h2>'
+    return (f'<div class="nb-sechead" style="margin-top:36px;"><h2>任選球隊 <span class="bar">·</span> 看數據</h2>'
             f'<span class="sub">season {esc(season)}{hint}</span></div>')
 
 
