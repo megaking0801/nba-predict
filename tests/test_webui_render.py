@@ -236,19 +236,19 @@ def test_static_page_escapes_title():
 def test_hero_uses_taipei_date():
     utc = dt.datetime(2026, 10, 22, 17, 0, tzinfo=UTC)  # 01:00 next day in Taipei
     html = render.hero_html(2, utc)
-    assert '<div class="nb-day">23</div>' in html and "10 月 週五，台北時間" in html
+    assert "10 月 23 日 週五，台北時間" in html
     assert "今晚 2 場" in html
 
 
-@pytest.mark.parametrize("utc,day,sub", [
-    (dt.datetime(2026, 9, 4, 16, 30, tzinfo=UTC), "5", "9 月 週六"),       # 00:30 Taipei on 9/5
-    (dt.datetime(2026, 9, 4, 15, 59, tzinfo=UTC), "4", "9 月 週五"),       # still 9/4 in Taipei
-    (dt.datetime(2026, 12, 31, 15, 0, tzinfo=UTC), "31", "12 月 週四"),    # 23:00 Taipei on 12/31
-    (dt.datetime(2026, 12, 31, 16, 0, tzinfo=UTC), "1", "1 月 週五"),      # 00:00 Taipei, new year
+@pytest.mark.parametrize("utc,sub", [
+    (dt.datetime(2026, 9, 4, 16, 30, tzinfo=UTC), "9 月 5 日 週六"),       # 00:30 Taipei on 9/5
+    (dt.datetime(2026, 9, 4, 15, 59, tzinfo=UTC), "9 月 4 日 週五"),       # still 9/4 in Taipei
+    (dt.datetime(2026, 12, 31, 15, 0, tzinfo=UTC), "12 月 31 日 週四"),    # 23:00 Taipei on 12/31
+    (dt.datetime(2026, 12, 31, 16, 0, tzinfo=UTC), "1 月 1 日 週五"),      # 00:00 Taipei, new year
 ])
-def test_big_date_is_the_taipei_date_across_month_and_year(utc, day, sub):
+def test_hero_date_is_the_taipei_date_across_month_and_year(utc, sub):
     html = render.hero_html(3, utc)
-    assert f'<div class="nb-day">{day}</div>' in html and f"{sub}，台北時間" in html
+    assert f"{sub}，台北時間" in html and "nb-day\"" not in html
 
 
 def test_headline_says_when_the_next_games_are_if_not_today():
@@ -369,16 +369,17 @@ def test_spread_card_result_has_no_hit_or_miss_badge():
 
 # ---------- site simplification step 2: rows, folded dates, no featured card ----------
 
-def test_row_has_two_lines_and_puts_the_time_or_the_score_on_the_centre_line():
+def test_row_is_a_head_line_then_one_line_per_team_away_first():
     up = render.game_card_html(_game(p_home_win=0.66))
-    assert up.count('class="nb-rline"') == 1 and up.count('class="nb-prob"') == 1
-    assert '<span class="nb-rmid"><span class="nb-when">' in up
+    assert up.count('class="nb-rhead"') == 1 and up.count('class="nb-tline"') == 2
+    assert '<div class="nb-rhead"><span class="nb-when">10/25 07:30</span><span class="nb-state">尚未開賽</span>' in up
+    assert up.index("勇士") < up.index("湖人")                      # away line on top, as in the score order
     fin = render.game_card_html(_game(p_home_win=0.66, status="final", win_result=1, home_score=110, away_score=105))
-    assert ('<span class="nb-state">終場</span><span class="nb-score">105 : 110</span>'
-            '<span class="nb-hit">命中</span>') in fin
+    assert ('<span class="nb-state">終場<span class="nb-score">105 : 110</span>'
+            '<span class="nb-hit">命中</span></span>') in fin
 
 
-def test_shown_days_share_one_board_so_the_centre_line_is_unbroken():
+def test_shown_days_share_one_sheet_of_paper():
     html = "".join(render.board_chunks(_board_games(), {"rec_n": 0}, None, NOW))
     head = html.split('<details class="nb-more">')[0]
     assert head.count('<div class="nb-board">') == 1 and head.count('<section class="nb-group">') == 2
@@ -420,7 +421,8 @@ def test_board_has_no_featured_card_or_confidence_word():
 def test_game_row_marks_the_favourite_without_a_pick_sentence():
     html = render.game_card_html(_game(p_home_win=0.66))
     assert "34%" in html and "66%" in html and "看好" not in html
-    assert '<span class="nb-pct fav">66%</span>' in html
+    assert '<span class="nb-pct fav">66<small>%</small></span>' in html
+    assert '<span class="nb-pct">34<small>%</small></span>' in html
 
 
 # ---------- site simplification step 3: stale or pick-like copy must not come back ----------
@@ -451,34 +453,63 @@ def test_honesty_copy_is_still_there():
     assert "不是穩賺明牌" in "".join(render.record_chunks({"rec_n": 0}, 0.65))
 
 
-# ---------- site v2: centre-line probability bar ----------
+# ---------- site v4: team chips and two-line scoreboard ----------
 
-def test_centre_line_fill_grows_toward_the_favourite_by_the_distance_from_fifty():
-    home = render.prob_bar(_game(p_home_win=0.66))
-    assert '<i class="fill h" style="width:16%"></i>' in home
-    away = render.prob_bar(_game(p_home_win=0.20))
-    assert '<i class="fill a" style="width:30%"></i>' in away
-    assert '<span class="nb-pct fav">80%</span>' in away
-
-
-def test_coin_flip_has_no_fill_but_still_shows_both_numbers():
-    html = render.prob_bar(_game(p_home_win=0.50))
-    assert "fill" not in html and html.count("50%") == 2 and "fav" not in html
-    near = render.prob_bar(_game(p_home_win=0.51))
-    assert 'style="width:1%"' in near                     # tiny fill; the centre ring is drawn by CSS on top
+def test_every_team_has_a_chip_colour_with_readable_text():
+    from jobs.teams import TEAMS
+    assert set(render.TEAM_COLORS) == set(TEAMS)
+    for abbr, colour in render.TEAM_COLORS.items():
+        assert render.contrast(colour, render.chip_text_color(colour)) >= 4.5, abbr
+        assert f".tc-{abbr} {{ background: {colour};" in render.NEON_CSS
 
 
-def test_bar_is_hidden_from_screen_readers_and_the_row_has_a_text_label():
+def test_chip_text_picks_black_where_white_is_too_light():
+    assert render.chip_text_color("#FDB927") == "#000000"      # GSW gold
+    assert render.chip_text_color("#008CA8") == "#000000"      # CHA teal: white 3.95, ink 4.49, black 5.3
+    assert render.chip_text_color("#0E2240") == "#FFFFFF"
+
+
+def test_team_colours_come_through_the_espn_mapping():
+    assert render.TEAM_COLORS["GSW"] == "#FDB927" and render.TEAM_COLORS["UTA"] == "#4E008E"
+    assert render.TEAM_COLORS["WAS"] == "#E31837" and "GS" not in render.TEAM_COLORS
+
+
+def test_unknown_team_has_no_default_chip():
+    with pytest.raises(ValueError):
+        render.team_chip("XYZ")
+    with pytest.raises(ValueError):
+        render.game_card_html(_game(home_abbr="GS"))         # ESPN spelling must be normalised upstream
+
+
+def test_chip_is_decorative_and_escaped_name_sits_next_to_it():
+    html = render.game_card_html(_game(p_home_win=0.66))
+    assert '<span class="nb-chip tc-GSW" aria-hidden="true">GSW</span>' in html
+    assert '<span class="nb-chip tc-LAL" aria-hidden="true">LAL</span>' in html
+
+
+def test_coin_flip_marks_neither_side():
+    html = render.scoreboard(_game(p_home_win=0.50))
+    assert html.count("50<small>%</small>") == 2 and "fav" not in html
+    near = render.scoreboard(_game(p_home_win=0.51))
+    assert '<span class="nb-pct fav">51<small>%</small></span>' in near
+
+
+def test_row_has_a_complete_text_label():
     row = render.game_card_html(_game(p_home_win=0.66))
-    assert 'class="nb-mid" aria-hidden="true"' in row
-    assert 'aria-label="勇士（客）34%，湖人（主）66%，' in row
+    assert 'aria-label="勇士（客）34%，湖人（主）66%，10/25 07:30 台北時間，尚未開賽"' in row
     fin = render.game_card_html(_game(p_home_win=0.66, status="final", win_result=0, home_score=99, away_score=101))
     assert "101 比 99，勝率較高的一方輸了" in fin
 
 
-def test_detail_head_carries_the_bar_and_the_moneyline_card_keeps_its_sentence():
+def test_v3_centre_line_is_gone():
+    html = "".join(render.board_chunks(_board_games(), {"rec_n": 0}, None, NOW))
+    for gone in ("nb-mid", "nb-rmid", "nb-day\"", "nb-board::before"):
+        assert gone not in html and gone not in render.NEON_CSS, gone
+
+
+def test_detail_head_carries_the_scoreboard_and_the_moneyline_card_keeps_its_sentence():
     chunks = render.detail_chunks(_game(p_home_win=0.66), {}, _inj_df("a"), _inj_df("b"),
                                   pd.DataFrame(), pd.DataFrame(), 0.6)
     head = next(c for c in chunks if "nb-detailhead" in c)
     bets = next(c for c in chunks if "nb-bets" in c)
-    assert "nb-mid" in head and "nb-mid" not in bets and "勝率較高：" in bets
+    assert 'class="nb-sb big"' in head and "nb-sb" not in bets and "勝率較高：" in bets
