@@ -6,9 +6,9 @@
 <!-- 維護筆記：本檔目標 200 行內，只放「讀程式碼猜不到」的內容。改完用 /doctor prompt-audit 檢查矛盾與過期內容。 -->
 
 ## 指令
-新環境先跑 `scripts/setup.sh`（建 venv、裝依賴、問一次 `DATABASE_URL`）；之後用 `scripts/run.sh <模組> [參數]` 帶著 secrets 跑只讀 job。接手流程見 `docs/handoff/2026-10-28-takeover.md`。
+新環境先跑 `scripts/setup.sh`（建 venv、裝依賴、問一次 `DATABASE_URL`）；之後用 `scripts/run.sh <模組> [參數]` 帶著 secrets 跑只讀 job。接手流程見 `docs/handoff/` 最新的檔案。
 ```bash
-python -m pytest tests -q            # 測試，約 2 秒，需在 repo 根目錄執行
+python -m pytest tests -q            # 測試，約 45 秒（第一次約 3 分鐘），需在 repo 根目錄執行
 streamlit run auto_nba_predict.py    # 啟動網站，需 DATABASE_URL 或 SUPABASE_* 環境變數，或 .streamlit/secrets.toml
 python -m jobs.config                # 印出全部參數與 CONFIG_HASH
 python -m jobs.evaluate              # walk-forward 評估 + ATS 回測（只讀，但需要 DB 連線）

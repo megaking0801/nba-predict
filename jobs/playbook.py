@@ -19,6 +19,7 @@ import math
 import re
 import sys
 import time
+import zlib
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
 
@@ -233,7 +234,7 @@ def read_lines(path):
             for line in fh:
                 if line.strip():
                     yield line
-    except (EOFError, gzip.BadGzipFile):
+    except (EOFError, gzip.BadGzipFile, zlib.error):
         return
 
 def fetch_moneylines(run: Run, out_path, fetch: Callable = espn_odds, sleep: float = 0.15,
@@ -246,8 +247,10 @@ def fetch_moneylines(run: Run, out_path, fetch: Callable = espn_odds, sleep: flo
         kept = list(read_lines(out_path))
         done = {json.loads(line)["game_id"] for line in kept}
         if out_path.suffix == ".gz":     # a cut-short gzip tail would corrupt what we append: rewrite it clean first
-            with _open_text(out_path, "w") as fh:
+            tmp = out_path.with_name(out_path.name + ".tmp.gz")
+            with _open_text(tmp, "w") as fh:
                 fh.writelines(kept)
+            tmp.replace(out_path)        # atomic: an interrupted rewrite never loses the fetched rows
     ids = [str(x) for x in run(_IDS, (list(SEASON_TYPES),))["game_id"]]
     if seasons:      # season filter is applied on the id list through the outcomes query
         keep = set(run(_OUTCOMES, (list(SEASON_TYPES),)).query("season in @seasons")["game_id"].astype(str))
