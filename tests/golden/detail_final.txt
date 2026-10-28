@@ -57,7 +57,7 @@ header[data-testid="stHeader"] { background: transparent; }
 .nb-pct { font-variant-numeric: tabular-nums; font-size: 18px; font-weight: 600; color: var(--muted); }
 .nb-pct.fav { color: var(--text); }
 .nb-prob.big .nb-pct { font-size: 24px; }
-.nb-mid { position: relative; display: block; flex: 1; height: 8px; min-width: 64px;
+.nb-mid { position: relative; display: block; flex: 1; height: 8px; min-width: 120px;
           border-radius: 4px; background: var(--hair); }
 .nb-mid .fill { position: absolute; top: 0; bottom: 0; background: var(--fill); }
 .nb-mid .fill.h { left: 50%; border-radius: 0 4px 4px 0; }
@@ -66,6 +66,12 @@ header[data-testid="stHeader"] { background: transparent; }
                  transform: translate(-50%, -50%); border-radius: 50%; background: var(--surface);
                  border: 2px solid var(--text); box-sizing: border-box; z-index: 1; }
 .nb-prob.big .nb-mid { height: 12px; border-radius: 6px; }
+/* detail header: numbers above the two ends, the bar spans the full container width */
+.nb-prob.big { display: grid; grid-template-columns: auto 1fr auto; grid-template-areas: "ap . hp" "bar bar bar";
+               align-items: end; row-gap: 8px; }
+.nb-prob.big > .nb-pct:first-child { grid-area: ap; }
+.nb-prob.big > .nb-mid { grid-area: bar; }
+.nb-prob.big > .nb-pct:last-child { grid-area: hp; }
 .nb-prob.big .nb-mid::after { width: 16px; height: 16px; }
 
 /* ---- section heads ---- */
@@ -88,8 +94,13 @@ a.nb-row:last-child { border-radius: 0 0 10px 10px; }
 a.nb-row:hover { background: var(--ground); }
 a.nb-row:focus-visible { outline: 2px solid var(--text); outline-offset: -2px; }
 .nb-rtop { display: flex; justify-content: space-between; font-size: 14px; color: var(--muted); margin-bottom: 4px; }
-.nb-rmain { display: flex; align-items: center; gap: 8px; }
-.nb-rteam { font-size: 15px; font-weight: 600; color: var(--muted); white-space: nowrap; }
+/* phone: line 1 = away team ... home team, line 2 = 34% [full-width bar] 66%; one line from 720px */
+.nb-rmain { display: grid; grid-template-columns: 1fr 1fr; grid-template-areas: "an hn" "pr pr";
+            align-items: center; gap: 6px 12px; }
+.nb-rmain > .nb-rteam:first-child { grid-area: an; }
+.nb-rmain > .nb-rteam.r { grid-area: hn; text-align: right; }
+.nb-rmain > .nb-prob { grid-area: pr; }
+.nb-rteam { font-size: 15px; font-weight: 600; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .nb-rteam.fav { color: var(--text); }
 .nb-rres { margin-top: 6px; display: flex; justify-content: space-between; gap: 8px; font-size: 14px; }
 .nb-rres .score { font-variant-numeric: tabular-nums; }
@@ -165,6 +176,8 @@ table.ntable tbody td { padding: 6px 0; border-top: 1px solid var(--hair); text-
 .nb-injstatus.dtd { color: var(--muted); }
 
 @media (min-width: 720px) {
+  .nb-rmain { grid-template-columns: minmax(96px, auto) minmax(260px, 1fr) minmax(96px, auto);
+              grid-template-areas: "an pr hn"; gap: 12px; }
   .nb-record { grid-template-columns: repeat(3, 1fr); gap: 16px; }
   .nb-tables { grid-template-columns: 1.15fr 1fr; }
   .nb-twocol { grid-template-columns: 1fr 1fr; }
