@@ -24,6 +24,9 @@ Disney 使用條款（涵蓋 ESPN）寫著不得以「robot, spider, script, or 
 | **Rotowire／CBS／Yahoo 等媒體** | 傷兵與先發快訊 | 通常最快（記者消息） | 網頁／RSS | 免費或訂閱 | **未讀**：Rotowire 條款頁 404；CBS、Yahoo 沒找到。NBA.com RSS 條款寫明僅供個人非商業 | 未測 | 時間戳最有價值，但沒有條款允許的自動取得方式，**不建議** |
 | **Basketball-Reference／Sports Reference** | 球員新聞頁、歷史數據 | — | 網頁 | 免費 | **未讀** | 未測 | 低 |
 
+## 補充：使用者的網路位置
+`jobs/espn_http.py` 開頭記載 stats.nba.com「Akamai geo/IP-blocks both GitHub runners and non-US homes」。使用者在台灣，**從他自己家裡連 NBA 官方端點也可能被擋**（`ak-static.cms.nba.com` 的 `ak` 可能表示 Akamai，是推測）。所以第 2、3 名的「請使用者手動開一份 PDF 確認可達」在列入計畫前就要先做；不可達的話它們都不用考慮。
+
 ## 先發名單與休息
 - **先發名單**：沒找到「賽前、免費、條款明確允許自動讀取」的來源。balldontlie 的 lineups 只在比賽開始後才有（官方註明），對賽前無用；媒體的先發預測頁條款未讀。官方傷兵報告不含先發。→ **無法評估**。
 - **球員休息／出賽狀態**：官方傷兵報告的規定範圍明寫包含「injuries, illnesses, other medical conditions, or rest」，所以休息與傷病在同一份文件；除此之外沒有獨立來源。
