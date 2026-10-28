@@ -165,6 +165,12 @@ def test_season_length_is_known_in_advance():
     assert fam.season_length("2024-25", dt.date(2025, 1, 1), [])["BOS"] == 82
     assert fam.season_length("2020-21", dt.date(2021, 1, 1), [])["BOS"] == 72
     assert fam.season_length("2019-20", dt.date(2020, 2, 1), [])["BOS"] == 82      # before the stop
+    pre = [{"season": "2019-20", "season_type": "regular", "date": dt.date(2020, 3, 1),
+            "home_abbr": "POR", "away_abbr": "GSW"},
+           {"season": "2019-20", "season_type": "regular", "date": dt.date(2020, 8, 15),     # play-in stored as regular
+            "home_abbr": "POR", "away_abbr": "MEM"}]
+    after = fam.season_length("2019-20", dt.date(2020, 7, 31), pre)
+    assert after["POR"] == 1 + 8 and after["GSW"] == 1 and after["MEM"] == 8          # GSW not invited
 
 
 def test_motivation_is_zero_when_many_games_are_left():
@@ -293,7 +299,7 @@ def _stub_run(monkeypatch, winners, calls):
                "share_seasons_negative": 1.0 if good else 0.4, "beta_lower": 0.2 if good else -0.1}
         if base is not None:
             res["vs_base"] = {"mean": -0.04 if good else 0.0, "hi": -0.01 if good else 0.02,
-                              "p_one_sided": 1e-6 if good else 0.5}
+                              "p_one_sided": 1e-6 if good else 0.5, "share_seasons_negative": 1.0 if good else 0.4}
         return res
     monkeypatch.setattr(fs, "evaluate", fake_eval)
     monkeypatch.setattr(fs, "build_feature_table", lambda bundles, cfg: pd.DataFrame(

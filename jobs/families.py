@@ -216,21 +216,27 @@ def family_shots(bundles: List[dict], variant: dict, buckets: Optional[pd.DataFr
 
 def season_length(season: str, day, games: List[dict]) -> Dict[str, int]:
     """Regular-season games per team as known on that day (never from how the season actually ended):
-    82, 72 in 2020-21; 2019-20 was 82 until the March 2020 stop, then each team's restart schedule
-    (published in June 2020) is what it actually played."""
+    82, 72 in 2020-21; 2019-20 was 82 until the March 2020 stop; from July 2020 the restart plan
+    (published in June) was known: games played before the stop, plus 8 seeding games for the 22 invited
+    teams. The 2020-08-15 play-in is not counted, whatever season type it is stored under."""
     if season == "2020-21":
         return defaultdict(lambda: 72)
     if season == "2019-20" and day >= RESTART_2020:
         played = defaultdict(int)
         for b in games:
-            if b["season"] == season and b["season_type"] == "regular":
+            if b["season"] == season and b["season_type"] == "regular" and b["date"] < STOP_2020:
                 played[b["home_abbr"]] += 1
                 played[b["away_abbr"]] += 1
+        for team in TEAMS:
+            if team not in NOT_INVITED_2020:
+                played[team] += 8
         return played
     return defaultdict(lambda: 82)
 
 
+STOP_2020 = dt.date(2020, 3, 12)
 RESTART_2020 = dt.date(2020, 7, 1)
+NOT_INVITED_2020 = frozenset({"ATL", "CHA", "CHI", "CLE", "DET", "GSW", "MIN", "NYK"})
 
 
 def family_motivation(bundles: List[dict], variant: dict) -> pd.DataFrame:

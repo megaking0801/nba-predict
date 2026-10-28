@@ -235,7 +235,8 @@ def run(bundles: list, lines: pd.DataFrame, extras: Dict[str, object], reps: int
             vb = v.get("vs_base", {})
             v["passes"] = bool(not v.get("too_small") and v["hi"] < 0 and v["mean"] <= -MIN_GAIN
                                and (v.get("beta_lower") or -1) > 0 and v["share_seasons_negative"] >= SEASON_SHARE - 1e-9
-                               and vb.get("hi", 1) < 0 and vb.get("mean", 1) <= -MIN_GAIN)
+                               and vb.get("hi", 1) < 0 and vb.get("mean", 1) <= -MIN_GAIN
+                               and vb.get("share_seasons_negative", 0) >= SEASON_SHARE - 1e-9)
             if v["passes"] and n_shuffles:
                 v["controls"] = controls(t, cols, entry["target"], meta, v["mean"], n_shuffles, seed)
                 v["passes"] = bool(v["controls"]["true_beats_every_shuffle"])
