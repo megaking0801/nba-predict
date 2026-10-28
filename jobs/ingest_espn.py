@@ -514,13 +514,30 @@ def _spread_num(american: Optional[str]) -> Optional[float]:
         return None
 
 
+def _price_decimal(price: Optional[dict]) -> Optional[float]:
+    """Decimal odds from an ESPN price block. Newer data carries 'decimal'; the 2015-16 style only has the
+    American number ('-118'), which used to be ignored so every such price fell back to 1.91."""
+    if not price:
+        return None
+    if price.get("decimal"):
+        return float(price["decimal"])
+    s = str(price.get("american") or "").strip().upper().replace("+", "")
+    if s in ("EVEN", "EV", "PK"):
+        return 2.0
+    try:
+        a = float(s)
+    except ValueError:
+        return None
+    if a == 0:
+        return None
+    return 1.0 + a / 100.0 if a > 0 else 1.0 + 100.0 / abs(a)
+
+
 def _block_total(block: Optional[dict]) -> Tuple[Optional[float], Optional[float], Optional[float]]:
     """(total_line, over_decimal, under_decimal) from an ESPN open/close/current block."""
     block = block or {}
     tl = _spread_num((block.get("total") or {}).get("american"))
-    op = (block.get("over") or {}).get("decimal")
-    up = (block.get("under") or {}).get("decimal")
-    return tl, (float(op) if op else None), (float(up) if up else None)
+    return tl, _price_decimal(block.get("over")), _price_decimal(block.get("under"))
 
 
 POINTS = ("close", "current", "open")
@@ -564,8 +581,8 @@ def _parse_provider_line(prov: dict) -> Optional[dict]:
     hs = _spread_num((hb.get("pointSpread") or {}).get("american"))
     if hs is None:
         return None  # market_lines.home_spread is NOT NULL
-    hp = (hb.get("spread") or {}).get("decimal")
-    ap_ = (ab.get("spread") or {}).get("decimal")
+    hp = _price_decimal(hb.get("spread"))
+    ap_ = _price_decimal(ab.get("spread"))
 
     tl = op = up = None
     total_point = None
