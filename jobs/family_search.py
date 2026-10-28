@@ -134,19 +134,43 @@ def predictions(t: pd.DataFrame, features: List[str]) -> pd.DataFrame:
     return out
 
 
+def beta_lower_block(c: pd.DataFrame, level: float, reps: int, seed: int) -> Optional[float]:
+    """Lower bound of the info-over-market slope (residual on the model's residual forecast) from the same
+    14-day block bootstrap as the error difference, so serial correlation is not ignored."""
+    y = (c["margin"] + c["spread_for_beta"]).to_numpy(dtype=float)
+    x = (c["mu"] + c["spread_for_beta"]).to_numpy(dtype=float)
+    ids = _block_ids(c)
+    nb = int(ids.max()) + 1
+    agg = np.vstack([np.bincount(ids, weights=w, minlength=nb) for w in (np.ones_like(x), x, y, x * x, x * y)])
+    agg = agg[:, agg[0] > 0]
+    rng = np.random.default_rng(seed)
+    pick = rng.integers(0, agg.shape[1], (reps, agg.shape[1]))
+    n, sx, sy, sxx, sxy = (agg[k][pick].sum(axis=1) for k in range(5))
+    den = sxx - sx * sx / n
+    ok = den > 1e-9
+    if ok.sum() < reps // 2:
+        return None
+    betas = (sxy - sx * sy / n)[ok] / den[ok]
+    return float(np.quantile(betas, (1 - level) / 2))
+
+
 def evaluate(cand: pd.DataFrame, meta: pd.DataFrame, seasons: tuple, level: float, reps: int,
-             seed: int, m_tests: int) -> dict:
+             seed: int, m_tests: int, base: Optional[pd.DataFrame] = None) -> dict:
+    """Score a prediction table on one segment against the line, and, given ``base`` (the base features
+    alone), the family's increment over it on the same games ('vs_base')."""
     ids = set(meta.loc[meta["season"].between(*seasons) & meta["season_type"].isin(SEASON_TYPES), "game_id"])
     c = cand[cand["game_id"].isin(ids)]
     if len(c) < 200:
         return {"n": int(len(c)), "too_small": True}
+    cols = ["game_id", "date", "season", "margin", "mu"]
     line = c[["game_id", "date", "season", "margin"]].assign(mu=c["line_mu"])
-    d = paired_delta(line, c[["game_id", "date", "season", "margin", "mu"]])
-    out = summarize(d, level, reps, seed, m_tests)
+    out = summarize(paired_delta(line, c[cols]), level, reps, seed, m_tests)
     beta = info_over_market(c.assign(home_spread=c["spread_for_beta"]))
-    z = NormalDist().inv_cdf(1 - (1 - level) / 2)
-    out["beta"], out["beta_se"] = beta.get("beta"), beta.get("se")
-    out["beta_lower"] = (beta["beta"] - z * beta["se"]) if beta.get("se") else None
+    out["beta"], out["beta_se_ols"] = beta.get("beta"), beta.get("se")
+    out["beta_lower"] = beta_lower_block(c, level, reps, seed)
+    if base is not None:
+        b = base[base["game_id"].isin(set(c["game_id"]))]
+        out["vs_base"] = summarize(paired_delta(b[cols], c[cols]), level, reps, seed, m_tests)
     return out
 
 
@@ -159,13 +183,19 @@ def run(bundles: list, lines: pd.DataFrame, extras: Dict[str, object], reps: int
     df = build_feature_table(bundles, CONFIG)
     meta = df[["game_id", "season", "season_type"]]
     tables = {t: target_table(df, lines, t) for t in ("margin", "total")}
+    base_pred = {t: predictions(tables[t], base_features(t)) for t in ("margin", "total")}
     out = {"search_space_declared": m_tests, "explore": EXPLORE, "validate": VALIDATE, "fdr_q": FDR_Q,
            "ridge_alpha": ALPHA_RIDGE, "not_run": fam.REGISTERED_NOT_RUN,
-           "cumulative_steps": "not implemented in this round; the declared search space still counts them "
-                               "(9 of 36), so the BH threshold is conservative",
+           "units": "mean, lo, hi, mde_*: change in mean absolute error in points (negative = better); "
+                    "'vs line' at the top level, the family's increment over the base features in 'vs_base'",
+           "selection": "BH on the vs_base p-values; candidates also need vs_base and vs-line means <= -0.02",
+           "cumulative_steps": f"not implemented in this round; the declared search space still counts them "
+                               f"(9 of {m_tests}), so the BH threshold is conservative",
+           "not_evaluated": ["success criterion 4: mean betting edge >= 0.75 pts (2.24 for the Taiwan lottery) "
+                             "is not computed here; 'passed_validation' means criteria 1-3 and the controls only"],
            # the base features alone against the line: the reference every family is added to
-           "base_reference": {t: evaluate(predictions(tables[t], base_features(t)), meta, EXPLORE, 1 - ALPHA,
-                                          reps, seed, m_tests) for t in ("margin", "total")},
+           "base_reference": {t: evaluate(base_pred[t], meta, EXPLORE, 1 - ALPHA, reps, seed, m_tests)
+                              for t in ("margin", "total")},
            "hypotheses": {}}
     built: Dict[str, pd.DataFrame] = {}
     for entry in registry:
@@ -177,19 +207,21 @@ def run(bundles: list, lines: pd.DataFrame, extras: Dict[str, object], reps: int
             t = tables[entry["target"]].merge(fdf, on="game_id", how="left").fillna({c: 0.0 for c in cols})
             cand = predictions(t, base_features(entry["target"]) + cols)
             built[hid] = (entry, t, cols, cand)
-            res = evaluate(cand, meta, EXPLORE, 1 - ALPHA, reps, seed, m_tests)
+            res = evaluate(cand, meta, EXPLORE, 1 - ALPHA, reps, seed, m_tests, base_pred[entry["target"]])
             res.update({"family": entry["family"], "variant": variant, "target": entry["target"]})
             if entry.get("caveat"):
                 res["caveat"] = entry["caveat"]
             out["hypotheses"][hid] = {"explore": res}
-    pvals = {h: v["explore"].get("p_one_sided", 1.0) for h, v in out["hypotheses"].items()
+    pvals = {h: v["explore"]["vs_base"]["p_one_sided"] for h, v in out["hypotheses"].items()
              if not v["explore"].get("too_small")}
     picked = benjamini_hochberg(pvals, FDR_Q, m_tests)
-    candidates = [h for h in picked if out["hypotheses"][h]["explore"]["mean"] <= -MIN_GAIN]
+    candidates = [h for h in picked if out["hypotheses"][h]["explore"]["vs_base"]["mean"] <= -MIN_GAIN
+                  and out["hypotheses"][h]["explore"]["mean"] <= -MIN_GAIN]
     out["bh_picked"], out["candidates"] = picked, candidates
     out["voided"] = any(h.startswith("N_noise") for h in picked)
     if out["voided"]:
-        out["void_reason"] = "the noise family was picked by BH: the false-positive rate is higher than assumed"
+        out["void_reason"] = ("a noise family beat the base features under BH: the false-positive rate is "
+                              "higher than assumed")
         return out
     if candidates:
         k = len(candidates)
@@ -199,12 +231,14 @@ def run(bundles: list, lines: pd.DataFrame, extras: Dict[str, object], reps: int
         out["validate_level"], out["validate_reps"] = vlevel, vreps
         for h in candidates:
             entry, t, cols, cand = built[h]
-            v = evaluate(cand, meta, VALIDATE, vlevel, vreps, seed, k)
+            v = evaluate(cand, meta, VALIDATE, vlevel, vreps, seed, k, base_pred[entry["target"]])
+            vb = v.get("vs_base", {})
             v["passes"] = bool(not v.get("too_small") and v["hi"] < 0 and v["mean"] <= -MIN_GAIN
-                               and (v.get("beta_lower") or -1) > 0 and v["share_seasons_negative"] >= SEASON_SHARE - 1e-9)
+                               and (v.get("beta_lower") or -1) > 0 and v["share_seasons_negative"] >= SEASON_SHARE - 1e-9
+                               and vb.get("hi", 1) < 0 and vb.get("mean", 1) <= -MIN_GAIN)
             if v["passes"] and n_shuffles:
                 v["controls"] = controls(t, cols, entry["target"], meta, v["mean"], n_shuffles, seed)
-                v["passes"] = v["controls"]["true_beats_every_shuffle"] and v["controls"]["shift_does_not_help"]
+                v["passes"] = bool(v["controls"]["true_beats_every_shuffle"])
             out["hypotheses"][h]["validate"] = v
     out["passed_validation"] = [h for h, v in out["hypotheses"].items() if v.get("validate", {}).get("passes")]
     return out
@@ -225,23 +259,28 @@ def shift_by_team(t: pd.DataFrame, cols: List[str]) -> pd.DataFrame:
     return out.reset_index(drop=True)
 
 
+def shuffle_within_season(t: pd.DataFrame, cols: List[str], rng: np.random.Generator) -> pd.DataFrame:
+    """The family columns moved, as whole rows, to random other games of the same season; the base features
+    and the residual stay put, so only the family's information is destroyed."""
+    s = t.copy()
+    for _, idx in s.groupby("season").groups.items():
+        s.loc[idx, cols] = s.loc[rng.permutation(np.asarray(idx)), cols].to_numpy()
+    return s
+
+
 def controls(t: pd.DataFrame, cols: List[str], target: str, meta: pd.DataFrame, true_mean: float,
              n_shuffles: int, seed: int) -> dict:
-    """Shuffle the residual within season (n times) and shift the family columns to each home team's next game."""
+    """Shuffle the family columns within season (n times; the veto) and, report only, move them to each
+    home team's next game (a real signal may partly survive that, and it does not detect leakage)."""
     feats = base_features(target) + cols
     means = []
     for i in range(n_shuffles):
-        rng = np.random.default_rng(seed + 1000 + i)
-        s = t.copy()
-        s["resid"] = s.groupby("season")["resid"].transform(lambda x: pd.Series(rng.permutation(x.to_numpy()), index=x.index))
-        c = predictions(s, feats)
-        c["mu"] = c["line_mu"] + c["r_hat"]                       # scored against the true result
-        means.append(evaluate(c, meta, VALIDATE, 0.99, 100, seed, 1).get("mean"))
+        s = shuffle_within_season(t, cols, np.random.default_rng(seed + 1000 + i))
+        means.append(evaluate(predictions(s, feats), meta, VALIDATE, 0.99, 100, seed, 1).get("mean"))
     shift_mean = evaluate(predictions(shift_by_team(t, cols), feats), meta, VALIDATE, 0.99, 100, seed, 1).get("mean")
     means = [m for m in means if m is not None]
-    return {"shuffle_means": means, "shift_mean": shift_mean,
-            "true_beats_every_shuffle": bool(means) and true_mean < min(means),
-            "shift_does_not_help": shift_mean is None or shift_mean >= true_mean}
+    return {"shuffle_means": means, "shift_mean_report_only": shift_mean,
+            "true_beats_every_shuffle": bool(means) and true_mean < min(means)}
 
 
 def main(argv: Optional[List[str]] = None) -> int:

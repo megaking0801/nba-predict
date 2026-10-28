@@ -13,17 +13,22 @@ from jobs import family_search as fs
 from tests.test_features_point_in_time import make_bundles
 
 
-def _blank_from(bundles, i):
+def _blank_from(bundles, extras, i):
     """Same schedule, but game i, every other game on its date, and every later game have no result,
-    box score, player stats or score. A family's row for game i must not change."""
+    box score, player stats, score, shot buckets or total line. A family's row for game i must not change."""
     out = copy.deepcopy(bundles)
     day = out[i]["date"]
+    gone = set()
     for b in out:
         if b["date"] >= day:
+            gone.add(b["game_id"])
             b["margin"] = None
             b["home_score"] = b["away_score"] = None
             b["team_stats"], b["player_stats"] = {}, []
-    return out
+    ex = dict(extras)
+    ex["buckets"] = extras["buckets"][~extras["buckets"]["game_id"].isin(gone)]
+    ex["total_lines"] = {g: v for g, v in extras["total_lines"].items() if g not in gone}
+    return out, ex
 
 
 def _buckets(bundles):
@@ -48,17 +53,17 @@ def _world(n=80, seed=3):
         b["home_score"] = 100 + (b["margin"] or 0)
         b["away_score"] = 100
     extras = {"buckets": _buckets(bundles), "officials": _officials(bundles),
-              "total_lines": {b["game_id"]: 220.0 for b in bundles}}
+              "total_lines": {b["game_id"]: 210.0 + (k % 7) * 3 for k, b in enumerate(bundles)}}
     return bundles, extras
 
 
 def _pit_mismatches(build, variant, needs, bundles, extras, at=(5, 21, 40, 61, 79)):
     """Indices whose row changes when that game, its date and everything later are blanked."""
-    kw = {k: extras[k] for k in needs}
-    full = build(bundles, variant, **kw).set_index("game_id")
+    full = build(bundles, variant, **{k: extras[k] for k in needs}).set_index("game_id")
     bad = []
     for i in at:
-        part = build(_blank_from(bundles, i), variant, **kw).set_index("game_id")
+        part_b, part_x = _blank_from(bundles, extras, i)
+        part = build(part_b, variant, **{k: part_x[k] for k in needs}).set_index("game_id")
         gid = bundles[i]["game_id"]
         if not full.loc[gid].equals(part.loc[gid]):
             bad.append(i)
@@ -133,13 +138,33 @@ def test_shots_skip_games_whose_buckets_do_not_match_the_box():
 def test_player_rotation_only_counts_players_from_the_last_five_games():
     bundles, _ = _world(60, 7)
     team = bundles[0]["home_abbr"]
-    for b in bundles[:4]:                                           # a star plays early, then leaves
-        for p in b["player_stats"]:
-            if p["team_abbr"] == team:
-                p["min_played"], p["pts"], p["fga"], p["fta"] = 40.0, 60.0, 20.0, 0.0
-                break
-    out = fam.family_player_eff(bundles, {"lam": 0.3}).set_index("game_id")
-    assert out.notna().all().all()
+    with_star = copy.deepcopy(bundles)
+    team_games = [b for b in with_star if team in (b["home_abbr"], b["away_abbr"])]
+    for b in team_games[:3]:                                        # a star plays the team's first 3 games, then leaves
+        b["player_stats"].append({"player_id": 999999, "team_abbr": team, "min_played": 40.0, "pts": 60.0,
+                                  "fga": 20.0, "fta": 0.0, "tov": 1.0})
+    a = fam.family_player_eff(bundles, {"lam": 0.3}).set_index("game_id")
+    b = fam.family_player_eff(with_star, {"lam": 0.3}).set_index("game_id")
+    later = [g["game_id"] for g in team_games[3 + 5 + 1:]]         # 5 team games after he left, plus a day's buffer
+    assert later and a.loc[later].equals(b.loc[later])
+    assert not a.loc[team_games[2]["game_id"]].equals(b.loc[team_games[2]["game_id"]]) or \
+        not a.loc[team_games[3]["game_id"]].equals(b.loc[team_games[3]["game_id"]])
+
+
+def test_motivation_does_not_learn_the_season_length_from_later_games():
+    bundles, _ = _world()
+    for left in (10, 20, 30, 999):
+        full = fam.family_motivation(bundles, {"left": left}).set_index("game_id")
+        for i in (10, 41, 70):
+            cut = [b for b in bundles if b["date"] <= bundles[i]["date"]]   # the season "ends" early
+            part = fam.family_motivation(cut, {"left": left}).set_index("game_id")
+            assert full.loc[bundles[i]["game_id"]].equals(part.loc[bundles[i]["game_id"]]), (left, i)
+
+
+def test_season_length_is_known_in_advance():
+    assert fam.season_length("2024-25", dt.date(2025, 1, 1), [])["BOS"] == 82
+    assert fam.season_length("2020-21", dt.date(2021, 1, 1), [])["BOS"] == 72
+    assert fam.season_length("2019-20", dt.date(2020, 2, 1), [])["BOS"] == 82      # before the stop
 
 
 def test_motivation_is_zero_when_many_games_are_left():
@@ -158,9 +183,10 @@ def test_noise_is_deterministic_and_order_free():
 
 def test_registry_is_frozen_and_declares_the_search_space():
     assert [e["family"] for e in fam.REGISTRY] == ["F1_srs", "F2_player_eff", "F3_rotation", "F4_shots",
-                                                    "F5_motivation", "F7_refs_total", "N_noise"]
+                                                    "F5_motivation", "F7_refs_total", "N_noise", "N_noise_total"]
     assert all(len(e["variants"]) == 3 for e in fam.REGISTRY)
-    assert fam.SEARCH_SPACE == 36
+    assert {e["target"] for e in fam.REGISTRY if e["family"].startswith("N_noise")} == {"margin", "total"}
+    assert fam.SEARCH_SPACE == 42
     assert {x["family"] for x in fam.REGISTERED_NOT_RUN} == {"F6_rapm", "F8_line_move", "F9_availability"}
     refs = next(e for e in fam.REGISTRY if e["family"] == "F7_refs_total")
     assert refs["target"] == "total" and "oracle" in refs["caveat"]
@@ -206,6 +232,29 @@ def test_evaluate_scores_against_the_line_and_reports_power_mde():
     assert fs.evaluate(cand, meta, ("2022-23", "2024-25"), 0.99, 200, 1, 36)["too_small"] is True
 
 
+def test_evaluate_reports_the_increment_over_the_base_features():
+    base, meta = _scored(signal=0.5)
+    same = fs.evaluate(base, meta, ("2015-16", "2021-22"), 0.99, 200, 1, 36, base=base)
+    assert same["mean"] < -1 and same["vs_base"]["mean"] == 0          # beats the line, adds nothing to the base
+    better = _scored(signal=0.7)[0]
+    more = fs.evaluate(better, meta, ("2015-16", "2021-22"), 0.99, 200, 1, 36, base=base)
+    assert more["vs_base"]["mean"] < 0 and more["vs_base"]["p_one_sided"] < 0.01
+
+
+def test_block_bootstrap_beta_has_no_lower_bound_above_zero_without_signal():
+    cand, _ = _scored(n=2000, signal=0.0, seed=5)
+    cand["mu"] = cand["line_mu"] + np.random.default_rng(1).normal(0, 1, len(cand))   # noise forecast
+    assert fs.beta_lower_block(cand, 0.99, 500, 0) < 0
+
+
+def test_shuffle_moves_only_the_family_columns_within_a_season():
+    t = pd.DataFrame({"season": ["a"] * 4 + ["b"] * 4, "x": [1.0, 2, 3, 4, 10, 20, 30, 40],
+                      "resid": range(8), "base": range(8)})
+    s = fs.shuffle_within_season(t, ["x"], np.random.default_rng(0))
+    assert sorted(s["x"][:4]) == [1, 2, 3, 4] and sorted(s["x"][4:]) == [10, 20, 30, 40]
+    assert list(s["resid"]) == list(range(8)) and list(s["base"]) == list(range(8))
+
+
 def test_null_p_value_is_not_small():
     rng = np.random.default_rng(3)
     d = pd.DataFrame({"date": [dt.date(2020, 1, 1) + dt.timedelta(days=i // 5) for i in range(4000)],
@@ -235,13 +284,17 @@ def test_benjamini_hochberg():
 
 def _stub_run(monkeypatch, winners, calls):
     """Stub the expensive parts; record every evaluate call (hypothesis, seasons, level, m)."""
-    def fake_eval(cand, meta, seasons, level, reps, seed, m_tests):
-        hid = cand.attrs.get("hid", "base")
+    def fake_eval(cand, meta, seasons, level, reps, seed, m_tests, base=None):
+        hid = cand.attrs.get("hid") or "base"
         calls.append((hid, seasons, level, m_tests))
         good = hid in winners
-        return {"n": 3000, "mean": -0.05 if good else 0.0, "lo": -0.08 if good else -0.03,
-                "hi": -0.02 if good else 0.03, "p_one_sided": 1e-6 if good else 0.6, "half_width": 0.03,
-                "share_seasons_negative": 1.0 if good else 0.4, "beta_lower": 0.2 if good else -0.1}
+        res = {"n": 3000, "mean": -0.05 if good else 0.0, "lo": -0.08 if good else -0.03,
+               "hi": -0.02 if good else 0.03, "p_one_sided": 1e-6 if good else 0.6, "half_width": 0.03,
+               "share_seasons_negative": 1.0 if good else 0.4, "beta_lower": 0.2 if good else -0.1}
+        if base is not None:
+            res["vs_base"] = {"mean": -0.04 if good else 0.0, "hi": -0.01 if good else 0.02,
+                              "p_one_sided": 1e-6 if good else 0.5}
+        return res
     monkeypatch.setattr(fs, "evaluate", fake_eval)
     monkeypatch.setattr(fs, "build_feature_table", lambda bundles, cfg: pd.DataFrame(
         {"game_id": ["g"], "season": ["2016-17"], "season_type": ["regular"], "margin": [1.0], "total": [200.0],
@@ -254,7 +307,7 @@ def _stub_run(monkeypatch, winners, calls):
     fake_pred.current = None
     monkeypatch.setattr(fs, "predictions", fake_pred)
     monkeypatch.setattr(fs, "controls", lambda *a, **k: calls.append(("controls",)) or
-                        {"true_beats_every_shuffle": True, "shift_does_not_help": True})
+                        {"true_beats_every_shuffle": True})
     reg = []
     for e in fam.REGISTRY:
         e2 = dict(e)
@@ -280,6 +333,28 @@ def test_a_picked_noise_family_voids_the_round(monkeypatch):
     assert not any(c[1] == fs.VALIDATE for c in calls if len(c) > 1)
 
 
+def test_the_total_noise_family_also_voids_the_round(monkeypatch):
+    calls = []
+    reg = _stub_run(monkeypatch, {"N_noise_total/v2"}, calls)
+    assert fs.run([], LINES, {}, registry=reg, n_shuffles=0)["voided"] is True
+
+
+def test_selection_uses_the_increment_over_the_base(monkeypatch):
+    """A family whose vs-line numbers look great but adds nothing over the base is not a candidate."""
+    calls = []
+    reg = _stub_run(monkeypatch, {"F7_refs_total/v1"}, calls)
+    real_eval = fs.evaluate
+
+    def no_increment(*a, **k):
+        res = real_eval(*a, **k)
+        if "vs_base" in res:
+            res["vs_base"] = {"mean": 0.0, "hi": 0.02, "p_one_sided": 0.5}
+        return res
+    monkeypatch.setattr(fs, "evaluate", no_increment)
+    out = fs.run([], LINES, {}, registry=reg, n_shuffles=0)
+    assert out["bh_picked"] == [] and out["candidates"] == [] and out["passed_validation"] == []
+
+
 def test_each_candidate_is_validated_exactly_once_at_the_bonferroni_level(monkeypatch):
     calls = []
     reg = _stub_run(monkeypatch, {"F1_srs/v2", "F3_rotation/v1"}, calls)
@@ -290,5 +365,8 @@ def test_each_candidate_is_validated_exactly_once_at_the_bonferroni_level(monkey
     assert all(c[2] == pytest.approx(1 - 0.01 / 2) and c[3] == 2 for c in val)
     assert calls.count(("controls",)) == 2
     assert all(c[1] in (fs.EXPLORE, fs.VALIDATE) for c in calls if len(c) > 1)     # never the confirmation seasons
-    assert out["search_space_declared"] == 36 and len(out["not_run"]) == 3
-    assert "base_reference" in out and "cumulative_steps" in out
+    assert out["search_space_declared"] == 42 and len(out["not_run"]) == 3
+    assert "base_reference" in out and "cumulative_steps" in out and out["not_evaluated"]
+    assert set(out["passed_validation"]) == {"F1_srs/v2", "F3_rotation/v1"}
+    explore = [c for c in calls if len(c) > 1 and c[1] == fs.EXPLORE and c[0] != "base"]
+    assert len(explore) == 24 and all(c[3] == 42 for c in explore)

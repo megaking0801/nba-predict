@@ -8,6 +8,7 @@ keyed by game_id with its columns; missing state means 0 (the ridge model sees "
 """
 from __future__ import annotations
 
+import datetime as dt
 import math
 import zlib
 from collections import defaultdict, deque
@@ -213,24 +214,46 @@ def family_shots(bundles: List[dict], variant: dict, buckets: Optional[pd.DataFr
 
 # ----- F5: motivation (standings late in the regular season) -----
 
+def season_length(season: str, day, games: List[dict]) -> Dict[str, int]:
+    """Regular-season games per team as known on that day (never from how the season actually ended):
+    82, 72 in 2020-21; 2019-20 was 82 until the March 2020 stop, then each team's restart schedule
+    (published in June 2020) is what it actually played."""
+    if season == "2020-21":
+        return defaultdict(lambda: 72)
+    if season == "2019-20" and day >= RESTART_2020:
+        played = defaultdict(int)
+        for b in games:
+            if b["season"] == season and b["season_type"] == "regular":
+                played[b["home_abbr"]] += 1
+                played[b["away_abbr"]] += 1
+        return played
+    return defaultdict(lambda: 82)
+
+
+RESTART_2020 = dt.date(2020, 7, 1)
+
+
 def family_motivation(bundles: List[dict], variant: dict) -> pd.DataFrame:
     """Games behind the 10th place of the team's conference, and eliminated / top-6-clinched flags, only
-    when a team has at most N regular-season games left (otherwise 0)."""
+    when a team has at most N regular-season games left (otherwise 0). Games left = the season length known
+    that day (season_length) minus games played, so a shortened season is not known in advance."""
     left_max = variant["left"]
     games = _ordered(bundles)
-    scheduled = defaultdict(int)
-    for b in games:
-        if b["season_type"] == "regular":
-            scheduled[(b["season"], b["home_abbr"])] += 1
-            scheduled[(b["season"], b["away_abbr"])] += 1
     w, gp = defaultdict(int), defaultdict(int)
+    lengths: Dict[tuple, Dict[str, int]] = {}
 
-    def team_vals(season, team):
-        left = scheduled[(season, team)] - gp[(season, team)]
+    def scheduled(season, team, day):
+        key = (season, day >= RESTART_2020 if season == "2019-20" else False)
+        if key not in lengths:
+            lengths[key] = season_length(season, day, games)
+        return lengths[key][team]
+
+    def team_vals(season, team, day):
+        left = scheduled(season, team, day) - gp[(season, team)]
         if left > left_max:
             return 0.0, 0.0, 0.0
         conf = TEAMS[team][3]
-        table = sorted(((w[(season, t)], scheduled[(season, t)] - gp[(season, t)]) for t in TEAMS
+        table = sorted(((w[(season, t)], scheduled(season, t, day) - gp[(season, t)]) for t in TEAMS
                         if TEAMS[t][3] == conf), key=lambda x: -x[0])
         mine = w[(season, team)]
         tenth_w = table[9][0] if len(table) >= 10 else 0
@@ -244,8 +267,8 @@ def family_motivation(bundles: List[dict], variant: dict) -> pd.DataFrame:
         if b["season_type"] != "regular":
             return {"gb10_diff": 0.0, "eliminated_home": 0.0, "eliminated_away": 0.0,
                     "clinched_home": 0.0, "clinched_away": 0.0}
-        gh, eh, ch = team_vals(b["season"], b["home_abbr"])
-        ga, ea, ca = team_vals(b["season"], b["away_abbr"])
+        gh, eh, ch = team_vals(b["season"], b["home_abbr"], b["date"])
+        ga, ea, ca = team_vals(b["season"], b["away_abbr"], b["date"])
         return {"gb10_diff": gh - ga, "eliminated_home": eh, "eliminated_away": ea,
                 "clinched_home": ch, "clinched_away": ca}
 
@@ -316,6 +339,8 @@ REGISTRY = [
      "variants": [{"k": 10}, {"k": 30}, {"k": 100}], "caveat": "possible oracle: announcement time unverified"},
     {"family": "N_noise", "target": "margin", "build": family_noise, "needs": [],
      "variants": [{"seed": 1}, {"seed": 2}, {"seed": 3}]},
+    {"family": "N_noise_total", "target": "total", "build": family_noise, "needs": [],
+     "variants": [{"seed": 4}, {"seed": 5}, {"seed": 6}]},
 ]
 REGISTERED_NOT_RUN = [
     {"family": "F6_rapm", "reason": "needs play-by-play (not stored); external files end in 2024-25, so at most "
@@ -324,4 +349,5 @@ REGISTERED_NOT_RUN = [
     {"family": "F9_availability", "reason": "registered only: official report history from 2021-22 (unverified), "
                                             "own injury_reports from 2026-10-24; run after one full season"},
 ]
-SEARCH_SPACE = 9 * 3 + 9          # families x variants + cumulative steps (declared upper bound)
+# declared upper bound: 9 families x 3 variants, 9 cumulative steps, 2 noise families x 3 variants
+SEARCH_SPACE = 9 * 3 + 9 + 2 * 3
