@@ -67,10 +67,6 @@ header[data-testid="stHeader"] { background: transparent; }
                  border: 2px solid var(--text); box-sizing: border-box; z-index: 1; }
 .nb-prob.big .nb-mid { height: 12px; border-radius: 6px; }
 .nb-prob.big .nb-mid::after { width: 16px; height: 16px; }
-/* v1 markup, kept until the layout commit replaces it */
-.nb-split { flex: 1; display: flex; height: 8px; border-radius: 4px; overflow: hidden; background: var(--hair); min-width: 48px; }
-.nb-split i { display: block; height: 100%; background: var(--hair-strong); }
-.nb-split i.fav { background: var(--fill); }
 
 /* ---- section heads ---- */
 .nb-sechead { display: flex; align-items: baseline; justify-content: space-between; flex-wrap: wrap; gap: 4px 12px;

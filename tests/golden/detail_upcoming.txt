@@ -67,10 +67,6 @@ header[data-testid="stHeader"] { background: transparent; }
                  border: 2px solid var(--text); box-sizing: border-box; z-index: 1; }
 .nb-prob.big .nb-mid { height: 12px; border-radius: 6px; }
 .nb-prob.big .nb-mid::after { width: 16px; height: 16px; }
-/* v1 markup, kept until the layout commit replaces it */
-.nb-split { flex: 1; display: flex; height: 8px; border-radius: 4px; overflow: hidden; background: var(--hair); min-width: 48px; }
-.nb-split i { display: block; height: 100%; background: var(--hair-strong); }
-.nb-split i.fav { background: var(--fill); }
 
 /* ---- section heads ---- */
 .nb-sechead { display: flex; align-items: baseline; justify-content: space-between; flex-wrap: wrap; gap: 4px 12px;
@@ -181,11 +177,11 @@ table.ntable tbody td { padding: 6px 0; border-top: 1px solid var(--hair); text-
 <!--chunk-->
 markdown:<a class="nb-back" href="?" target="_self">返回今天的賽程</a><div class="nb-topbar"><div class="nb-brand">NBA 勝負預測</div><div class="nb-badge"><b class="led">66%</b><span>時間外猜中率</span></div></div>
 <!--chunk-->
-markdown:<div class="nb-detailhead"><div class="nb-mbig"><div class="nb-tb"><div class="abbr">GSW</div><div class="name">勇士<span class="nb-ha away">客</span></div></div><span class="nb-at">＠</span><div class="nb-tb fav"><div class="abbr">LAL</div><div class="name">湖人<span class="nb-ha home">主</span></div></div></div><div class="when">10/25 07:30（台北時間），尚未開賽</div></div>
+markdown:<div class="nb-detailhead"><div class="nb-mbig"><div class="nb-tb"><div class="abbr">GSW</div><div class="name">勇士<span class="nb-ha away">客</span></div></div><span class="nb-at">＠</span><div class="nb-tb fav"><div class="abbr">LAL</div><div class="name">湖人<span class="nb-ha home">主</span></div></div></div><div class="nb-prob big"><span class="nb-pct">34%</span><span class="nb-mid" aria-hidden="true"><i class="fill h" style="width:16%"></i></span><span class="nb-pct fav">66%</span></div><div class="when">10/25 07:30（台北時間），尚未開賽</div></div>
 <!--chunk-->
 markdown:<div class="nb-sechead" style="margin-top:30px;"><h2>玩法預測</h2><span class="sub">勝負、受讓分、大小分</span></div>
 <!--chunk-->
-markdown:<div class="nb-bets"><div class="nb-bet"><h4>勝負 <span>Moneyline</span></h4><div class="nb-prob big"><span class="nb-pct">34%</span><span class="nb-split" aria-hidden="true"><i class="a" style="width:34%"></i><i class="h fav" style="width:66%"></i></span><span class="nb-pct fav">66%</span></div><div class="verdict">勝率較高：<b>湖人</b>（主）</div></div><div class="nb-bet"><h4>受讓分 <span>Spread</span></h4><div class="line">客 GSW +3.5　／　主 LAL -3.5　·　<b>ESPN</b> 盤口</div><div class="line">模型估計分差 <b>主 +4.1</b>　·　比盤口多給主隊 0.6 分</div><div class="nb-caveat">⚠ 本站不提供過盤機率或下注推薦：11 個完整球季的時間外驗證中，模型的分差誤差比盤口大約 0.36 分，沒有任何一季比盤口準，過盤機率也沒有可用的資訊。</div></div><div class="nb-bet"><h4>大小分 <span>O/U</span></h4><div class="line">盤口總分 <b>228.5</b>　·　<b>ESPN</b></div><div class="nb-totline"><span class="led big">231</span><span class="vs">模型估總分</span><span class="nb-lean over">偏大 +2.7</span></div><div class="nb-caveat">⚠ 本卡以「模型估總分」為主。破大／破小方向時間外命中率僅約 <b>48%</b>，盤口效率高、難穩定贏盤，方向僅供參考。</div></div></div>
+markdown:<div class="nb-bets"><div class="nb-bet"><h4>勝負 <span>Moneyline</span></h4><div class="verdict">勝率較高：<b>湖人</b>（主）</div></div><div class="nb-bet"><h4>受讓分 <span>Spread</span></h4><div class="line">客 GSW +3.5　／　主 LAL -3.5　·　<b>ESPN</b> 盤口</div><div class="line">模型估計分差 <b>主 +4.1</b>　·　比盤口多給主隊 0.6 分</div><div class="nb-caveat">⚠ 本站不提供過盤機率或下注推薦：11 個完整球季的時間外驗證中，模型的分差誤差比盤口大約 0.36 分，沒有任何一季比盤口準，過盤機率也沒有可用的資訊。</div></div><div class="nb-bet"><h4>大小分 <span>O/U</span></h4><div class="line">盤口總分 <b>228.5</b>　·　<b>ESPN</b></div><div class="nb-totline"><span class="led big">231</span><span class="vs">模型估總分</span><span class="nb-lean over">偏大 +2.7</span></div><div class="nb-caveat">⚠ 本卡以「模型估總分」為主。破大／破小方向時間外命中率僅約 <b>48%</b>，盤口效率高、難穩定贏盤，方向僅供參考。</div></div></div>
 <!--chunk-->
 markdown:<div class="nb-sechead" style="margin-top:36px;"><h2>傷病名單</h2><span class="sub">最新回報（≤ 該場日期）</span></div>
 <!--chunk-->

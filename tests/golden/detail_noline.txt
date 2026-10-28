@@ -67,10 +67,6 @@ header[data-testid="stHeader"] { background: transparent; }
                  border: 2px solid var(--text); box-sizing: border-box; z-index: 1; }
 .nb-prob.big .nb-mid { height: 12px; border-radius: 6px; }
 .nb-prob.big .nb-mid::after { width: 16px; height: 16px; }
-/* v1 markup, kept until the layout commit replaces it */
-.nb-split { flex: 1; display: flex; height: 8px; border-radius: 4px; overflow: hidden; background: var(--hair); min-width: 48px; }
-.nb-split i { display: block; height: 100%; background: var(--hair-strong); }
-.nb-split i.fav { background: var(--fill); }
 
 /* ---- section heads ---- */
 .nb-sechead { display: flex; align-items: baseline; justify-content: space-between; flex-wrap: wrap; gap: 4px 12px;
@@ -181,11 +177,11 @@ table.ntable tbody td { padding: 6px 0; border-top: 1px solid var(--hair); text-
 <!--chunk-->
 markdown:<a class="nb-back" href="?" target="_self">返回今天的賽程</a><div class="nb-topbar"><div class="nb-brand">NBA 勝負預測</div><div class="nb-badge"><b class="led">66%</b><span>時間外猜中率</span></div></div>
 <!--chunk-->
-markdown:<div class="nb-detailhead"><div class="nb-mbig"><div class="nb-tb fav"><div class="abbr">PHX</div><div class="name">太陽<span class="nb-ha away">客</span></div></div><span class="nb-at">＠</span><div class="nb-tb"><div class="abbr">DEN</div><div class="name">金塊<span class="nb-ha home">主</span></div></div></div><div class="when">10/23 07:00（台北時間），終場</div></div>
+markdown:<div class="nb-detailhead"><div class="nb-mbig"><div class="nb-tb fav"><div class="abbr">PHX</div><div class="name">太陽<span class="nb-ha away">客</span></div></div><span class="nb-at">＠</span><div class="nb-tb"><div class="abbr">DEN</div><div class="name">金塊<span class="nb-ha home">主</span></div></div></div><div class="nb-prob big"><span class="nb-pct fav">54%</span><span class="nb-mid" aria-hidden="true"><i class="fill a" style="width:4%"></i></span><span class="nb-pct">46%</span></div><div class="when">10/23 07:00（台北時間），終場</div></div>
 <!--chunk-->
 markdown:<div class="nb-sechead" style="margin-top:30px;"><h2>玩法預測</h2><span class="sub">勝負、受讓分、大小分</span></div>
 <!--chunk-->
-markdown:<div class="nb-bets"><div class="nb-bet"><h4>勝負 <span>Moneyline</span></h4><div class="nb-prob big"><span class="nb-pct fav">54%</span><span class="nb-split" aria-hidden="true"><i class="a fav" style="width:54%"></i><i class="h" style="width:46%"></i></span><span class="nb-pct">46%</span></div><div class="verdict">勝率較高：<b>太陽</b>（客）</div></div><div class="nb-bet"><h4>受讓分 <span>Spread</span></h4><div class="empty">這場沒有盤口資料。</div></div><div class="nb-bet disabled"><h4>大小分 <span>O/U</span></h4><div class="soon">本季開賽後顯示——模型估總分、盤口線與大小分傾向。</div></div></div>
+markdown:<div class="nb-bets"><div class="nb-bet"><h4>勝負 <span>Moneyline</span></h4><div class="verdict">勝率較高：<b>太陽</b>（客）</div></div><div class="nb-bet"><h4>受讓分 <span>Spread</span></h4><div class="empty">這場沒有盤口資料。</div></div><div class="nb-bet disabled"><h4>大小分 <span>O/U</span></h4><div class="soon">本季開賽後顯示——模型估總分、盤口線與大小分傾向。</div></div></div>
 <!--chunk-->
 markdown:<div class="nb-sechead" style="margin-top:36px;"><h2>傷病名單</h2><span class="sub">最新回報（≤ 該場日期）</span></div>
 <!--chunk-->

@@ -414,3 +414,36 @@ def test_honesty_copy_is_still_there():
     assert "僅供球迷參考與娛樂，非投注建議" in render.DISCLAIMER_HTML
     assert "高命中率不等於能獲利" in render.DISCLAIMER_HTML
     assert "不是穩賺明牌" in "".join(render.record_chunks({"rec_n": 0}, 0.65))
+
+
+# ---------- site v2: centre-line probability bar ----------
+
+def test_centre_line_fill_grows_toward_the_favourite_by_the_distance_from_fifty():
+    home = render.prob_bar(_game(p_home_win=0.66))
+    assert '<i class="fill h" style="width:16%"></i>' in home
+    away = render.prob_bar(_game(p_home_win=0.20))
+    assert '<i class="fill a" style="width:30%"></i>' in away
+    assert '<span class="nb-pct fav">80%</span>' in away
+
+
+def test_coin_flip_has_no_fill_but_still_shows_both_numbers():
+    html = render.prob_bar(_game(p_home_win=0.50))
+    assert "fill" not in html and html.count("50%") == 2 and "fav" not in html
+    near = render.prob_bar(_game(p_home_win=0.51))
+    assert 'style="width:1%"' in near                     # tiny fill; the centre ring is drawn by CSS on top
+
+
+def test_bar_is_hidden_from_screen_readers_and_the_row_has_a_text_label():
+    row = render.game_card_html(_game(p_home_win=0.66))
+    assert 'class="nb-mid" aria-hidden="true"' in row
+    assert 'aria-label="勇士（客）34%，湖人（主）66%，' in row
+    fin = render.game_card_html(_game(p_home_win=0.66, status="final", win_result=0, home_score=99, away_score=101))
+    assert "101 比 99，勝率較高的一方輸了" in fin
+
+
+def test_detail_head_carries_the_bar_and_the_moneyline_card_keeps_its_sentence():
+    chunks = render.detail_chunks(_game(p_home_win=0.66), {}, _inj_df("a"), _inj_df("b"),
+                                  pd.DataFrame(), pd.DataFrame(), 0.6)
+    head = next(c for c in chunks if "nb-detailhead" in c)
+    bets = next(c for c in chunks if "nb-bets" in c)
+    assert "nb-mid" in head and "nb-mid" not in bets and "勝率較高：" in bets

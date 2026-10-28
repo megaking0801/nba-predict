@@ -116,10 +116,6 @@ header[data-testid="stHeader"] { background: transparent; }
                  border: 2px solid var(--text); box-sizing: border-box; z-index: 1; }
 .nb-prob.big .nb-mid { height: 12px; border-radius: 6px; }
 .nb-prob.big .nb-mid::after { width: 16px; height: 16px; }
-/* v1 markup, kept until the layout commit replaces it */
-.nb-split { flex: 1; display: flex; height: 8px; border-radius: 4px; overflow: hidden; background: var(--hair); min-width: 48px; }
-.nb-split i { display: block; height: 100%; background: var(--hair-strong); }
-.nb-split i.fav { background: var(--fill); }
 
 /* ---- section heads ---- */
 .nb-sechead { display: flex; align-items: baseline; justify-content: space-between; flex-wrap: wrap; gap: 4px 12px;
@@ -316,21 +312,38 @@ def matchup_block(g, big: bool = False) -> str:
 
 
 def prob_bar(g, big: bool = False) -> str:
-    """Two win probabilities and one thin split bar; the favoured side is the accent colour."""
-    p_home = float(g["p_home_win"])
-    home_fav = p_home >= 0.5
-    home_pct = round(p_home * 100)
+    """Both win probabilities as numbers, and a bar whose fill starts at the centre line (50%) and
+    grows toward the favoured team by how far the game is from a coin flip. The bar is decorative."""
+    home_pct = round(float(g["p_home_win"]) * 100)
     away_pct = 100 - home_pct
-    a_cls, h_cls = ("", " fav") if home_fav else (" fav", "")
+    a_cls, h_cls = ("", " fav") if home_pct > 50 else ((" fav", "") if home_pct < 50 else ("", ""))
+    reach = abs(home_pct - 50)                      # % of the full width; half the track is 50%
+    fill = ""
+    if reach:
+        side = "h" if home_pct > 50 else "a"
+        fill = f'<i class="fill {side}" style="width:{reach}%"></i>'
     size = " big" if big else ""
     return (
         f'<div class="nb-prob{size}">'
         f'<span class="nb-pct{a_cls}">{away_pct}%</span>'
-        f'<span class="nb-split" aria-hidden="true"><i class="a{a_cls}" style="width:{away_pct}%"></i>'
-        f'<i class="h{h_cls}" style="width:{home_pct}%"></i></span>'
+        f'<span class="nb-mid" aria-hidden="true">{fill}</span>'
         f'<span class="nb-pct{h_cls}">{home_pct}%</span>'
         f'</div>'
     )
+
+
+def _row_label(g) -> str:
+    """What a screen reader says for one game row (the visible numbers and bar are hidden from it)."""
+    home_pct = round(float(g["p_home_win"]) * 100)
+    parts = [f'{TEAM_NAME_CH.get(g["away_abbr"], g["away_abbr"])}（客）{100 - home_pct}%',
+             f'{TEAM_NAME_CH.get(g["home_abbr"], g["home_abbr"])}（主）{home_pct}%',
+             fmt_when(g["tipoff_utc"], g["game_date_et"]) + " 台北時間",
+             "終場" if g["status"] == "final" else "尚未開賽"]
+    if g["status"] == "final" and pd.notna(g["win_result"]):
+        home_won = g["win_result"] == 1
+        parts.append(f'{_pts(g["away_score"])} 比 {_pts(g["home_score"])}')
+        parts.append("勝率較高的一方" + ("贏了" if (home_pct >= 50) == home_won else "輸了"))
+    return "，".join(parts)
 
 
 def _pts(v) -> str:
@@ -358,7 +371,7 @@ def game_card_html(g, links: Links = STREAMLIT_LINKS) -> str:
     state = "終場" if g["status"] == "final" else "尚未開賽"
     a_cls, h_cls = ("", " fav") if home_fav else (" fav", "")
     return (
-        f'<a class="nb-row" href="{esc(links.game(g["game_id"]))}" target="_self">'
+        f'<a class="nb-row" href="{esc(links.game(g["game_id"]))}" target="_self" aria-label="{esc(_row_label(g))}">'
         f'<div class="nb-rtop"><span class="nb-when">{fmt_when(g["tipoff_utc"], g["game_date_et"])}</span>'
         f'<span class="nb-state">{state}</span></div>'
         f'<div class="nb-rmain">'
@@ -428,7 +441,6 @@ def _bet_moneyline(g) -> str:
         res = (f'<div class="res"><span class="score">{fmt_team(win_abbr)} 勝</span>{badge}</div>')
     return (
         '<div class="nb-bet"><h4>勝負 <span>Moneyline</span></h4>'
-        f'{prob_bar(g, big=True)}'
         f'<div class="verdict">勝率較高：<b>{fmt_team(fav_abbr)}</b>（{side}）</div>'
         f'{res}</div>'
     )
@@ -587,7 +599,7 @@ def detail_chunks(g: pd.Series, tr: dict, inj_away: pd.DataFrame, inj_home: pd.D
         score = f'，{esc(away)} {int(g["away_score"])} : {int(g["home_score"])} {esc(home)}'
     return [
         topbar_html(acc, back=True, links=links),
-        f'<div class="nb-detailhead">{matchup_block(g, big=True)}'
+        f'<div class="nb-detailhead">{matchup_block(g, big=True)}{prob_bar(g, big=True)}'
         f'<div class="when">{fmt_when(g["tipoff_utc"], gdate)}（台北時間），'
         f'{"終場" if final else "尚未開賽"}{score}</div></div>',
         '<div class="nb-sechead" style="margin-top:30px;"><h2>玩法預測</h2>'
