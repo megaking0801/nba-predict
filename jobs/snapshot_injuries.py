@@ -7,6 +7,7 @@ Run: python -m jobs.snapshot_injuries
 from __future__ import annotations
 
 import datetime as dt
+import re
 import sys
 from typing import List, Optional
 
@@ -38,11 +39,24 @@ VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'espn')
 """
 
 
+_LINK_ID = re.compile(r"/id/(\d+)(?:/|$)")
+
+
 def _player_id(athlete: dict) -> Optional[int]:
+    """ESPN's injuries payload has no athlete.id (the entry's own "id" is the report's, not the
+    player's); the player id only appears in the athlete's links, e.g. .../player/_/id/4397183/name.
+    Same id space as the roster endpoint's athlete id."""
     try:
         return int(athlete.get("id"))
     except (TypeError, ValueError):
-        return None
+        pass
+    links = athlete.get("links") or []
+    # the player card is the canonical link; fall back to any other link carrying /id/<n>/
+    for link in sorted(links, key=lambda l: "playercard" not in (l.get("rel") or [])):
+        m = _LINK_ID.search(str(link.get("href") or ""))
+        if m:
+            return int(m.group(1))
+    return None
 
 
 def _reported_at(raw) -> Optional[dt.datetime]:

@@ -45,6 +45,31 @@ def test_parse_injuries_reads_reported_at():
     assert by_name["Mouhamed Gueye"]["detail"] == "Fracture"
 
 
+def _live_shaped_payload():
+    """Shape of the live ESPN injuries response (2026-10-28): no athlete.id, the entry's own "id" is
+    the report's, and the player id is only in the athlete's links."""
+    link = lambda rel, href: {"rel": rel, "href": href, "text": "x"}      # noqa: E731
+    athlete = {"displayName": "Aaron Wiggins", "links": [
+        link(["stats", "desktop", "athlete"], "https://www.espn.com/nba/player/stats/_/id/4397183/aaron-wiggins"),
+        link(["playercard", "desktop", "athlete"], "https://www.espn.com/nba/player/_/id/4397183/aaron-wiggins"),
+        link(["stats", "sportscenter", "app", "athlete"], "sportscenter://x-callback-url/showClubhouse?uid=s:40~l:46~a:4397183")]}
+    return {"injuries": [{"id": "1", "displayName": "Atlanta Hawks", "injuries": [
+        {"id": "536368", "status": "Day-To-Day", "date": "2026-10-27T21:07Z", "athlete": athlete,
+         "details": {"detail": "Knee"}}]}]}
+
+
+def test_parse_injuries_reads_player_id_from_links_not_the_report_id():
+    rows = snapshot_injuries.parse_injuries(_live_shaped_payload(), TODAY)
+    assert rows[0]["espn_player_id"] == 4397183 != 536368
+
+
+def test_player_id_prefers_athlete_id_and_tolerates_missing_links():
+    assert snapshot_injuries._player_id({"id": "77", "links": []}) == 77
+    assert snapshot_injuries._player_id({"displayName": "x"}) is None
+    assert snapshot_injuries._player_id({"links": [{"rel": ["stats"], "href": "https://e/_/id/12/x"}]}) == 12
+    assert snapshot_injuries._player_id({"links": [{"href": "sportscenter://x?uid=s:40~a:99"}]}) is None
+
+
 def test_parse_injuries_bad_date_does_not_break_batch():
     payload = _load("injuries_sample.json")
     payload["injuries"][0]["injuries"][0]["date"] = "not-a-date"
