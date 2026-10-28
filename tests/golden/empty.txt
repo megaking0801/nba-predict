@@ -2,25 +2,25 @@ markdown:<style>
 /* Digits only (text= subset: 0-9, %, :), about 6 KB; font-display swap; any other glyph and any load
    failure fall back to the system font stack below, which also has tabular figures. */
 @import url('https://fonts.googleapis.com/css2?family=Barlow+Semi+Condensed:wght@600&text=0123456789%25%3A&display=swap');
-/* v3 (2026-10-29): paper and ink; one centre line runs down the whole schedule and every game's fill
-   grows from it toward the favoured team. Colour only in hit/miss words. Mobile first.
+/* v4 (2026-10-29): one narrow column, white paper on a pale grey ground, ink and grey only; the one
+   colour is each team's small chip. Hit/miss words keep their colour. Mobile first.
    Dark tokens live in STATIC_EXTRA_CSS (static site only; the Streamlit shell stays light). */
 :root {
-  --ground: #F4F5F2;          /* paper */
-  --surface: #FFFFFF;
-  --text: #152033;            /* ink */
-  --muted: #59636F;
-  --faint: #59636F;
-  --hair: #DCE1E7;            /* lines and the probability track */
-  --hair-strong: #C5CCD5;
-  --fill: #152033;            /* probability fill = ink */
-  --cyan: #152033;            /* legacy name: links and focus use ink */
-  --magenta: #152033;
-  --violet: #152033;
-  --accent-soft: #DCE1E7;
+  --ground: #F2F4F7;          /* page */
+  --surface: #FFFFFF;         /* paper */
+  --text: #101828;            /* ink */
+  --muted: #667085;
+  --faint: #667085;
+  --hair: #E4E7EC;
+  --hair-strong: #D0D5DD;
+  --fill: #101828;
+  --cyan: #101828;            /* legacy name: links and focus use ink */
+  --magenta: #101828;
+  --violet: #101828;
+  --accent-soft: #E4E7EC;
   --win: #1F7A4F;
   --miss: #B4372E;
-  --amber: #152033;
+  --amber: #101828;
   --display: "PingFang TC", "Noto Sans TC", "Microsoft JhengHei", system-ui, sans-serif;
   --num: "Barlow Semi Condensed", "PingFang TC", "Noto Sans TC", "Microsoft JhengHei", system-ui, sans-serif;
   --led: var(--display);
@@ -31,7 +31,7 @@ markdown:<style>
 .stApp { color: var(--text); background: var(--ground); }
 header[data-testid="stHeader"] { background: transparent; }
 #MainMenu, [data-testid="stToolbar"] { visibility: hidden; }
-.block-container { max-width: 880px; padding-top: 1.25rem; padding-bottom: 3rem; }
+.block-container { max-width: 600px; padding-top: 1.25rem; padding-bottom: 3rem; }
 .stApp, .stApp p, .stApp span, .stApp div, .stApp label { font-family: var(--body); }
 .stApp a { color: var(--text); }
 .stApp a:focus-visible, .stApp button:focus-visible, .stApp summary:focus-visible {
@@ -88,15 +88,11 @@ header[data-testid="stHeader"] { background: transparent; }
 .nb-sechead h2 { font-weight: 700; font-size: 18px; margin: 0; }
 .nb-sechead .sub { color: var(--muted); font-size: 14px; }
 
-/* ---- the schedule: one centre line down the page ---- */
-.nb-board { position: relative; margin-bottom: 8px; }
-.nb-board::before { content: ""; position: absolute; left: 50%; top: 0; bottom: 0; width: 1px; margin-left: -0.5px;
-                    background: var(--text); z-index: 1; transform-origin: top; animation: nb-draw 0.5s ease-out both; }
-@keyframes nb-draw { from { transform: scaleY(0); } to { transform: scaleY(1); } }
-@media (prefers-reduced-motion: reduce) { .nb-board::before { animation: none; } }
+/* ---- the schedule: one sheet of paper, games separated by hairlines ---- */
+.nb-board { margin-bottom: 8px; padding: 4px 16px; background: var(--surface); border-radius: 16px; }
 .nb-group { padding-bottom: 12px; }
 .nb-datehead { display: flex; justify-content: center; padding: 12px 0 6px; }
-.nb-datehead span { position: relative; z-index: 2; background: var(--ground); padding: 2px 10px;
+.nb-datehead span { position: relative; z-index: 2; background: var(--surface); padding: 2px 10px;
                     font-size: 14px; font-weight: 700; }
 .nb-ha { font-size: 13px; font-weight: 400; color: var(--muted); margin: 0 4px; }
 a.nb-row { display: block; min-height: 56px; box-sizing: border-box; padding: 10px 12px;
@@ -109,7 +105,7 @@ a.nb-row:focus-visible { outline: 2px solid var(--text); outline-offset: -2px; }
 .nb-rteam { font-size: 15px; font-weight: 600; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .nb-rteam.h { text-align: right; }
 .nb-rteam.fav { color: var(--text); }
-.nb-rmid { position: relative; z-index: 2; background: var(--ground); padding: 0 8px; display: inline-flex;
+.nb-rmid { position: relative; z-index: 2; background: var(--surface); padding: 0 8px; display: inline-flex;
            align-items: baseline; gap: 6px; font-size: 14px; color: var(--muted); white-space: nowrap; }
 a.nb-row:hover .nb-rmid { background: var(--surface); }
 .nb-rmid .nb-when, .nb-rmid .nb-score { font-family: var(--num); font-variant-numeric: tabular-nums; }
