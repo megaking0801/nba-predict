@@ -48,26 +48,30 @@ def esc(x) -> str:
 
 NEON_CSS = """
 <style>
-/* v2 (2026-10-29): neutral paper and ink; the one memorable thing is the centre-line win-probability bar
-   (fill grows from the half-court line toward the favoured team). Colour only in hit/miss words.
-   Mobile first. Dark tokens live in STATIC_EXTRA_CSS (static site only; the Streamlit shell stays light). */
+/* Digits only (text= subset: 0-9, %, :), about 6 KB; font-display swap; any other glyph and any load
+   failure fall back to the system font stack below, which also has tabular figures. */
+@import url('https://fonts.googleapis.com/css2?family=Barlow+Semi+Condensed:wght@600&text=0123456789%25%3A&display=swap');
+/* v3 (2026-10-29): paper and ink; one centre line runs down the whole schedule and every game's fill
+   grows from it toward the favoured team. Colour only in hit/miss words. Mobile first.
+   Dark tokens live in STATIC_EXTRA_CSS (static site only; the Streamlit shell stays light). */
 :root {
-  --ground: #F2F4F6;          /* paper */
+  --ground: #F4F5F2;          /* paper */
   --surface: #FFFFFF;
-  --text: #142033;            /* ink */
-  --muted: #566173;
-  --faint: #566173;
+  --text: #152033;            /* ink */
+  --muted: #59636F;
+  --faint: #59636F;
   --hair: #DCE1E7;            /* lines and the probability track */
   --hair-strong: #C5CCD5;
-  --fill: #142033;            /* probability fill = ink */
-  --cyan: #142033;            /* legacy name: links and focus use ink */
-  --magenta: #142033;
-  --violet: #142033;
+  --fill: #152033;            /* probability fill = ink */
+  --cyan: #152033;            /* legacy name: links and focus use ink */
+  --magenta: #152033;
+  --violet: #152033;
   --accent-soft: #DCE1E7;
   --win: #1F7A4F;
   --miss: #B4372E;
-  --amber: #142033;
+  --amber: #152033;
   --display: "PingFang TC", "Noto Sans TC", "Microsoft JhengHei", system-ui, sans-serif;
+  --num: "Barlow Semi Condensed", "PingFang TC", "Noto Sans TC", "Microsoft JhengHei", system-ui, sans-serif;
   --led: var(--display);
   --body: var(--display);
 }
@@ -82,14 +86,14 @@ header[data-testid="stHeader"] { background: transparent; }
 .stApp a:focus-visible, .stApp button:focus-visible, .stApp summary:focus-visible {
   outline: 2px solid var(--text); outline-offset: 2px; }
 
-.led { font-variant-numeric: tabular-nums; font-weight: 600; }
+.led { font-family: var(--num); font-variant-numeric: tabular-nums; font-weight: 600; }
 
 /* ---- top bar and headline ---- */
 .nb-topbar { display: flex; align-items: baseline; justify-content: space-between; gap: 12px;
              padding: 6px 0 12px; border-bottom: 1px solid var(--hair); }
 .nb-brand { font-weight: 700; font-size: 16px; }
 .nb-badge { display: flex; align-items: baseline; gap: 6px; font-size: 14px; color: var(--muted); }
-.nb-badge b { color: var(--text); font-variant-numeric: tabular-nums; font-weight: 600; }
+.nb-badge b { color: var(--text); font-family: var(--num); font-variant-numeric: tabular-nums; font-weight: 600; }
 .nb-hero { padding: 16px 0 4px; }
 .nb-hero h1 { font-weight: 700; font-size: 24px; line-height: 1.3; margin: 0 0 6px; }
 .nb-lede { max-width: 640px; color: var(--muted); font-size: 15px; margin: 0; line-height: 1.7; }
@@ -103,9 +107,9 @@ header[data-testid="stHeader"] { background: transparent; }
 
 /* ---- win probability: numbers at both ends, centre-line bar ---- */
 .nb-prob { display: flex; align-items: center; gap: 10px; min-width: 0; }
-.nb-pct { font-variant-numeric: tabular-nums; font-size: 18px; font-weight: 600; color: var(--muted); }
+.nb-pct { font-family: var(--num); font-variant-numeric: tabular-nums; font-size: 20px; font-weight: 600; color: var(--muted); }
 .nb-pct.fav { color: var(--text); }
-.nb-prob.big .nb-pct { font-size: 24px; }
+.nb-prob.big .nb-pct { font-size: 28px; }
 .nb-mid { position: relative; display: block; flex: 1; height: 8px; min-width: 120px;
           border-radius: 4px; background: var(--hair); }
 .nb-mid .fill { position: absolute; top: 0; bottom: 0; background: var(--fill); }
@@ -152,7 +156,7 @@ a.nb-row:focus-visible { outline: 2px solid var(--text); outline-offset: -2px; }
 .nb-rteam { font-size: 15px; font-weight: 600; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .nb-rteam.fav { color: var(--text); }
 .nb-rres { margin-top: 6px; display: flex; justify-content: space-between; gap: 8px; font-size: 14px; }
-.nb-rres .score { font-variant-numeric: tabular-nums; }
+.nb-rres .score { font-family: var(--num); font-variant-numeric: tabular-nums; }
 .nb-hit { color: var(--win); font-weight: 600; }
 .nb-miss { color: var(--miss); font-weight: 600; }
 details.nb-more { margin: 4px 0 20px; }
@@ -163,7 +167,7 @@ details.nb-more[open] summary { margin-bottom: 8px; }
 .nb-record { display: grid; grid-template-columns: 1fr; gap: 8px; }
 .nb-rcell { padding: 0; }
 .nb-rcell .k { font-size: 14px; color: var(--muted); }
-.nb-rcell .v { font-size: 18px; font-weight: 600; margin: 2px 0; font-variant-numeric: tabular-nums; }
+.nb-rcell .v { font-family: var(--num); font-size: 20px; font-weight: 600; margin: 2px 0; font-variant-numeric: tabular-nums; }
 .nb-rcell .v.c, .nb-rcell .v.m { color: var(--text); }
 .nb-rcell .note { color: var(--muted); font-size: 14px; }
 .nb-honest { margin-top: 12px; color: var(--muted); font-size: 14px; line-height: 1.8; }
@@ -210,7 +214,7 @@ table.ntable tbody td { padding: 6px 0; border-top: 1px solid var(--hair); text-
 .nb-bet.disabled .soon { color: var(--muted); font-size: 14px; line-height: 1.7; }
 .nb-bet .empty { color: var(--muted); font-size: 14px; }
 .nb-totline { display: flex; align-items: baseline; flex-wrap: wrap; gap: 6px 10px; }
-.nb-totline .led.big { font-weight: 700; font-size: 24px; line-height: 1.2; }
+.nb-totline .led.big { font-weight: 600; font-size: 28px; line-height: 1.2; }
 .nb-totline .vs { font-size: 14px; color: var(--muted); }
 .nb-lean { font-size: 14px; color: var(--muted); }
 .nb-caveat { margin-top: 8px; font-size: 14px; line-height: 1.7; color: var(--muted); }
@@ -813,15 +817,15 @@ details.nb-explainer summary { cursor: pointer; color: var(--muted); }
 /* dark: follows the system setting; data-theme forces one (used by scripts/preview_site.py) */
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
-    --ground: #0F131A; --surface: #171C24; --text: #E6EAF0; --muted: #9AA4B2; --faint: #9AA4B2;
-    --hair: #29313C; --hair-strong: #3A4350; --fill: #C9D2DE; --cyan: #E6EAF0; --magenta: #E6EAF0; --violet: #E6EAF0;
-    --accent-soft: #29313C; --win: #5CC48F; --miss: #F07A6E; --amber: #E6EAF0;
+    --ground: #11151B; --surface: #181D25; --text: #E7EBF0; --muted: #9BA5B2; --faint: #9BA5B2;
+    --hair: #29313C; --hair-strong: #3A4350; --fill: #C9D2DE; --cyan: #E7EBF0; --magenta: #E7EBF0; --violet: #E7EBF0;
+    --accent-soft: #29313C; --win: #5CC48F; --miss: #F07A6E; --amber: #E7EBF0;
   }
 }
 :root[data-theme="dark"] {
-  --ground: #0F131A; --surface: #171C24; --text: #E6EAF0; --muted: #9AA4B2; --faint: #9AA4B2;
-    --hair: #29313C; --hair-strong: #3A4350; --fill: #C9D2DE; --cyan: #E6EAF0; --magenta: #E6EAF0; --violet: #E6EAF0;
-    --accent-soft: #29313C; --win: #5CC48F; --miss: #F07A6E; --amber: #E6EAF0;
+  --ground: #11151B; --surface: #181D25; --text: #E7EBF0; --muted: #9BA5B2; --faint: #9BA5B2;
+    --hair: #29313C; --hair-strong: #3A4350; --fill: #C9D2DE; --cyan: #E7EBF0; --magenta: #E7EBF0; --violet: #E7EBF0;
+    --accent-soft: #29313C; --win: #5CC48F; --miss: #F07A6E; --amber: #E7EBF0;
 }
 </style>
 """
