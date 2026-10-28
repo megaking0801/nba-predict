@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import sys
 from pathlib import Path
 from statistics import NormalDist
@@ -69,7 +70,8 @@ def block_draws(d: pd.DataFrame, reps: int, seed: int) -> np.ndarray:
 
 def summarize(d: pd.DataFrame, level: float, reps: int, seed: int, m_tests: int) -> dict:
     """Paired |error| difference (candidate - line): mean, interval, one-sided p (H1: mean < 0) and the
-    minimum detectable effect at this level and at the Bonferroni level for the declared search space."""
+    minimum detectable effect (two-sided at this level, with 50% and 80% power), plus the 50%-power MDE at
+    the Bonferroni level for m_tests (the declared search space on explore, the candidate count on validate)."""
     draws = block_draws(d, reps, seed)
     mean = float(d["d"].mean())
     se = float(draws.std(ddof=1))
@@ -80,8 +82,9 @@ def summarize(d: pd.DataFrame, level: float, reps: int, seed: int, m_tests: int)
     by = d.groupby("season")["d"].mean()
     return {"n": int(len(d)), "mean": mean, "lo": lo, "hi": hi, "se": se, "p_one_sided": p,
             "half_width": (hi - lo) / 2, "detectable": (hi - lo) / 2 <= HALF_WIDTH_MAX,
-            "mde_at_level": z.inv_cdf(1 - a) * se,
-            "mde_bonferroni_search_space": z.inv_cdf(1 - ALPHA / m_tests / 2) * se,
+            "mde_50pct_power": z.inv_cdf(1 - a) * se,
+            "mde_80pct_power": (z.inv_cdf(1 - a) + z.inv_cdf(0.8)) * se,
+            "mde_bonferroni_m_tests": z.inv_cdf(1 - ALPHA / m_tests / 2) * se, "m_tests": m_tests,
             "per_season": {str(k): float(v) for k, v in by.items()},
             "share_seasons_negative": float((by < 0).mean())}
 
@@ -157,7 +160,13 @@ def run(bundles: list, lines: pd.DataFrame, extras: Dict[str, object], reps: int
     meta = df[["game_id", "season", "season_type"]]
     tables = {t: target_table(df, lines, t) for t in ("margin", "total")}
     out = {"search_space_declared": m_tests, "explore": EXPLORE, "validate": VALIDATE, "fdr_q": FDR_Q,
-           "ridge_alpha": ALPHA_RIDGE, "not_run": fam.REGISTERED_NOT_RUN, "hypotheses": {}}
+           "ridge_alpha": ALPHA_RIDGE, "not_run": fam.REGISTERED_NOT_RUN,
+           "cumulative_steps": "not implemented in this round; the declared search space still counts them "
+                               "(9 of 36), so the BH threshold is conservative",
+           # the base features alone against the line: the reference every family is added to
+           "base_reference": {t: evaluate(predictions(tables[t], base_features(t)), meta, EXPLORE, 1 - ALPHA,
+                                          reps, seed, m_tests) for t in ("margin", "total")},
+           "hypotheses": {}}
     built: Dict[str, pd.DataFrame] = {}
     for entry in registry:
         for vi, variant in enumerate(entry["variants"]):
@@ -183,10 +192,14 @@ def run(bundles: list, lines: pd.DataFrame, extras: Dict[str, object], reps: int
         out["void_reason"] = "the noise family was picked by BH: the false-positive rate is higher than assumed"
         return out
     if candidates:
-        vlevel = 1 - ALPHA / len(candidates)
+        k = len(candidates)
+        vlevel = 1 - ALPHA / k
+        # enough draws that the Bonferroni tail quantile rests on about 20 draws
+        vreps = max(reps, math.ceil(20 / (ALPHA / k / 2)))
+        out["validate_level"], out["validate_reps"] = vlevel, vreps
         for h in candidates:
             entry, t, cols, cand = built[h]
-            v = evaluate(cand, meta, VALIDATE, vlevel, reps, seed, m_tests)
+            v = evaluate(cand, meta, VALIDATE, vlevel, vreps, seed, k)
             v["passes"] = bool(not v.get("too_small") and v["hi"] < 0 and v["mean"] <= -MIN_GAIN
                                and (v.get("beta_lower") or -1) > 0 and v["share_seasons_negative"] >= SEASON_SHARE - 1e-9)
             if v["passes"] and n_shuffles:
@@ -197,9 +210,24 @@ def run(bundles: list, lines: pd.DataFrame, extras: Dict[str, object], reps: int
     return out
 
 
+def shift_by_team(t: pd.DataFrame, cols: List[str]) -> pd.DataFrame:
+    """Each game gets the family columns of its home team's NEXT game (home or away); games whose home team
+    has no later game are dropped. A real signal should not survive being moved one game into the future."""
+    order = t.sort_values(["date", "game_id"]).reset_index(drop=True)
+    nxt, last_pos = {}, {}
+    for pos in range(len(order) - 1, -1, -1):
+        r = order.iloc[pos]
+        nxt[pos] = last_pos.get(r["home_abbr"])
+        last_pos[r["home_abbr"]] = last_pos[r["away_abbr"]] = pos
+    keep = [pos for pos in range(len(order)) if nxt[pos] is not None]
+    out = order.iloc[keep].copy()
+    out[cols] = order.iloc[[nxt[pos] for pos in keep]][cols].to_numpy()
+    return out.reset_index(drop=True)
+
+
 def controls(t: pd.DataFrame, cols: List[str], target: str, meta: pd.DataFrame, true_mean: float,
              n_shuffles: int, seed: int) -> dict:
-    """Shuffle the residual within season (n times) and shift the family columns by one game."""
+    """Shuffle the residual within season (n times) and shift the family columns to each home team's next game."""
     feats = base_features(target) + cols
     means = []
     for i in range(n_shuffles):
@@ -209,10 +237,7 @@ def controls(t: pd.DataFrame, cols: List[str], target: str, meta: pd.DataFrame, 
         c = predictions(s, feats)
         c["mu"] = c["line_mu"] + c["r_hat"]                       # scored against the true result
         means.append(evaluate(c, meta, VALIDATE, 0.99, 100, seed, 1).get("mean"))
-    sh = t.copy()
-    sh[cols] = sh[cols].shift(-1)
-    sh = sh.iloc[:-1]
-    shift_mean = evaluate(predictions(sh, feats), meta, VALIDATE, 0.99, 100, seed, 1).get("mean")
+    shift_mean = evaluate(predictions(shift_by_team(t, cols), feats), meta, VALIDATE, 0.99, 100, seed, 1).get("mean")
     means = [m for m in means if m is not None]
     return {"shuffle_means": means, "shift_mean": shift_mean,
             "true_beats_every_shuffle": bool(means) and true_mean < min(means),

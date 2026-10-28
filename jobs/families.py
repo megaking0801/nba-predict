@@ -26,6 +26,20 @@ def _ordered(bundles: List[dict]) -> List[dict]:
                   key=lambda b: (b["date"], b["game_id"]))
 
 
+def _replay(bundles: List[dict], emit: Callable[[dict], dict], update: Callable[[dict], None]) -> pd.DataFrame:
+    """Emit every game from state, but fold a date's games in only when the next date starts, so games
+    played on the same day never see each other."""
+    rows, day, pending = [], None, []
+    for b in _ordered(bundles):
+        if b["date"] != day:
+            for done in pending:
+                update(done)
+            day, pending = b["date"], []
+        rows.append({"game_id": b["game_id"], **emit(b)})
+        pending.append(b)
+    return pd.DataFrame(rows)
+
+
 def _f(d: dict, k: str) -> float:
     v = d.get(k)
     return 0.0 if v is None or (isinstance(v, float) and math.isnan(v)) else float(v)
@@ -65,18 +79,19 @@ def family_srs(bundles: List[dict], variant: dict) -> pd.DataFrame:
 # ----- F2: player efficiency aggregated over the expected rotation -----
 
 def family_player_eff(bundles: List[dict], variant: dict) -> pd.DataFrame:
-    """Minutes-weighted EWMA true shooting of each team's recent top-8, and the top-2 share of usage."""
+    """Minutes-weighted EWMA true shooting of each team's expected top-8 (players who appeared in its last
+    5 games, ranked by recent minutes), and the top-2 share of usage."""
     lam = variant["lam"]
     ts_ewma: Dict[int, float] = {}
     usg_ewma: Dict[int, float] = {}
     recent_min: Dict[tuple, deque] = defaultdict(lambda: deque(maxlen=10))   # (season, team, player)
-    roster: Dict[tuple, set] = defaultdict(set)                              # (season, team) -> players
-    rows = []
+    lineups: Dict[tuple, deque] = defaultdict(lambda: deque(maxlen=5))       # (season, team) -> last 5 games' players
 
     def team_vals(season, team):
+        roster = set().union(*lineups[(season, team)])
         players = [(p, sum(recent_min[(season, team, p)]) / len(recent_min[(season, team, p)]))
-                   for p in roster[(season, team)] if recent_min[(season, team, p)]]
-        top = sorted(players, key=lambda x: -x[1])[:8]
+                   for p in roster if recent_min[(season, team, p)]]
+        top = sorted(players, key=lambda x: (-x[1], x[0]))[:8]
         w = sum(m for _, m in top)
         if not top or w <= 0:
             return 0.0, 0.0
@@ -85,17 +100,20 @@ def family_player_eff(bundles: List[dict], variant: dict) -> pd.DataFrame:
         tot = sum(usg)
         return ts, (sum(usg[:2]) / tot if tot > 0 else 0.0)
 
-    for b in _ordered(bundles):
+    def emit(b):
+        th, uh = team_vals(b["season"], b["home_abbr"])
+        ta, ua = team_vals(b["season"], b["away_abbr"])
+        return {"ts_agg_diff": th - ta, "usg_top2_diff": uh - ua}
+
+    def update(b):
         s = b["season"]
-        th, uh = team_vals(s, b["home_abbr"])
-        ta, ua = team_vals(s, b["away_abbr"])
-        rows.append({"game_id": b["game_id"], "ts_agg_diff": th - ta, "usg_top2_diff": uh - ua})
+        played = {b["home_abbr"]: set(), b["away_abbr"]: set()}
         for p in b.get("player_stats") or []:
             mins = _f(p, "min_played")
-            if mins <= 0 or p.get("team_abbr") not in (b["home_abbr"], b["away_abbr"]):
+            if mins <= 0 or p.get("team_abbr") not in played:
                 continue
             pid, team = int(p["player_id"]), p["team_abbr"]
-            roster[(s, team)].add(pid)
+            played[team].add(pid)
             recent_min[(s, team, pid)].append(mins)
             shots = _f(p, "fga") + 0.44 * _f(p, "fta")
             if mins >= 8 and shots > 0:
@@ -103,7 +121,11 @@ def family_player_eff(bundles: List[dict], variant: dict) -> pd.DataFrame:
                 ts_ewma[pid] = ts if pid not in ts_ewma else (1 - lam) * ts_ewma[pid] + lam * ts
             use = (shots + _f(p, "tov")) / mins
             usg_ewma[pid] = use if pid not in usg_ewma else (1 - lam) * usg_ewma[pid] + lam * use
-    return pd.DataFrame(rows)
+        for team, ids in played.items():
+            if ids:                                  # placeholder box scores add nothing
+                lineups[(s, team)].append(ids)
+
+    return _replay(bundles, emit, update)
 
 
 # ----- F3: rotation depth -----
@@ -112,7 +134,6 @@ def family_rotation(bundles: List[dict], variant: dict) -> pd.DataFrame:
     """Over a team's last N games: share of minutes played by its top 5, and how many average 15+."""
     n = variant["n"]
     games: Dict[tuple, deque] = defaultdict(lambda: deque(maxlen=n))   # (season, team) -> [ {pid: min} ]
-    rows = []
 
     def vals(season, team):
         hist = games[(season, team)]
@@ -128,19 +149,21 @@ def family_rotation(bundles: List[dict], variant: dict) -> pd.DataFrame:
         regulars = sum(1 for m in mins if m / len(hist) >= 15)
         return share, float(regulars)
 
-    for b in _ordered(bundles):
-        s = b["season"]
-        sh, rh = vals(s, b["home_abbr"])
-        sa, ra = vals(s, b["away_abbr"])
-        rows.append({"game_id": b["game_id"], "top5_share_diff": sh - sa, "regulars_diff": rh - ra})
+    def emit(b):
+        sh, rh = vals(b["season"], b["home_abbr"])
+        sa, ra = vals(b["season"], b["away_abbr"])
+        return {"top5_share_diff": sh - sa, "regulars_diff": rh - ra}
+
+    def update(b):
         per = {b["home_abbr"]: {}, b["away_abbr"]: {}}
         for p in b.get("player_stats") or []:
             if p.get("team_abbr") in per and _f(p, "min_played") > 0:
                 per[p["team_abbr"]][int(p["player_id"])] = _f(p, "min_played")
         for team, g in per.items():
             if g:                                    # placeholder box scores add nothing
-                games[(s, team)].append(g)
-    return pd.DataFrame(rows)
+                games[(b["season"], team)].append(g)
+
+    return _replay(bundles, emit, update)
 
 
 # ----- F4: shot distribution (needs team_shot_buckets) -----
@@ -163,26 +186,29 @@ def family_shots(bundles: List[dict], variant: dict, buckets: Optional[pd.DataFr
     own: Dict[tuple, deque] = defaultdict(lambda: deque(maxlen=n))
     allowed: Dict[tuple, deque] = defaultdict(lambda: deque(maxlen=n))
     keys = ("rim", "three", "corner")
-    rows = []
 
     def share(hist, key):
         f = sum(h["fga"] for h in hist)
         return sum(h[key] for h in hist) / f if f > 0 else 0.0
 
-    for b in _ordered(bundles):
+    def emit(b):
         s, h, a = b["season"], b["home_abbr"], b["away_abbr"]
-        row = {"game_id": b["game_id"]}
+        row = {}
         for k in keys:
             row[f"{k}_off_diff"] = share(own[(s, h)], k) - share(own[(s, a)], k)
             row[f"{k}_def_diff"] = share(allowed[(s, a)], k) - share(allowed[(s, h)], k)
-        rows.append(row)
+        return row
+
+    def update(b):
+        s, h, a = b["season"], b["home_abbr"], b["away_abbr"]
         g = by_game.get(b["game_id"], {})
         box = b.get("team_stats") or {}
         ok = all(t in g and t in box and abs(g[t]["fga"] - _f(box[t], "fga")) <= 2 and g[t]["fga"] > 0 for t in (h, a))
         if ok:
             own[(s, h)].append(g[h]); own[(s, a)].append(g[a])
             allowed[(s, h)].append(g[a]); allowed[(s, a)].append(g[h])
-    return pd.DataFrame(rows)
+
+    return _replay(bundles, emit, update)
 
 
 # ----- F5: motivation (standings late in the regular season) -----
@@ -198,7 +224,6 @@ def family_motivation(bundles: List[dict], variant: dict) -> pd.DataFrame:
             scheduled[(b["season"], b["home_abbr"])] += 1
             scheduled[(b["season"], b["away_abbr"])] += 1
     w, gp = defaultdict(int), defaultdict(int)
-    rows = []
 
     def team_vals(season, team):
         left = scheduled[(season, team)] - gp[(season, team)]
@@ -215,20 +240,22 @@ def family_motivation(bundles: List[dict], variant: dict) -> pd.DataFrame:
         clinched = float(mine > seventh_max)
         return gb, eliminated, clinched
 
-    for b in games:
-        s = b["season"]
-        if b["season_type"] == "regular":
-            gh, eh, ch = team_vals(s, b["home_abbr"])
-            ga, ea, ca = team_vals(s, b["away_abbr"])
-        else:
-            gh = eh = ch = ga = ea = ca = 0.0
-        rows.append({"game_id": b["game_id"], "gb10_diff": gh - ga, "eliminated_home": eh, "eliminated_away": ea,
-                     "clinched_home": ch, "clinched_away": ca})
+    def emit(b):
+        if b["season_type"] != "regular":
+            return {"gb10_diff": 0.0, "eliminated_home": 0.0, "eliminated_away": 0.0,
+                    "clinched_home": 0.0, "clinched_away": 0.0}
+        gh, eh, ch = team_vals(b["season"], b["home_abbr"])
+        ga, ea, ca = team_vals(b["season"], b["away_abbr"])
+        return {"gb10_diff": gh - ga, "eliminated_home": eh, "eliminated_away": ea,
+                "clinched_home": ch, "clinched_away": ca}
+
+    def update(b):
         if b["season_type"] == "regular" and b.get("margin") is not None:
             for team, won in ((b["home_abbr"], b["margin"] > 0), (b["away_abbr"], b["margin"] < 0)):
-                gp[(s, team)] += 1
-                w[(s, team)] += int(won)
-    return pd.DataFrame(rows)
+                gp[(b["season"], team)] += 1
+                w[(b["season"], team)] += int(won)
+
+    return _replay(games, emit, update)
 
 
 # ----- F7: referees and the total (target = total - total line) -----
@@ -244,18 +271,20 @@ def family_refs(bundles: List[dict], variant: dict, officials: Optional[pd.DataF
             crew[r.game_id].append(r.official_name)
     total_lines = total_lines or {}
     s_sum, s_n = defaultdict(float), defaultdict(int)
-    rows = []
-    for b in _ordered(bundles):
-        names = crew.get(b["game_id"], [])
-        vals = [s_sum[o] / (s_n[o] + k) for o in names]               # shrunk toward 0
-        rows.append({"game_id": b["game_id"], "ref_total_tilt": float(np.mean(vals)) if vals else 0.0})
+
+    def emit(b):
+        vals = [s_sum[o] / (s_n[o] + k) for o in crew.get(b["game_id"], [])]   # shrunk toward 0
+        return {"ref_total_tilt": float(np.mean(vals)) if vals else 0.0}
+
+    def update(b):
         line = total_lines.get(b["game_id"])
         if line is not None and b.get("home_score") is not None and b.get("away_score") is not None:
             resid = float(b["home_score"]) + float(b["away_score"]) - float(line)
-            for o in names:
+            for o in crew.get(b["game_id"], []):
                 s_sum[o] += resid
                 s_n[o] += 1
-    return pd.DataFrame(rows)
+
+    return _replay(bundles, emit, update)
 
 
 # ----- noise family: must never be selected -----
