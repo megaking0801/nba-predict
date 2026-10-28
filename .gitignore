@@ -20,3 +20,4 @@ site.tmp/
 site.old/
 data_local/
 .venv-uv/
+data/

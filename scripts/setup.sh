@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
-# One-shot setup for a fresh clone: Python 3.11 venv, dependencies, DATABASE_URL.
+# One-shot setup for a fresh clone: data repo, Python 3.11 venv, dependencies, DATABASE_URL.
 #
-#   scripts/setup.sh              # env + secrets + connection check
+#   scripts/setup.sh              # data + env + secrets + connection check
 #   scripts/setup.sh --with-tests # also run the test suite (about 3 minutes)
+#
+# Code (public):  https://github.com/megaking0801/nba-predict
+# Data (private): https://github.com/megaking0801/nba-predict-data, cloned into data/ (gitignored here)
 #
 # The only secret is DATABASE_URL. It goes to .streamlit/secrets.toml (gitignored, mode 600),
 # never to the repo. Re-running is safe: an existing working secrets file is kept.
@@ -12,6 +15,17 @@ cd "$(dirname "$0")/.."
 ROOT=$PWD
 VENV="$ROOT/.venv"
 SECRETS="$ROOT/.streamlit/secrets.toml"
+DATA_REPO="https://github.com/megaking0801/nba-predict-data.git"
+
+# --- 0. data repo ----------------------------------------------------------
+if [ -d "$ROOT/data/.git" ]; then
+  git -C "$ROOT/data" pull -q --ff-only && echo "[setup] data repo up to date"
+elif git clone -q "$DATA_REPO" "$ROOT/data"; then
+  echo "[setup] cloned data repo into data/"
+else
+  echo "[setup] could not clone $DATA_REPO (private): run 'gh auth login' first, then re-run setup"
+  exit 1
+fi
 
 find_python() {
   for p in python3.13 python3.12 python3.11 python3.10; do

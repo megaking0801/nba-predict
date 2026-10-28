@@ -6,7 +6,8 @@
 <!-- 維護筆記：本檔目標 200 行內，只放「讀程式碼猜不到」的內容。改完用 /doctor prompt-audit 檢查矛盾與過期內容。 -->
 
 ## 指令
-新環境先跑 `scripts/setup.sh`（建 venv、裝依賴、問一次 `DATABASE_URL`）；之後用 `scripts/run.sh <模組> [參數]` 帶著 secrets 跑只讀 job。接手流程見 `docs/handoff/` 最新的檔案。
+兩個 repo：程式 https://github.com/megaking0801/nba-predict （public）；資料 https://github.com/megaking0801/nba-predict-data （private，clone 在 `data/`，本 repo 的 `.gitignore` 擋住）。
+新環境先 `gh auth login`，clone 程式 repo 後跑 `scripts/setup.sh`（自動 clone／更新資料 repo、建 venv、裝依賴、問一次 `DATABASE_URL`）；之後用 `scripts/run.sh <模組> [參數]` 帶著 secrets 跑只讀 job。接手流程見 `docs/handoff/` 最新的檔案。
 ```bash
 python -m pytest tests -q            # 測試，約 45 秒（第一次約 3 分鐘），需在 repo 根目錄執行
 streamlit run auto_nba_predict.py    # 啟動網站，需 DATABASE_URL 或 SUPABASE_* 環境變數，或 .streamlit/secrets.toml
@@ -16,7 +17,7 @@ python -m jobs.diagnose              # DB 狀態體檢（只讀，需要 DB 連�
 python -m webui.build_site --out site  # 從 DB 產生靜態網站到 site/（只讀連線，需要 DB 連線；site/ 不提交）
 python -m jobs.feature_ablation --experiment data_scope|context|four_factor  # 特徵／資料範圍的配對 walk-forward 比較（只讀連線，需要 DB 連線）
 python -m jobs.market_layer --report baseline|clv|residual  # P5.0：盤口本身的基準與預測當下線對收盤線的差（只讀連線，需要 DB 連線）
-python -m jobs.playbook fetch|moneyline|totals  # 玩法搜尋（只讀 DB、只 GET ESPN；抓下來的賠率存 data/moneylines.jsonl.gz 並提交）
+python -m jobs.playbook fetch|moneyline|totals  # 玩法搜尋（只讀 DB、只 GET ESPN；抓下來的賠率存 data/moneylines.jsonl.gz，在資料 repo 提交）
 python -m jobs.quality --all           # 資料品質檢查（只讀連線，需要 DB 連線）；--since 7d 只看基準線之後的新資料；--verify-flags 驗證旗標 SQL
 ```
 會寫入 DB 的 job（`schema`、`ingest_*`、`backfill`、`settle`、`snapshot_*`、`predict_daily`、`predict_history`、`train`、`calibrate`、`run_daily`）
@@ -60,8 +61,8 @@ python -m jobs.quality --all           # 資料品質檢查（只讀連線，需
 - `jobs/quality` 全模組只准 SELECT、不寫 DB、不呼叫 `ensure_schema`（有測試掃描）；基準線（`jobs/quality/baseline.json`）只能由對正式 DB 實際執行檢查產生，修改必須在 commit 訊息說明原因，不為了讓檢查變綠而放寬門檻。
 - `webui/queries.py` 只准 SELECT；`webui/render.py` 不 import streamlit，DB 來的文字一律經 `esc()`。`build_site` 連線必須 `readonly`。
 - Streamlit 頁面輸出由 `tests/test_streamlit_golden.py` 的整頁 golden 鎖住；改渲染時 golden 不可因搬動而變，要改就是刻意的行為變更並說明。
-- 抓取成本高（要連網路或花時間）的衍生資料，存成 `.gz` 放 `data/` 並 commit，不放 `data_local/`。換電腦 clone 下來就能用，不用重抓。
-  `jobs/playbook.py` 看副檔名讀寫 gzip，可續跑。單檔壓縮後超過約 10 MB 先問使用者。`data_local/` 只放暫存、含密鑰或不該公開的東西。
+- 抓取成本高（要連網路或花時間）的衍生資料，存成 `.gz` 放 `data/`，在**資料 repo**（`data/` 本身是 nba-predict-data 的 clone）commit 並 push，不放 `data_local/`、不進程式 repo（程式 repo 是 public）。
+  換電腦 `setup.sh` 會自動帶下來，不用重抓。`jobs/playbook.py` 看副檔名讀寫 gzip，可續跑。單檔壓縮後超過約 10 MB 先問使用者。`data_local/` 只放暫存或含密鑰的東西。
 - 新的資料來源用 ESPN。stats.nba.com 會擋 GitHub runner 與非美國 IP。
 
 **安全與營運**
@@ -71,7 +72,7 @@ python -m jobs.quality --all           # 資料品質檢查（只讀連線，需
 
 ## 工作流程
 - 不使用 plan mode（使用者 2026-10-26 明確指示：不要讓支線為了核准計畫停下來等他）。動到特徵、模型、schema、gates、picks 之前，改為：先寫設計與實作計畫，經主線與支線互相審過再實作。寫正式 DB、push／合併 main、啟用或觸發 workflow 仍須使用者當下同意。
-- 交接要能換電腦接手：收工前把 handoff 寫好，連同抓好的資料一起 commit 並 push（push 仍須使用者同意），並在乾淨的 clone 裡跑過 `scripts/setup.sh` 確認可用；沒 push 就不算交接。
+- 交接要能換電腦接手：收工前把 handoff 寫好，程式 repo 與資料 repo 都 commit 並 push（push 仍須使用者同意），並在乾淨的 clone 裡跑過 `scripts/setup.sh` 確認可用；沒 push 就不算交接。
 - 修根因，不要壓掉錯誤訊息。
 - 對話被壓縮時保留：已修改的檔案清單、測試指令、尚未解決的問題。
 - 回覆用繁體中文；程式碼、識別字、commit 訊息用英文。
