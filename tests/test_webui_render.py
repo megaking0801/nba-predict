@@ -257,7 +257,7 @@ def test_team_tables_html_populated():
 
 def test_static_page_centers_and_pads_container():
     css = render.static_page("T", "", NOW).split("</head>")[0]
-    assert "margin: 0 auto" in css and "padding-left: 1.5rem" in css
+    assert "margin: 0 auto" in css and "padding-left: 16px" in css
 
 
 def test_static_page_keeps_streamlit_element_gap():
