@@ -1,9 +1,11 @@
 """Playbook search (read-only): does any bet type have a positive backtested ROI?
 
-    python -m jobs.playbook fetch     --out data_local/moneylines.jsonl [--seasons 2023-24,...] [--limit N]
-    python -m jobs.playbook moneyline --in  data_local/moneylines.jsonl [--out report.json]
+    python -m jobs.playbook fetch     --out data/moneylines.jsonl.gz [--seasons 2023-24,...] [--limit N]
+    python -m jobs.playbook moneyline --in  data/moneylines.jsonl.gz [--out report.json]
     python -m jobs.playbook totals    [--out report.json]
 
+A path ending in .gz is read and written gzip-compressed (about 25x smaller), so fetched data can be
+committed under data/ and a fresh clone never has to fetch it again.
 fetch only GETs ESPN's public core odds API and SELECTs game ids; nothing is written to the database.
 The rules (providers, thresholds, pass condition) are fixed in
 docs/superpowers/specs/2026-10-26-playbook-search-design.md and in the constants below.
@@ -11,6 +13,7 @@ docs/superpowers/specs/2026-10-26-playbook-search-design.md and in the constants
 from __future__ import annotations
 
 import argparse
+import gzip
 import json
 import math
 import re
@@ -216,6 +219,23 @@ def total_bets(t: pd.DataFrame, gap: float, dec: float) -> pd.DataFrame:
 
 # ----- fetching -----
 
+def _open_text(path, mode: str):
+    path = Path(path)
+    if path.suffix == ".gz":
+        return gzip.open(path, mode + "t", encoding="utf-8")
+    return path.open(mode, encoding="utf-8")
+
+
+def read_lines(path):
+    """Yield the non-empty lines of a plain or .gz file; a run cut short mid-block keeps what was readable."""
+    try:
+        with _open_text(path, "r") as fh:
+            for line in fh:
+                if line.strip():
+                    yield line
+    except (EOFError, gzip.BadGzipFile):
+        return
+
 def fetch_moneylines(run: Run, out_path, fetch: Callable = espn_odds, sleep: float = 0.15,
                      limit: Optional[int] = None, seasons: Optional[List[str]] = None) -> int:
     """Append one JSON line per final game: its parsed providers. Resumable, polite, read-only."""
@@ -223,9 +243,11 @@ def fetch_moneylines(run: Run, out_path, fetch: Callable = espn_odds, sleep: flo
     out_path.parent.mkdir(parents=True, exist_ok=True)
     done = set()
     if out_path.exists():
-        for line in out_path.read_text(encoding="utf-8").splitlines():
-            if line.strip():
-                done.add(json.loads(line)["game_id"])
+        kept = list(read_lines(out_path))
+        done = {json.loads(line)["game_id"] for line in kept}
+        if out_path.suffix == ".gz":     # a cut-short gzip tail would corrupt what we append: rewrite it clean first
+            with _open_text(out_path, "w") as fh:
+                fh.writelines(kept)
     ids = [str(x) for x in run(_IDS, (list(SEASON_TYPES),))["game_id"]]
     if seasons:      # season filter is applied on the id list through the outcomes query
         keep = set(run(_OUTCOMES, (list(SEASON_TYPES),)).query("season in @seasons")["game_id"].astype(str))
@@ -234,7 +256,7 @@ def fetch_moneylines(run: Run, out_path, fetch: Callable = espn_odds, sleep: flo
     if limit is not None:
         todo = todo[:limit]
     n = 0
-    with out_path.open("a", encoding="utf-8") as fh:
+    with _open_text(out_path, "a") as fh:
         for gid in todo:
             d = fetch(gid)
             fh.write(json.dumps({"game_id": gid, "providers": parse_providers(d)}, ensure_ascii=False) + "\n")
@@ -260,9 +282,7 @@ def _model_preds(bundles: list, kind_features, target: str) -> pd.DataFrame:
 
 def load_market_games(path, outcomes: pd.DataFrame) -> pd.DataFrame:
     rows = []
-    for line in Path(path).read_text(encoding="utf-8").splitlines():
-        if not line.strip():
-            continue
+    for line in read_lines(path):
         r = json.loads(line)
         m = market(r["providers"])
         if m:

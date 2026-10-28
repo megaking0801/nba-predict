@@ -215,6 +215,51 @@ def test_fetch_respects_limit(tmp_path, monkeypatch):
     assert len(out.read_text(encoding="utf-8").splitlines()) == 2
 
 
+def test_fetch_gzip_is_resumable_and_survives_a_truncated_tail(tmp_path, monkeypatch):
+    out = tmp_path / "ml.jsonl.gz"
+    calls = []
+
+    def fake_odds(gid, **kw):
+        calls.append(gid)
+        return _wrap("old_2015_16")
+
+    run = lambda sql, params=(): pd.DataFrame({"game_id": ["1", "2", "3"]})
+    monkeypatch.setattr(pb.time, "sleep", lambda s: None)
+    pb.fetch_moneylines(run, out, fetch=fake_odds, sleep=0, limit=2)
+    out.write_bytes(out.read_bytes()[:-5])                   # an interrupted run: the gzip trailer is cut off
+    pb.fetch_moneylines(run, out, fetch=fake_odds, sleep=0)
+    rows = [json.loads(line) for line in pb.read_lines(out)]
+    assert sorted(r["game_id"] for r in rows) == ["1", "2", "3"]
+    assert sorted(calls) == ["1", "2", "3"]                  # nothing lost, nothing fetched twice
+
+
+def test_fetch_gzip_cut_inside_the_data_loses_only_the_cut_tail(tmp_path, monkeypatch):
+    out = tmp_path / "ml.jsonl.gz"
+    calls = []
+
+    def fake_odds(gid, **kw):
+        calls.append(gid)
+        return _wrap("old_2015_16")
+
+    run = lambda sql, params=(): pd.DataFrame({"game_id": ["1", "2", "3"]})
+    monkeypatch.setattr(pb.time, "sleep", lambda s: None)
+    pb.fetch_moneylines(run, out, fetch=fake_odds, sleep=0, limit=2)
+    out.write_bytes(out.read_bytes()[:-60])                  # cut well into the compressed data
+    pb.fetch_moneylines(run, out, fetch=fake_odds, sleep=0)
+    ids = [json.loads(line)["game_id"] for line in pb.read_lines(out)]
+    assert sorted(ids) == ["1", "2", "3"] and len(ids) == len(set(ids))      # the file is readable again, no duplicates
+
+
+def test_gzip_and_plain_files_load_the_same_rows(tmp_path):
+    rows = [{"game_id": "1", "providers": []}, {"game_id": "2", "providers": []}]
+    plain, gz = tmp_path / "a.jsonl", tmp_path / "a.jsonl.gz"
+    plain.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+    import gzip
+    with gzip.open(gz, "wt", encoding="utf-8") as fh:
+        fh.write(plain.read_text(encoding="utf-8"))
+    assert list(pb.read_lines(plain)) == list(pb.read_lines(gz))
+
+
 def test_module_is_read_only():
     src = Path(pb.__file__).read_text(encoding="utf-8")
     for word in ("INSERT ", "UPDATE ", "DELETE ", "DROP ", "ALTER ", "commit()", "executemany", "ensure_schema"):
