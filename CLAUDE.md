@@ -20,6 +20,7 @@ python -m jobs.feature_ablation --experiment data_scope|context|four_factor  # �
 python -m jobs.market_layer --report baseline|clv|residual  # P5.0：盤口本身的基準與預測當下線對收盤線的差（只讀連線，需要 DB 連線）
 python -m jobs.playbook fetch|moneyline|totals  # 玩法搜尋（只讀 DB、只 GET ESPN；抓下來的賠率存 data/moneylines.jsonl.gz，在資料 repo 提交）
 python -m jobs.quality --all           # 資料品質檢查（只讀連線，需要 DB 連線）；--since 7d 只看基準線之後的新資料；--verify-flags 驗證旗標 SQL
+python -m jobs.tw_compare --root data/tw_snapshots --out <檔案.json> [--as-of YYYY-MM-DD] [--with-results]  # 台彩 21:00 對國際盤收盤（只讀檔案；2026-11-30 前只報進度；--with-results 才只讀連 DB）
 ```
 會寫入 DB 的 job（`schema`、`ingest_*`、`backfill`、`settle`、`snapshot_*`、`predict_daily`、`predict_history`、`train`、`calibrate`、`run_daily`）
 平常由 GitHub Actions `daily_nba.yml` 排程執行，不在本機跑。
@@ -65,6 +66,10 @@ python -m jobs.quality --all           # 資料品質檢查（只讀連線，需
 - 抓取成本高（要連網路或花時間）的衍生資料，存成 `.gz` 放 `data/`，在**資料 repo**（`data/` 本身是 nba-predict-data 的 clone）commit 並 push，不放 `data_local/`、不進程式 repo（程式 repo 是 public）。
   換電腦 `setup.sh` 會自動帶下來，不用重抓。`jobs/playbook.py` 看副檔名讀寫 gzip，可續跑。單檔壓縮後超過約 10 MB 先問使用者。`data_local/` 只放暫存或含密鑰的東西。
 - 新的資料來源用 ESPN。stats.nba.com 會擋 GitHub runner 與非美國 IP。
+- 台彩賠率只用 `blob3rd.sportslottery.com.tw` 的賽前資料流，只從台灣 IP、只由使用者手機的 iPhone 捷徑抓（`docs/tw-shortcut-setup.md`）；不在 GitHub Actions、雲端或國外主機抓，不偽造 User-Agent、不帶 cookie，遇到 403 就停。設計見 `docs/superpowers/specs/2026-10-29-tw-snapshot-design.md`。
+- 使用者 2026-10-29 **長期同意**捷徑自動 commit 到資料 repo 的 `tw_snapshots/`（只限這個 repo 與資料夾）。手機也會寫 `main`，所以電腦端在 `data/` push 前一律先 `git pull --rebase`。
+- `jobs/tw_compare.py` 的預先登記常數（分析日 2026-11-30、60 分鐘、150 注等）有測試鎖住，開始累積資料後不得修改；分析日前只看進度。
+- The Odds API 免費方案每月 500 點：捷徑每月約 360 點；`daily_nba` 只在 repo 變數 `USE_ODDS=1` 時用它（2026-10-29 沒設），兩邊同時開會超額。金鑰只存在手機捷徑。
 
 **安全與營運**
 - 不讀、不印、不 commit `.streamlit/secrets.toml`（已在 `.gitignore` 與 `settings.json` 的 deny）。
