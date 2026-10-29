@@ -20,6 +20,7 @@ python -m jobs.feature_ablation --experiment data_scope|context|four_factor  # �
 python -m jobs.market_layer --report baseline|clv|residual  # P5.0：盤口本身的基準與預測當下線對收盤線的差（只讀連線，需要 DB 連線）
 python -m jobs.playbook fetch|moneyline|totals  # 玩法搜尋（只讀 DB、只 GET ESPN；抓下來的賠率存 data/moneylines.jsonl.gz，在資料 repo 提交）
 python -m jobs.market_bias --out docs/handoff/market-bias-c1.json  # C1：盤口在事前登記的子集合上有沒有固定偏差（只讀連線，需要 DB 連線）
+python -m jobs.family_search --out docs/handoff/family-search.json  # 事前登記的特徵族群搜尋（目標＝對盤口殘差；BH 篩選、Bonferroni 驗證、雜訊族群作廢規則；只讀連線）
 python -m jobs.quality --all           # 資料品質檢查（只讀連線，需要 DB 連線）；--since 7d 只看基準線之後的新資料；--verify-flags 驗證旗標 SQL
 ```
 會寫入 DB 的 job（`schema`、`ingest_*`、`backfill`、`settle`、`snapshot_*`、`predict_daily`、`predict_history`、`train`、`calibrate`、`run_daily`）
