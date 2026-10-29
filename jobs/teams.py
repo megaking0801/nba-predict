@@ -86,6 +86,24 @@ def abbr_from_team_name(name: str) -> str | None:
     return TEAMNAME_TO_ABBR.get((name or "").strip().lower())
 
 
+def require_team_name(name: str) -> str:
+    """Odds API full team name -> canonical abbr; raise loudly when unknown."""
+    got = abbr_from_team_name(name)
+    if got is None:
+        raise ValueError(f"unknown team name: {name!r}")
+    return got
+
+
+def abbr_from_cn(name: str) -> str:
+    """Taiwan lottery Chinese full name ('克里夫蘭騎士') -> canonical abbr, by the TEAM_NAME_CH nickname at the
+    end of the name. Raise when no nickname or more than one matches."""
+    s = (name or "").strip()
+    hits = [abbr for abbr, nick in TEAM_NAME_CH.items() if s and s.endswith(nick)]
+    if len(hits) != 1:
+        raise ValueError(f"unknown Chinese team name: {name!r}")
+    return hits[0]
+
+
 def seed_rows() -> List[tuple]:
     """Rows for seeding the `teams` table: (abbr, id, full_name, espn_abbr, conference)."""
     return [(a, t[0], t[1], t[2], t[3]) for a, t in sorted(TEAMS.items())]

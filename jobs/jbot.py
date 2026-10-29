@@ -141,9 +141,11 @@ SIGMA_TOTAL = 19.0       # rough spread of total - line (CONFIG notes 18-20)
 def team_abbr_from_cn(name: str) -> Optional[str]:
     """Match a Chinese full name ('奧蘭多魔術') to a team by its nickname (jobs.teams.TEAM_NAME_CH) at the end of
     the name. None when no nickname or more than one matches."""
-    from jobs.teams import TEAM_NAME_CH
-    hits = [abbr for abbr, nick in TEAM_NAME_CH.items() if (name or "").strip().endswith(nick)]
-    return hits[0] if len(hits) == 1 else None
+    from jobs.teams import abbr_from_cn
+    try:
+        return abbr_from_cn(name)
+    except ValueError:
+        return None
 
 
 def _main_key(block: Optional[dict]) -> Optional[str]:
