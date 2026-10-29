@@ -40,8 +40,13 @@
 - 資料量不是瓶頸（學習曲線約三季就攤平），市場已吸收公開資訊（P5.0）。外部新來源讓模型贏過盤口的先驗我估 <5%（我的估計，不是量測）。
 - 真正的價值在於：把「全部特徵族群」一次盤點與防多重檢定地回測，得到「確實找不到」的完整結論；設計由支線寫在 `2026-10-29-stat-universe-design.md`。
 
-## 下一輪（尚未做）
-- 打開 chevronronson Kaggle 頁核對授權與欄位。
-- 核對 Sportsbook Review 存檔是否真的存在、有無開盤線。
-- 讀 `nba-injury-report` 套件程式碼與 Statsurge 起點。
-- 查 nba_api 端點清單（`docs/nba_api/stats/endpoints`）以列出追蹤／Hustle／陣容端點的欄位。
+## 第三輪核對結果（2026-10-30，已讀頁面；仍有未驗證處）
+- **Sportsbook Review 賽季 Excel**（[GitHub issue 的說明](https://github.com/isaacrome21-sys/SportsEdge/issues/2605)）：該 issue 說每季一個 Excel，2007-08 到 2022-23，含收盤讓分、總分、不讓分，且開盤與收盤共用欄位（可算開盤到收盤的移動）。原網址已 404，只剩 Internet Archive 的抓取；**2022-23 那份只到 2023-01-16（664 場，賽季中途抓的）**。檔案沒有授權聲明，受 SBR 網站條款限制。2023-24 與 2024-25 沒有免費的完整檔。我沒有自己下載或核對檔案內容，以上是該 issue 作者的描述（**未驗證**）。價值：只對 C2「開盤到收盤」的歷史補充有一點用，且缺最近兩季。
+- **PyPI `nba-injury-report` 0.1.0**：抓官方 NBA 傷兵報告，2021-22 起；**授權 AGPL-3.0**（強著作權，放進我們的公開 repo 或服務要小心，建議只當參考、自己寫抓取）；需 Python 3.12；只有一個版本（2026-01-07）、一位維護者；頁面沒寫實際端點，也沒寫條款。結論：不使用。
+- **Statsurge 傷兵 CSV**：2021 年 10 月到 2024 年 6 月，三個賽季的 CSV，連結是 bit.ly；**無授權聲明、資料來源未說明、已不再維護**。結論：不使用；我們自己的 `injury_reports` 從 2026 年開始累積。
+- **nba_api 端點**（只看到 GitHub 目錄的前半段，後半被截斷）：有 `boxscore*v3`（進階、四因子、hustle、matchups、球員追蹤）、`playbyplayv3`、`leaguedashlineups`、`leaguedash*ptshot`、`leaguedashptdefend`、`leaguehustlestatsplayer／team`、`leaguedashplayerclutch`、`playerestimatedmetrics`、`gamerotation`、`leagueseasonmatchups`。這些都來自 stats.nba.com，而 `CLAUDE.md` 規定 stats.nba.com 會擋 GitHub runner 與非美國 IP，所以只能在本機（美國以外 IP 也可能被擋）或用已預先抓好的檔。是否使用待使用者決定，我不建議現在做。
+- **Kaggle「NBA Stats Dataset 1996–Present」**：我猜的網址回 404，授權與欄位**未驗證**，不要引用「CC0」。
+
+## 仍未做
+- 找到 chevronronson 資料集真正的網址再核對授權。
+- 實際取得 SBR 的 Internet Archive 檔案並核對欄位（需要使用者同意下載：檔名、來源、大小要先報）。
