@@ -372,7 +372,8 @@ def test_cli_error_does_not_leak_a_dsn(monkeypatch, capsys, tmp_path):
     assert "secret" not in capsys.readouterr().out
 
 
-def test_cli_writes_the_report(tmp_path, capsys):
+def test_cli_writes_the_report(tmp_path, capsys, monkeypatch):
+    monkeypatch.setattr(tc, "_today_tpe", lambda: dt.date(2026, 11, 2))
     _day(tmp_path / "snaps")
     out = tmp_path / "r.json"
     assert tc.main(["--root", str(tmp_path / "snaps"), "--out", str(out), "--as-of", "2026-11-01"]) == 0
@@ -383,3 +384,41 @@ def test_report_on_an_empty_root(tmp_path):
     r = tc.report(tmp_path, tc.ANALYSIS_DATE_TPE)
     assert r["verdict"]["n_bets"] == 0 and r["verdict"]["passes"] is False
     assert r["coverage"]["n_tw_snapshots"] == 0
+
+
+# ----- final review fixes -----
+
+@pytest.mark.parametrize("bad", ["20261115", "2026-11-5", "2026/11/15"])
+def test_report_rejects_a_non_iso_as_of(tmp_path, bad):
+    with pytest.raises(ValueError):
+        tc.report(tmp_path, bad)
+
+
+def test_report_refuses_an_as_of_after_the_analysis_date(tmp_path):
+    with pytest.raises(ValueError):
+        tc.report(tmp_path, "2026-12-01")
+
+
+def test_cli_refuses_an_as_of_in_the_future(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(tc, "_today_tpe", lambda: dt.date(2026, 10, 29))
+    assert tc.main(["--root", str(tmp_path), "--out", str(tmp_path / "r.json"), "--as-of", "2026-11-30"]) == 2
+    assert not (tmp_path / "r.json").exists()
+
+
+def test_cli_default_as_of_stops_at_the_analysis_date(tmp_path, monkeypatch):
+    monkeypatch.setattr(tc, "_today_tpe", lambda: dt.date(2026, 12, 5))
+    assert tc.main(["--root", str(tmp_path), "--out", str(tmp_path / "r.json")]) == 0
+    r = json.loads((tmp_path / "r.json").read_text(encoding="utf-8"))
+    assert r["as_of_tpe"] == tc.ANALYSIS_DATE_TPE and r["progress_only"] is False
+
+
+def test_close_is_found_per_market(tmp_path):
+    _day(tmp_path, closes=(("20261030T0710", -5.5),))
+    spread_only = oddsapi(even(-4.5))
+    for bk in spread_only[0]["bookmakers"]:
+        bk["markets"] = [m for m in bk["markets"] if m["key"] == "spreads"]
+    put(tmp_path, "20261030T0740", "oddsapi", spread_only)
+    c = tc.candidates(snaps(tmp_path), 12.5, 19.0).set_index("market")
+    assert (c.loc["spread", "close_gap_min"] == 20).all() and (c.loc["spread", "close_ref_line"] == -4.5).all()
+    assert (c.loc["total", "close_gap_min"] == 50).all() and c.loc["total", "primary"].all()
+    assert c.loc["total", "ev_close"].notna().all()

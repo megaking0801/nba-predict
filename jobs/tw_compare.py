@@ -138,6 +138,10 @@ def _all_refs(snaps: pd.DataFrame) -> pd.DataFrame:
     return pd.concat(parts, ignore_index=True) if parts else pd.DataFrame(columns=_REF_COLS + ["stamp_utc"])
 
 
+_MARKET_REF = {"spread": ("spread_line", "p_home_cover"), "ml": ("spread_line", "p_home_cover"),
+               "total": ("total_line", "p_over")}
+
+
 def _option_ev(ref, market, line, side, dec, sigma):
     """EV of one Taiwan option against one reference row; NaN when that market has no reference. The moneyline
     (exploratory) is priced from the spread reference: home wins when the Normal(mu, sigma) margin is > 0."""
@@ -182,9 +186,10 @@ def _slot_rows(snaps, refs, s_tw, sigma: dict, markets, ref_ok):
             continue
         tip = mine.sort_values("stamp_utc")["tipoff_utc"].iloc[-1]
         before = mine[mine["stamp_utc"] < tip].sort_values("stamp_utc")
-        close = before.iloc[-1] if len(before) else None
-        gap = (tip - close["stamp_utc"]).total_seconds() / 60.0 if close is not None else np.nan
         for o in opts.itertuples(index=False):
+            have = before.dropna(subset=list(_MARKET_REF[o.market]))      # the close is found per market
+            close = have.iloc[-1] if len(have) else None
+            gap = (tip - close["stamp_utc"]).total_seconds() / 60.0 if close is not None else np.nan
             e_now, _, src_now = _option_ev(r_now, o.market, o.line, o.side, o.dec, sigma[o.market])
             ec, cline, src = (_option_ev(close, o.market, o.line, o.side, o.dec, sigma[o.market])
                               if close is not None else (np.nan, np.nan, None))
@@ -477,12 +482,28 @@ def _clean(x):
     return x
 
 
+def _as_of_date(text: str) -> dt.date:
+    """A strict YYYY-MM-DD Taipei date, never later than the pre-registered analysis date (spec §7: not later)."""
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", text or ""):
+        raise ValueError(f"as_of must be YYYY-MM-DD, got {text!r}")
+    d = dt.date.fromisoformat(text)
+    if d > dt.date.fromisoformat(ANALYSIS_DATE_TPE):
+        raise ValueError(f"as_of {text} is after the pre-registered analysis date {ANALYSIS_DATE_TPE}")
+    return d
+
+
+def _today_tpe() -> dt.date:
+    return pd.Timestamp.now(tz=TPE).date()
+
+
 def report(root, as_of_tpe: str, conn=None) -> dict:
-    """The analysis report on every snapshot up to the Taipei date as_of_tpe. Before ANALYSIS_DATE_TPE it is
-    progress only: counts and coverage, no EV of the picks and no interval (spec §7)."""
+    """The analysis report on every snapshot up to the Taipei date as_of_tpe (at most ANALYSIS_DATE_TPE).
+    Before ANALYSIS_DATE_TPE it is progress only: counts and coverage, no EV of the picks and no interval
+    (spec §7)."""
+    as_of = _as_of_date(as_of_tpe)
     snaps = _prep(tw_parse.list_snapshots(root))
-    snaps = snaps[snaps["stamp_utc"].dt.tz_convert(TPE).dt.date.astype(object) <= dt.date.fromisoformat(as_of_tpe)]
-    progress_only = as_of_tpe < ANALYSIS_DATE_TPE
+    snaps = snaps[snaps["stamp_utc"].dt.tz_convert(TPE).dt.date.astype(object) <= as_of]
+    progress_only = as_of < dt.date.fromisoformat(ANALYSIS_DATE_TPE)
     refs = _all_refs(snaps)
     cands = {p: candidates(snaps, *p, refs=refs) for p in PAIRS}
     picks = {p: pick_bets(c) for p, c in cands.items()}
@@ -539,10 +560,18 @@ def main(argv: Optional[List[str]] = None) -> int:
                                  description="Taiwan 21:00 prices against the international close (read-only)")
     ap.add_argument("--root", default="data/tw_snapshots")
     ap.add_argument("--out", required=True)
-    ap.add_argument("--as-of", dest="as_of", default=pd.Timestamp.now(tz=TPE).date().isoformat(),
-                    help="Taipei date YYYY-MM-DD (default: today)")
+    ap.add_argument("--as-of", dest="as_of",
+                    help=f"Taipei date YYYY-MM-DD, not in the future (default: today, at most {ANALYSIS_DATE_TPE})")
     ap.add_argument("--with-results", action="store_true", help="add the secondary P&L from a read-only DB read")
     args = ap.parse_args(argv)
+    today = _today_tpe()
+    as_of = args.as_of or min(today, dt.date.fromisoformat(ANALYSIS_DATE_TPE)).isoformat()
+    try:
+        if _as_of_date(as_of) > today:
+            raise ValueError(f"as_of {as_of} is in the future (today is {today} in Taipei)")
+    except ValueError as exc:
+        print(f"tw_compare refused: {exc}")
+        return 2
     conn = None
     if args.with_results:
         try:
@@ -551,7 +580,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             print(f"DB connection failed ({type(exc).__name__}); check the DB credentials.")
             return 2
     try:
-        r = report(Path(args.root), args.as_of, conn=conn)
+        r = report(Path(args.root), as_of, conn=conn)
     except Exception as exc:
         print(f"tw_compare failed: {type(exc).__name__}: {_scrub(str(exc))}")
         return 2
