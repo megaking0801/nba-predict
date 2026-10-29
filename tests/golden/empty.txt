@@ -195,6 +195,6 @@ table.ntable tbody td { padding: 6px 0; border-top: 1px solid var(--hair); text-
 <!--chunk-->
 markdown:<div class="nb-topbar"><div class="nb-brand">NBA 勝負預測</div></div>
 <!--chunk-->
-markdown:<div class="nb-hero"><div class="nb-daysub">10 月 29 日 週四，台北時間</div><h1>休賽季：近期預測與結果</h1><p class="nb-lede">目前 NBA 休賽季、暫無賽事。以下回顧近期比賽的預測與實際結果，以及模型的長期戰績。賽季開始後會自動恢復每日預測。</p></div>
+markdown:<div class="nb-hero"><div class="nb-daysub">TODAY，台北時間</div><h1>休賽季：近期預測與結果</h1><p class="nb-lede">目前 NBA 休賽季、暫無賽事。以下回顧近期比賽的預測與實際結果，以及模型的長期戰績。賽季開始後會自動恢復每日預測。</p></div>
 <!--chunk-->
 info:目前資料庫尚無預測。賽季開始後會自動更新每日預測。
