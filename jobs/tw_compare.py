@@ -215,7 +215,7 @@ def _bet_stamps(snaps: pd.DataFrame) -> pd.Series:
 def candidates(snaps: pd.DataFrame, sigma_spread: float, sigma_total: float, markets=("spread", "total"),
                refs: Optional[pd.DataFrame] = None) -> pd.DataFrame:
     """One row per Taiwan spread/total option of each game in the 21:00 Taipei snapshot of its ET game day.
-    ev_21 uses the reference in the same 21:00 window; ev_close the last reference before tip. Games with no
+    ev_21 uses the reference in the same 21:00 window, never one later than the Taiwan file; ev_close the last reference before tip. Games with no
     reference after the 21:00 snapshot (postponed, or every later slot missed) are dropped and listed in
     .attrs["postponed"]; games with no 21:00 reference are listed in .attrs["unpriced"]."""
     snaps = _prep(snaps)
@@ -227,7 +227,7 @@ def candidates(snaps: pd.DataFrame, sigma_spread: float, sigma_total: float, mar
     for s21 in stamps:
         d21 = s21.tz_convert(TPE).date()
         r, p, u = _slot_rows(snaps, refs, s21, sigma, markets,
-                             lambda s: _in_window(s) and s.tz_convert(TPE).date() == d21)
+                             lambda s: _in_window(s) and s.tz_convert(TPE).date() == d21 and s <= s21)
         rows += r
         postponed += p
         unpriced += u
@@ -265,13 +265,15 @@ def _t_quantile(q: float, df: int) -> float:
     return z + sum(gi / df ** (i + 1) for i, gi in enumerate(g))
 
 
-def _counts(bets: pd.DataFrame) -> dict:
+def _counts(bets: pd.DataFrame, window_days: Optional[int] = None) -> dict:
+    """Counts; bets per week over the collection window (first 21:00 snapshot to as-of) when given, else over
+    the first-to-last bet span."""
     n = int(len(bets))
     if not n:
-        return {"n_bets": 0, "n_days": 0, "bets_per_week": 0.0}
+        return {"n_bets": 0, "n_days": 0, "bets_per_week": 0.0, "window_days": window_days}
     dates = pd.to_datetime(pd.Series(bets["et_date"]))
-    span_days = (dates.max() - dates.min()).days + 1
-    return {"n_bets": n, "n_days": int(dates.nunique()), "bets_per_week": n / (span_days / 7.0)}
+    days = window_days or (dates.max() - dates.min()).days + 1
+    return {"n_bets": n, "n_days": int(dates.nunique()), "bets_per_week": n / (days / 7.0), "window_days": days}
 
 
 def _ci(bets: pd.DataFrame):
@@ -282,10 +284,10 @@ def _ci(bets: pd.DataFrame):
     return block_bootstrap_ci(d, reps=REPS, seed=SEED, level=LEVEL, block_days=BLOCK_DAYS)
 
 
-def verdict(bets: pd.DataFrame, by_sigma: dict) -> dict:
+def verdict(bets: pd.DataFrame, by_sigma: dict, window_days: Optional[int] = None) -> dict:
     """The pre-registered 'yes' rule on the primary bets (EV_close of each bet). Every failed condition is listed
     in reasons; passes is True only when there is none."""
-    out = _counts(bets)
+    out = _counts(bets, window_days)
     mean, lo, hi = _ci(bets)
     by_day = bets.groupby("et_date")["ev_close"].mean() if len(bets) else pd.Series(dtype=float)
     if len(by_day) >= 2:
@@ -511,7 +513,9 @@ def report(root, as_of_tpe: str, conn=None) -> dict:
     main_c, main_b = cands[MAIN_PAIR], picks[MAIN_PAIR]
     tw_dates = set(snaps.loc[snaps["kind"] == "tw", "stamp_utc"].map(lambda s: s.tz_convert(TPE).date()))
     bet_dates = {s.tz_convert(TPE).date() for s in _bet_stamps(snaps)}
-    games = [{"game": g, "reason": "no reference after the 21:00 snapshot (postponed, or every later slot missed)"}
+    window_days = (as_of - min(bet_dates)).days + 1 if bet_dates else None
+    games = [{"game": g, "reason": "after the as-of cutoff (close not captured yet)" if g[:10] == as_of.isoformat()
+              else "no reference after the 21:00 snapshot (postponed, or every later slot missed)"}
              for g in main_c.attrs["postponed"]]
     games += [{"game": g, "reason": "no reference in the 21:00 window"} for g in main_c.attrs["unpriced"]]
     games += [{"game": r.game, "reason": "no reference before tip" if pd.isna(r.close_gap_min)
@@ -528,13 +532,13 @@ def report(root, as_of_tpe: str, conn=None) -> dict:
         "notes": NOTES,
     }
     if progress_only:
-        out.update(verdict=_counts(primary[MAIN_PAIR]), by_close_gap=None, by_m=None, other_slots=None,
+        out.update(verdict=_counts(primary[MAIN_PAIR], window_days), by_close_gap=None, by_m=None, other_slots=None,
                    moneyline=None, bets=None)
         return _clean(out)
     b = primary[MAIN_PAIR]
     ml = pick_bets(candidates(snaps, *MAIN_PAIR, markets=("ml",), refs=refs))
     out.update(
-        verdict=verdict(b, primary),
+        verdict=verdict(b, primary, window_days),
         by_close_gap={k: _summary(g["ev_close"]) for k, g in
                       main_b.assign(bucket=main_b["close_gap_min"].map(_gap_bucket)).groupby("bucket")},
         by_m={"m=1": _summary(b.loc[b["m"] == 1, "ev_close"]), "m>=2": _summary(b.loc[b["m"] >= 2, "ev_close"])},

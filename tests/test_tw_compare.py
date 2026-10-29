@@ -422,3 +422,53 @@ def test_close_is_found_per_market(tmp_path):
     assert (c.loc["spread", "close_gap_min"] == 20).all() and (c.loc["spread", "close_ref_line"] == -4.5).all()
     assert (c.loc["total", "close_gap_min"] == 50).all() and c.loc["total", "primary"].all()
     assert c.loc["total", "ev_close"].notna().all()
+
+
+# ----- deferred minors, fixed before collection starts -----
+
+def test_bets_per_week_uses_the_collection_window():
+    b = bets_frame(150, 40, 0.05)                              # 40 consecutive days of bets ...
+    v = tc.verdict(b, by_sigma_of(b), window_days=401)         # ... inside a 401-day collection window
+    assert v["bets_per_week"] == pytest.approx(150 / (401 / 7))
+    assert any("per week" in r for r in v["reasons"])
+
+
+def test_report_counts_weeks_from_the_first_21_snapshot_to_as_of(tmp_path, monkeypatch):
+    _day(tmp_path)
+    r = tc.report(tmp_path, tc.ANALYSIS_DATE_TPE)
+    assert r["verdict"]["window_days"] == (dt.date(2026, 11, 30) - dt.date(2026, 10, 29)).days + 1
+
+
+def test_picks_of_the_as_of_day_are_after_the_cutoff_not_postponed(tmp_path):
+    put(tmp_path, "20261130T2100", "tw", tw(kt="2026-12-01T08:00:00+08:00"))
+    put(tmp_path, "20261130T2100", "oddsapi", oddsapi(even(-5.5), commence="2026-12-01T00:00:00Z"))
+    r = tc.report(tmp_path, tc.ANALYSIS_DATE_TPE)
+    assert [g["reason"] for g in r["excluded"]["games"]] == ["after the as-of cutoff (close not captured yet)"]
+
+
+def test_21_reference_is_never_later_than_the_taiwan_file(tmp_path):
+    put(tmp_path, "20261029T2110", "tw", tw())
+    put(tmp_path, "20261029T2100", "oddsapi", oddsapi(even(-5.5)))
+    put(tmp_path, "20261029T2115", "oddsapi", oddsapi(even(-9.5)))     # nearer, but after the Taiwan file
+    put(tmp_path, "20261030T0740", "oddsapi", oddsapi(even(-5.5)))
+    c = tc.candidates(snaps(tmp_path), 12.5, 19.0)
+    home = c[(c["market"] == "spread") & (c["side"] == "home")].iloc[0]
+    assert home["ev_21"] == pytest.approx(1.72 * 0.5 - 1)
+
+
+def test_a_reference_only_after_the_taiwan_file_leaves_the_game_unpriced(tmp_path):
+    put(tmp_path, "20261029T2100", "tw", tw())
+    put(tmp_path, "20261029T2120", "oddsapi", oddsapi(even(-5.5)))
+    put(tmp_path, "20261030T0740", "oddsapi", oddsapi(even(-5.5)))
+    c = tc.candidates(snaps(tmp_path), 12.5, 19.0)
+    assert c.empty and c.attrs["unpriced"] == ["2026-10-29 SAC@NOP"]
+
+
+def test_integer_taiwan_line_end_to_end(tmp_path):
+    put(tmp_path, "20261029T2100", "tw", tw(spreads=((-5.0, 1.72, 1.72),)))
+    put(tmp_path, "20261029T2100", "oddsapi", oddsapi(even(-5.5)))
+    put(tmp_path, "20261030T0740", "oddsapi", oddsapi(even(-5.5)))
+    c = tc.candidates(snaps(tmp_path), 12.5, 19.0)
+    home = c[(c["market"] == "spread") & (c["side"] == "home")].iloc[0]
+    w, push, _ = pr.outcome_probs(-5.0, 5.5, 12.5, "spread", "home")
+    assert push > 0.03 and home["ev_21"] == pytest.approx(pr.ev(1.72, w, push))

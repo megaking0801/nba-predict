@@ -104,3 +104,10 @@ def test_parse_oddsapi_rows():
     bad[0]["home_team"] = "Paris Basketball"
     with pytest.raises(ValueError):
         tp.parse_oddsapi(json.dumps(bad).encode())
+
+
+def test_parse_espn_unknown_abbreviation_raises():
+    bad = json.loads(ESPN)
+    bad["events"][0]["competitions"][0]["competitors"][0]["team"]["abbreviation"] = "XYZ"
+    with pytest.raises(ValueError, match="XYZ"):
+        tp.parse_espn(json.dumps(bad).encode())
