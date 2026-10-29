@@ -1,0 +1,204 @@
+{
+ "explore": [
+  "2015-16",
+  "2021-22"
+ ],
+ "season_type": "regular",
+ "min_games_per_half": 40,
+ "level": 0.99,
+ "counts": {
+  "games_final_regular": 8289,
+  "no_total_line": 42,
+  "line_outside_170_280": 26,
+  "games_used": 8221,
+  "games_no_ot": 1398,
+  "games_without_crew": 47
+ },
+ "officials": {
+  "rows": 25015,
+  "rows_order_above_3": 305,
+  "names": 117,
+  "names_differing_only_in_case_or_punctuation": [
+   [
+    "J.B. DeRosa",
+    "JB DeRosa"
+   ],
+   [
+    "J.T. Orr",
+    "JT Orr"
+   ],
+   [
+    "Nate  Green",
+    "Nate Green"
+   ]
+  ]
+ },
+ "lines_by_season": {
+  "2015-16": {
+   "book": {
+    "espn": 1229
+   },
+   "total_price_point": {
+    "current": 1229
+   }
+  },
+  "2016-17": {
+   "book": {
+    "espn": 1211
+   },
+   "total_price_point": {
+    "current": 1211
+   }
+  },
+  "2017-18": {
+   "book": {
+    "espn": 1229
+   },
+   "total_price_point": {
+    "current": 1229
+   }
+  },
+  "2018-19": {
+   "book": {
+    "espn": 1225
+   },
+   "total_price_point": {
+    "current": 1225
+   }
+  },
+  "2019-20": {
+   "book": {
+    "espn": 1050
+   },
+   "total_price_point": {
+    "current": 1050
+   }
+  },
+  "2020-21": {
+   "book": {
+    "espn": 1078
+   },
+   "total_price_point": {
+    "current": 1078
+   }
+  },
+  "2021-22": {
+   "book": {
+    "espn": 1199
+   },
+   "total_price_point": {
+    "current": 1199
+   }
+  }
+ },
+ "caveats": [
+  "referee announcement time before tip-off is not verified",
+  "a passing rho says referees as a group persist; it does not single out any referee",
+  "crews are not assigned at random; the team-adjusted version and the stratified permutation only remove team and season structure"
+ ],
+ "versions": {
+  "primary": {
+   "column": "r_c",
+   "games": 8221,
+   "refs": 79,
+   "rho": 0.05163096397273612,
+   "n_half_median": 171.0,
+   "cluster_bootstrap": {
+    "reps": 2000,
+    "lo": -0.23053833982473224,
+    "hi": 0.2757240749756569,
+    "se": 0.10145348542121096
+   },
+   "permutation_season_x_home": {
+    "strata": [
+     "season",
+     "home_abbr"
+    ],
+    "reps": 1000,
+    "q99": 0.26511781888997077,
+    "mean": -0.010909323271665045,
+    "p_one_sided": 0.2997002997002997
+   },
+   "permutation_season_only_report": {
+    "strata": [
+     "season"
+    ],
+    "reps": 200,
+    "q99": 0.2565618305744888,
+    "mean": -0.006925754625121716,
+    "p_one_sided": 0.34328358208955223
+   }
+  },
+  "team_adjusted": {
+   "column": "r_team",
+   "games": 8221,
+   "refs": 79,
+   "rho": 0.021372930866601754,
+   "n_half_median": 171.0,
+   "cluster_bootstrap": {
+    "reps": 2000,
+    "lo": -0.25124756572541385,
+    "hi": 0.26526935248295996,
+    "se": 0.10129345692555482
+   },
+   "permutation_season_x_home": {
+    "strata": [
+     "season",
+     "home_abbr"
+    ],
+    "reps": 1000,
+    "q99": 0.28608276533592986,
+    "mean": -0.009809591041869525,
+    "p_one_sided": 0.40559440559440557
+   }
+  },
+  "raw_uncentred": {
+   "column": "r",
+   "games": 8221,
+   "refs": 79,
+   "rho": 0.05981012658227848,
+   "n_half_median": 171.0,
+   "cluster_bootstrap": {
+    "reps": 2000,
+    "lo": -0.2303315481986368,
+    "hi": 0.2690686465433288,
+    "se": 0.10136655411635939
+   }
+  },
+  "no_overtime": {
+   "column": "r_c",
+   "games": 1398,
+   "refs": 3,
+   "rho": -0.5,
+   "n_half_median": 41.5,
+   "cluster_bootstrap": {
+    "reps": 2000,
+    "lo": -1.0,
+    "hi": 1.0,
+    "se": 0.6757559271190436
+   }
+  }
+ },
+ "power": {
+  "sigma": 18.03872057029799,
+  "n_half_median": 171.0,
+  "k_refs": 79,
+  "rho_se_approx": 0.12159033895139773,
+  "expected_rho": {
+   "0.5": 0.11612258465480663,
+   "0.75": 0.22815795165382866,
+   "1.0": 0.3444834224591545,
+   "1.5": 0.5417904254953136,
+   "2.0": 0.6776333367689076
+  },
+  "s_at_rho_0.2": 0.689727719620152
+ },
+ "continue_checks": {
+  "rho_at_least_0.2": false,
+  "cluster_lower_above_0": false,
+  "beats_99pct_of_permutations": false,
+  "team_adjusted_rho_at_least_0.2": false
+ },
+ "continue_to_step_2": false,
+ "conclusion": "no detectable persistent referee tilt on the total residual; stop"
+}
