@@ -37,7 +37,9 @@ def render_page(db: fakes.FakeDb, query_params: dict | None = None) -> str:
     for e in at.expander:
         parts.append(f"expander:{e.label}")
     text = SEP.join(parts)
-    return re.sub(r"\d{4}\.\d{2}\.\d{2}", "DATE", text)
+    text = re.sub(r"\d{4}\.\d{2}\.\d{2}", "DATE", text)
+    # The hero prints today's Taipei date (auto_nba_predict uses datetime.now), which moves every day.
+    return re.sub(r"\d{1,2} 月 \d{1,2} 日 週.，台北時間", "TODAY，台北時間", text)
 
 
 @pytest.fixture(autouse=True)
