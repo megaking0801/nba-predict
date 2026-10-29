@@ -59,6 +59,32 @@ def test_missing_opening_means_no_move():
     assert lm.spreads(lm.trim_items(None))["move"] is None
 
 
+def test_open_and_close_come_from_the_same_book():
+    items = [_prov("A", 0, {"current": "-6"}), _prov("B", 1, {"open": "-3", "close": "-4"})]
+    s = lm.spreads(lm.trim_items({"items": items}))
+    assert s["open_source"] == "B:open" and s["close_source"] == "B" and s["move"] == -1.0   # not -6 - (-3)
+
+
+def test_a_close_that_is_only_an_open_block_is_no_close():
+    items = [_prov("Opening", 0, {"open": "-3"}), _prov("A", 1, {"open": "-3"})]
+    s = lm.spreads(lm.trim_items({"items": items}))
+    assert s["close_spread"] is None and s["move"] is None
+
+
+def test_pick_even_and_odd_priorities():
+    items = [_prov("A", None, {"open": "PK", "close": "EVEN"}), _prov("B", "x", {"open": "-1", "close": "-2"})]
+    s = lm.spreads(lm.trim_items({"items": items}))
+    assert s["move"] in (0.0, -1.0)                                     # no crash on a missing / odd priority
+    assert lm.spreads(lm.trim_items({"items": items[:1]}))["move"] == 0.0
+
+
+def test_a_failed_fetch_is_recorded_and_counts_against_coverage(tmp_path):
+    sample = lm.sample_games(_games()).head(2)
+    recs = lm.fetch_sample(sample, tmp_path / "f.jsonl.gz", fetch=lambda gid: None, sleep=0)
+    assert [r["fetched"] for r in recs] == [False, False] and all(r["move"] is None for r in recs)
+    assert lm.summarize(recs)["eras"]["recent"]["open_coverage"] == 0.0
+
+
 def _rec(era, move, fetched=True):
     return {"era": era, "fetched": fetched, "move": move, "open_source": "x:open" if move is not None else None}
 

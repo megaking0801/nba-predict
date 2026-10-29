@@ -12,6 +12,7 @@ The DB is only SELECTed (game ids); nothing is written to it. ESPN is only fetch
 from __future__ import annotations
 
 import argparse
+import functools
 import gzip
 import json
 import statistics
@@ -25,7 +26,7 @@ import pandas as pd
 
 from jobs.espn_http import odds as espn_odds
 from jobs.feature_ablation import _scrub
-from jobs.ingest_espn import _spread_num, parse_close_line
+from jobs.ingest_espn import _provider_priority, _spread_num, parse_close_line
 
 SEED = 20261030
 SAMPLE = (("recent", ("2023-24", "2023-24"), 15), ("recent", ("2024-25", "2024-25"), 15),
@@ -69,7 +70,7 @@ def trim_items(odds_json: Optional[dict]) -> List[dict]:
                 keep[k] = prov[k]
         for side in ("homeTeamOdds", "awayTeamOdds"):
             s = prov.get(side) or {}
-            keep[side] = {k: s[k] for k in POINTS + ("favorite", "spreadOdds") if k in s}
+            keep[side] = {k: v for k, v in s.items() if k not in ("team", "links", "$ref")}
         out.append(keep)
     return out
 
@@ -81,39 +82,43 @@ def _block_spread(side: dict, point: str) -> Optional[float]:
     return None
 
 
+def _name(p: dict) -> str:
+    return ((p.get("provider") or {}).get("name") or "").strip()
+
+
 def spreads(items: List[dict]) -> dict:
-    """Opening and closing HOME spread for one game.
-    Opening: a provider's homeTeamOdds.open block (best priority first); else a provider named 'Opening'
-    (its open / current / close block, in that order). Closing: the same rule the DB uses
-    (ingest_espn.parse_close_line). move = close - open (home handicap; negative = moved toward home)."""
-    live = lambda p: "live" in ((p.get("provider") or {}).get("name") or "").lower()
-    ordered = sorted((p for p in items if not live(p)),
-                     key=lambda p: float((p.get("provider") or {}).get("priority") or 0))
+    """Opening and closing HOME spread for one game, from ONE book where possible.
+    1. The best-priority book (not live, not 'Opening') that has both an open block and a close or current
+       block: open and close both come from it, so the move is a real move, not a book difference.
+    2. Otherwise, older seasons: the 'Opening' provider's spread (its open, current or close block) paired
+       with the closing spread chosen the DB's way (ingest_espn.parse_close_line) over the other books.
+    A close that is itself only an 'open' block is no close. move = close - open (negative = toward home)."""
+    books = sorted((p for p in items if "live" not in _name(p).lower()), key=_provider_priority)
+    for p in books:
+        home = p.get("homeTeamOdds") or {}
+        if _name(p).lower() == "opening":
+            continue
+        o = _block_spread(home, "open")
+        c, point = next(((v, pt) for pt in ("close", "current") if (v := _block_spread(home, pt)) is not None),
+                        (None, None))
+        if o is not None and c is not None:
+            return {"open_spread": o, "open_source": f"{_name(p)}:open", "close_spread": c, "close_point": point,
+                    "close_source": _name(p), "move": c - o, "providers": [_name(q) for q in items]}
     open_spread = open_source = None
-    for p in ordered:
-        v = _block_spread(p.get("homeTeamOdds") or {}, "open")
-        name = ((p.get("provider") or {}).get("name") or "")
-        if v is not None and name.strip().lower() != "opening":
-            open_spread, open_source = v, f"{name}:open"
+    for p in books:
+        if _name(p).lower() == "opening":
+            for point in POINTS:
+                v = _block_spread(p.get("homeTeamOdds") or {}, point)
+                if v is not None:
+                    open_spread, open_source = v, f"Opening:{point}"
+                    break
             break
-    if open_spread is None:
-        for p in ordered:
-            name = ((p.get("provider") or {}).get("name") or "")
-            if name.strip().lower() == "opening":
-                for point in POINTS:
-                    v = _block_spread(p.get("homeTeamOdds") or {}, point)
-                    if v is not None:
-                        open_spread, open_source = v, f"Opening:{point}"
-                        break
-            if open_spread is not None:
-                break
-    close = parse_close_line([p for p in items if not live(p)
-                              and ((p.get("provider") or {}).get("name") or "").strip().lower() != "opening"])
-    close_spread = close["home_spread"] if close else None
+    close = parse_close_line([p for p in books if _name(p).lower() != "opening"])
+    close_spread = close["home_spread"] if close and close.get("price_point") != "open" else None
     move = (close_spread - open_spread) if (open_spread is not None and close_spread is not None) else None
     return {"open_spread": open_spread, "open_source": open_source, "close_spread": close_spread,
-            "close_point": close.get("price_point") if close else None, "move": move,
-            "providers": [((p.get("provider") or {}).get("name")) for p in items]}
+            "close_point": close.get("price_point") if close else None, "close_source": "db_rule" if close else None,
+            "move": move, "providers": [_name(q) for q in items]}
 
 
 # ----- the check -----
@@ -142,8 +147,10 @@ def summarize(records: List[dict]) -> dict:
     return out
 
 
-def fetch_sample(sample: pd.DataFrame, out_data: Path, fetch: Callable = espn_odds, sleep: float = 0.3) -> List[dict]:
-    """GET each sampled game's odds once; write one gzip JSON line per game (overwrites)."""
+def fetch_sample(sample: pd.DataFrame, out_data: Path, fetch: Callable = functools.partial(espn_odds, retries=1),
+                 sleep: float = 0.3) -> List[dict]:
+    """GET each sampled game's odds (one try plus at most one retry on an error); write one gzip JSON line
+    per game (overwrites)."""
     records = []
     tmp = out_data.with_suffix(out_data.suffix + ".tmp")
     tmp.parent.mkdir(parents=True, exist_ok=True)
@@ -183,7 +190,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     records = fetch_sample(sample, Path(args.out_data))
     result = {"seed": SEED, "sample_plan": [list(map(str, s)) for s in SAMPLE], "summary": summarize(records),
               "games": [{k: r[k] for k in ("game_id", "season", "era", "fetched", "open_spread", "open_source",
-                                           "close_spread", "close_point", "move", "providers")} for r in records]}
+                                           "close_spread", "close_point", "close_source", "move", "providers")}
+                        for r in records]}
     text = json.dumps(result, indent=1, default=str, ensure_ascii=False)
     if args.out:
         Path(args.out).write_text(text, encoding="utf-8")
