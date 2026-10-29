@@ -18,6 +18,7 @@ python -m webui.build_site --out site  # 從 DB 產生靜態網站到 site/（�
 python scripts/preview_site.py         # 不用 DB，用 tests/fakes 的假資料產生靜態站預覽（淺色、強制深色）到 data_local/site-preview/
 python -m jobs.feature_ablation --experiment data_scope|context|four_factor  # 特徵／資料範圍的配對 walk-forward 比較（只讀連線，需要 DB 連線）
 python -m jobs.market_layer --report baseline|clv|residual  # P5.0：盤口本身的基準與預測當下線對收盤線的差（只讀連線，需要 DB 連線）
+python -m jobs.referee_persistence --out docs/handoff/c3-referee-persistence.json  # C3 第一步：裁判對總分殘差的分半持續性（只讀連線，需要 DB 連線）
 python -m jobs.playbook fetch|moneyline|totals  # 玩法搜尋（只讀 DB、只 GET ESPN；抓下來的賠率存 data/moneylines.jsonl.gz，在資料 repo 提交）
 python -m jobs.quality --all           # 資料品質檢查（只讀連線，需要 DB 連線）；--since 7d 只看基準線之後的新資料；--verify-flags 驗證旗標 SQL
 ```
